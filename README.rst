@@ -20,11 +20,8 @@ Once installed, a conda environment running a specific version of Python can be 
     $ conda activate myenv
 
 
-The full documentation for **LEOSatpy** can be found here:
+The full documentation for **LEOSatpy** can be found `here <https://docs.readthedocs.io/en/stable/tutorial/>`_.
 
-.. code-block:: sh
-
-    https://docs.readthedocs.io/en/stable/tutorial/
 
 LEOSatpy is distributed under the GNU General Public License v3. See the
 `LICENSE <https://github.com/CLEOsat-group/leosatpy/blob/master/LICENSE>`_ file for the precise terms and conditions.
