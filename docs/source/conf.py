@@ -2,12 +2,12 @@
 
 # -- Project information
 
-project = 'Lumache'
-copyright = '2021, Graziella'
-author = 'Graziella'
+project = 'LEOSatpy'
+copyright = '2022, CLEOSat-Group'
+author = 'Christian Adam'
 
-release = '0.1'
-version = '0.1.0'
+release = '0.1.0-alpha'
+version = '0.20.0'
 
 # -- General configuration
 

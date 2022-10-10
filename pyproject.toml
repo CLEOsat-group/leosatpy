@@ -5,7 +5,7 @@ build-backend = "flit_core.buildapi"
 [project]
 name = "leosatpy"
 authors = [{name = "CLEOSat-Group", email = "christian.adam84@gmail.com"}]
-dynamic = ["0.10.0", "description"]
+dynamic = ["0.20.0", "description"]
 readme = "README.rst"
 requires-python = ">=3.9"
 license = {text = "BSD 3-Clause License"}
