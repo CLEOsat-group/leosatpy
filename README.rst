@@ -20,7 +20,9 @@ Once installed, a conda environment running a specific version of Python can be 
     $ conda activate myenv
 
 
-The full documentation for **LEOSatpy** can be found here: ::
+The full documentation for **LEOSatpy** can be found here:
+
+.. code-block:: sh
 
     https://docs.readthedocs.io/en/stable/tutorial/
 
