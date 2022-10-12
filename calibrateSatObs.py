@@ -22,6 +22,7 @@
 # -----------------------------------------------------------------------------
 
 """ Modules """
+import gc
 # STDLIB
 import os
 import sys
@@ -477,7 +478,11 @@ class CalibrateObsWCS(object):
         self._converged = converged
         self._dic_rms = dic_rms
 
-        del imgarr, dic_rms
+        del imgarr, dic_rms, converged, src_positions, ref_positions_before, ref_positions_after, \
+            src_tbl, ref_tbl, ref_catalog, _, src_cat_fname, ref_cat_fname, \
+            kernel_fwhm, psf, segmap, extraction_result, report, \
+            obs_matched, cat_matched, obs_x, obs_y, cat_x, cat_y, distances, state, matches
+        gc.collect()
 
     def _get_transformations(self, source_cat, ref_cat, wcsprm):
         """ Determine rotation, scale and offset using image transformations
@@ -515,6 +520,9 @@ class CalibrateObsWCS(object):
         wcsprm = self._correct_subpixel_error(source_cat=source_cat,
                                               ref_cat=ref_cat,
                                               wcsprm=wcsprm)
+
+        del source_cat, ref_cat, _
+        gc.collect()
 
         return wcsprm
 
@@ -633,6 +641,9 @@ class CalibrateObsWCS(object):
             else:
                 if not self._silent:
                     self._log.info("    Status: " + pass_str)
+
+        del source_cat, ref_cat, matches
+        gc.collect()
 
         return wcsprm
 

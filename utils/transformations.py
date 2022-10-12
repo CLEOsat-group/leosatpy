@@ -21,6 +21,7 @@
 # -----------------------------------------------------------------------------
 
 """ Modules """
+import gc
 import os
 from copy import copy
 import inspect
@@ -142,6 +143,13 @@ def get_scale_and_rotation(observation, catalog, wcsprm, scale_guessed, silent=F
               "Much higher values are best.".format(confidence))
     log.debug("   Note that there still might be a 180deg rotation. "
               "If this is the case it should be correct in the next step")
+
+    del observation, catalog_on_sensor, obs_x, obs_y, cat_x, cat_y, \
+        log_dist_obs, log_dist_cat, angles_obs, angles_cat, \
+        scaling, rotation, signal, _, \
+        scaling_reflected, rotation_reflected, signal_reflected, \
+        corr_, corr_reflected
+    gc.collect()
 
     return wcsprm_new
 
@@ -266,7 +274,8 @@ def simple_offset(observation, catalog, wcsprm=None, report=""):
 
     H, x_edges, y_edges = np.histogram2d(dist_x, dist_y, bins=bins)
 
-    del bins, binwidth
+    del cat_x, cat_y, obs_x, obs_y, bins, binwidth
+    gc.collect()
 
     # finding the peak for the x and y distance where the two sets overlap and take the first peak
     peak = np.argwhere(H == np.max(H))[0]
@@ -278,7 +287,8 @@ def simple_offset(observation, catalog, wcsprm=None, report=""):
     report += "signal wide (64pixel) - signal (9pixel)  = {}. " \
               "If this value is large then " \
               "there might be rotation or scaling issues. \n".format(signal_wide - signal)
-    del H
+    del observation, H
+    gc.collect()
 
     x_shift = (x_edges[peak[0]] + x_edges[peak[0] + 1]) / 2
     y_shift = (y_edges[peak[1]] + y_edges[peak[1] + 1]) / 2
@@ -484,6 +494,7 @@ def cross_corr_to_fourier_space(a):
     ff_a = np.fft.fft2(aaa)
 
     del a, aa, aaa
+    gc.collect()
 
     return ff_a
 
@@ -538,8 +549,6 @@ def peak_with_cross_correlation(log_distance_obs: np.ndarray, angle_obs: np.ndar
     bins = np.array([len(bins_dist), len(bins_ang)])  # .astype('uint64')
     # bins = [bins_dist, bins_ang]
 
-    del bins_dist, bins_ang
-
     vals = np.array([log_distance_obs, angle_obs])  # .astype('float32')
     ranges = np.array([[minimum_distance, maximum_distance],
                        [minimum_ang, maximum_ang]])  # .astype('float32')
@@ -548,18 +557,12 @@ def peak_with_cross_correlation(log_distance_obs: np.ndarray, angle_obs: np.ndar
     vals = np.array([log_distance_cat, angle_cat])  # .astype('float32')
     H_cat = histogram2d(*vals, bins=bins,
                         range=ranges)
-    # H_obs, x_edges_obs, y_edges_obs = np.histogram2d(log_distance_obs, angle_obs, bins=bins)
-    # H_cat, x_edges_cat, y_edges_cat = np.histogram2d(log_distance_cat, angle_cat, bins=bins)
-
-    # import matplotlib.pyplot as plt
 
     H_obs = (H_obs - np.nanmean(H_obs)) / np.nanstd(H_obs)
     H_cat = (H_cat - np.nanmean(H_cat)) / np.nanstd(H_cat)
 
     ff_obs = cross_corr_to_fourier_space(H_obs)
     ff_cat = cross_corr_to_fourier_space(H_cat)
-
-    del H_obs, H_cat
 
     cross_corr = ff_obs * np.conj(ff_cat)
 
@@ -607,7 +610,11 @@ def peak_with_cross_correlation(log_distance_obs: np.ndarray, angle_obs: np.ndar
     x_shift = (peak[0] + peak_x_subpixel - middle_x) * binwidth_dist
     y_shift = (peak[1] + peak_y_subpixel - middle_y) * binwidth_ang
 
-    del cross_corr, binwidth_dist, binwidth_ang, ff_obs, ff_cat
+    del cross_corr, middle_x, middle_y, frequ, \
+        log_distance_obs, log_distance_cat, angle_obs, angle_cat, \
+        bins_dist, bins_ang, binwidth_dist, binwidth_ang, \
+        vals, H_obs, H_cat, ff_obs, ff_cat
+    gc.collect()
 
     # get the scale and rotation
     scaling = np.e ** (-x_shift)
@@ -644,14 +651,19 @@ def calculate_dist(data_x, data_y):
     dist_y = dist_y[np.where(~np.eye(dist_y.shape[0], dtype=bool))]
 
     dist = np.sqrt(dist_x ** 2 + dist_y ** 2)
+
     del data_x, data_y, dist_x, dist_y
+    gc.collect()
+
     return dist
 
 
 def calculate_log_dist(data_x, data_y):
     """Calculate logarithmic distance between points."""
     log_dist = np.log(calculate_dist(data_x, data_y) + np.finfo(float).eps)
+
     del data_x, data_y
+    gc.collect()
     return log_dist
 
 
@@ -676,6 +688,7 @@ def calculate_angles(data_x, data_y):
     angles[np.where(angles > np.pi)] = -1 * (2 * np.pi - angles[np.where(angles > np.pi)])
 
     del data_x, data_y, vec_x, vec_y
+    gc.collect()
 
     return angles
 
@@ -784,5 +797,6 @@ def shift_translation(src_image, target_image):
             shift[dim] = 0
 
     del src_image, target_image, src_freq, target_freq, image_product, cross_correlation
+    gc.collect()
 
     return shift

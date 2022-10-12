@@ -22,6 +22,8 @@
 # -----------------------------------------------------------------------------
 from __future__ import annotations
 
+import gc
+
 """ Modules """
 import os
 import sys
@@ -313,6 +315,9 @@ def build_auto_kernel(imgarr, fwhm=4.0, threshold=None, source_box=7,
         k.normalize()
         kernel = k.array
 
+    del imgarr
+    gc.collect()
+
     return (kernel, kernel_psf), kernel_fwhm
 
 
@@ -423,6 +428,9 @@ def clean_catalog_trail(imgarr, mask, catalog, fwhm, r=3.):
     desired_df = df.drop(unwanted_indices, axis=0)
     removed_df = df.iloc[unwanted_indices]
 
+    del imgarr, df, trl_ind
+    gc.collect()
+
     return desired_df, removed_df
 
 
@@ -448,6 +456,9 @@ def clean_catalog_distance(in_cat: pandas.DataFrame,
             # bar()
 
     in_cat_cln = df.drop(unwanted_indices, axis=0)
+
+    del df, unwanted_indices
+    gc.collect()
 
     return in_cat_cln
 
@@ -602,6 +613,8 @@ def compute_2d_background(imgarr, box_size, win_size,
     new_hdul = fits.HDUList([hdu1, hdu2])
     new_hdul.writeto(f'{bkg_fname[0]}.fits', output_verify='ignore', overwrite=True)
 
+    del imgarr, hdu1, hdu2, new_hdul
+    gc.collect()
     return bkg_background, bkg_median, bkg_rms, bkg_rms_median
 
 
@@ -693,6 +706,10 @@ def dilate_mask(mask, tophat_size: int) -> np.ndarray:
     area = np.pi * tophat_size ** 2.
     kernel = Tophat2DKernel(tophat_size)
     dilated_mask = convolve(mask, kernel) >= 1. / area
+
+    del kernel, mask
+    gc.collect()
+
     return dilated_mask
 
 
@@ -804,10 +821,15 @@ def extract_source_catalog(imgarr, config, vignette=-1,
                                                              MAX_AREA_LIMIT=_base_conf.MAX_AREA_LIMIT,
                                                              silent=silent)
     if not state:
+        del imgarr, imgarr_bkg_subtracted, threshold, bkg_data
+        gc.collect()
         return None, None, None, None, None, False
 
     # Remove sources above the saturation limit
     source_cat = source_cat.query("flux < " + str(saturation_limit))
+
+    del imgarr, imgarr_bkg_subtracted, threshold, bkg_data
+    gc.collect()
 
     return source_cat, segmap, segmap_thld, kernel, kernel_fwhm, True
 
@@ -872,6 +894,10 @@ def extract_sources(img, fwhm=3.0, kernel=None,
     if segm is None or segm.nlabels == 0:
         if not silent:
             log.warning("No detected sources!")
+
+        del img, imgarr, segm, dao_threshold, segment_threshold
+        gc.collect()
+
         return None, None, None
 
     log.debug("Creating segmentation map.")
@@ -1035,9 +1061,13 @@ def extract_sources(img, fwhm=3.0, kernel=None,
         log.info(f"    Total Number of detected sources: {len(src_table)}")
     elif src_table is not None and len(src_table) < 3:
         log.critical(f"Less than 3 sources detected. Skipping further steps")
+        del img, imgarr, segm, dao_threshold, segment_threshold
+        gc.collect()
         return None, None, None, False
     else:
         log.info("    No detected sources!")
+        del img, imgarr, segm, dao_threshold, segment_threshold
+        gc.collect()
         return None, None, None, False
 
     # Move 'id' column from first to last position
@@ -1053,6 +1083,9 @@ def extract_sources(img, fwhm=3.0, kernel=None,
     # Insure all IDs are sequential and unique (at least in this catalog)
     tbl['cat_id'] = np.arange(1, len(tbl) + 1)
     del tbl['id']
+
+    del img, imgarr, dao_threshold, src_table
+    gc.collect()
 
     # return catalog table, segments map, and
     return tbl.to_pandas(), segm, segment_threshold, True
@@ -1108,6 +1141,9 @@ def find_fwhm(psf: np.ndarray, default_fwhm: float) -> float | None:
     fwhm = gaussian_sigma_to_fwhm * sigma_fit
 
     log.debug(f"Found FWHM: {fwhm}")
+
+    del psf, daogroup, mmm_bkg, iraffind, itr_phot_obj, phot_results, psf_row, fitter
+    gc.collect()
 
     return fwhm
 
@@ -1203,7 +1239,9 @@ def get_reference_catalog(ra, dec, sr=0.1, epoch=None, num_sources=None, catalog
     if rstr[0].startswith('Error'):
         log.warning(f"Astrometric catalog generation FAILED with: \n{rstr}")
 
-    del rstr[0]
+    del rstr[0], rawcat, r_contents
+    gc.collect()
+
     ref_table = Table.read(rstr, format='ascii.csv')
 
     if not ref_table:
@@ -1320,6 +1358,8 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
                                    saturation_limit=saturation_limit,
                                    silent=silent)
         if not state:
+            del imgarr, src_tbl, segmap, segmap_thld, kernel, kernel_fwhm
+            gc.collect()
             return (None for _ in range(12)), False
 
         # add positions to table
@@ -1578,6 +1618,9 @@ def save_catalog(cat: pandas.DataFrame,
     # write file to disk in the given format
     ascii.write(cat_out, out_name + '.cat', overwrite=True, format=tbl_format)
 
+    del cat_out, cat
+    gc.collect()
+
 
 def select_reference_catalog(band: str, source: str = "auto") -> str:
     """ Select catalog based on the given band and the selected mode.
@@ -1685,6 +1728,8 @@ def select_std_stars(ref_cat: pd.DataFrame,
         has_data = np.any(np.array([x1, x2, x3]), axis=1).all()
         if not has_data:
             log.critical("Insufficient data for magnitude conversion.")
+            del ref_cat, cat_srt, df, alt_cat
+            gc.collect()
             return None, filter_keys, has_mag_conv
 
         # convert band from catalog to observation
@@ -1707,6 +1752,9 @@ def select_std_stars(ref_cat: pd.DataFrame,
         df = df[:idx]
 
     df = df[cols]
+
+    del ref_cat, cat_srt
+    gc.collect()
 
     return df, filter_keys, has_mag_conv
 
