@@ -305,6 +305,9 @@ class AnalyseSatObs(object):
                 if not self._silent:
                     self._log.info(f'====>  Analysis of {sat_name} finished <====')
 
+                del result
+                gc.collect()
+
         # save fails
         if fails:
             fname = Path(self._config['RESULT_TABLE_PATH']) / f'fails_analyseSatObs_{time_stamp}.log'
@@ -377,6 +380,8 @@ class AnalyseSatObs(object):
 
         if not state:
             self._log.critical("No matching sources detected!!! Skipping further steps. ")
+            del obsparams, data_dict, trail_img_dict
+            gc.collect()
             return False, fail_msg
 
         # select std stars and perform aperture photometry
@@ -385,6 +390,8 @@ class AnalyseSatObs(object):
         if not state:
             self._log.critical("Standard star selection and photometry has FAILED!!! "
                                "Skipping further steps. ")
+            del obsparams, std_photometry_results, std_apphot, data_dict, trail_img_dict
+            gc.collect()
             return False, fail_msg
 
         # prepare trail image and perform aperture photometry with optimum aperture
@@ -398,6 +405,10 @@ class AnalyseSatObs(object):
                                                   std_apphot=std_apphot,
                                                   std_filter_keys=std_filter_keys,
                                                   mag_conv=mag_conv, mag_corr=mag_corr)
+
+        del obsparams, data_dict, trail_img_dict, std_photometry_results, sat_apphot
+        gc.collect()
+
         if not state:
             return False, fail_msg
 
@@ -670,7 +681,8 @@ class AnalyseSatObs(object):
             if dt_sec > exptime / 2.:
                 self._log.warning('  Time difference lager than half of exposure time!!! '
                                   'Please consider using more accurate visibility data.')
-        del _mags, _aper_sum
+
+        del _mags, _aper_sum, sat_info, obj_info, hdr, obsparams, img_dict, sat_apphot, std_apphot
         gc.collect()
 
         return True, []
@@ -822,6 +834,9 @@ class AnalyseSatObs(object):
                                            radec_separator=obspar['radec_separator'])
             self._obj_info = self._obsTable.obj_info
 
+        del imgarr, ref_img_warped, df, config, obspar, img_bkg, hdr, data_dict, img_dict
+        gc.collect()
+
         return sat_phot_dict
 
     def _save_fits(self, data: np.ndarray, fname: str):
@@ -840,6 +855,9 @@ class AnalyseSatObs(object):
                      data=data,
                      output_verify='ignore',
                      overwrite=True)
+
+        del data
+        gc.collect()
 
     def _run_std_photometry(self, data: dict):
         """Perform aperture photometry on standard stars.
@@ -879,6 +897,10 @@ class AnalyseSatObs(object):
                                                              num_std_min=config['NUM_STD_MIN'],
                                                              silent=self._silent)
         if std_cat is None:
+
+            del data, imgarr, catalog, phot_cat_cleaned, std_cat
+            gc.collect()
+
             return None, None, None, None, None, False, ['StdSelectError',
                                                          'No suitable standard stars found',
                                                          'To be solved']
@@ -944,6 +966,10 @@ class AnalyseSatObs(object):
         mag_corr = self._get_magnitude_correction(df=std_cat,
                                                   file_base=file_name)
         if not mag_corr:
+
+            del data, imgarr, catalog, phot_cat_cleaned, std_cat, result, fluxes
+            gc.collect()
+
             return None, None, None, None, None, False, ['MagCorrectError',
                                                          'Error during interpolation.',
                                                          'Check number and '
@@ -953,7 +979,7 @@ class AnalyseSatObs(object):
             self._log.info('    ==> estimated magnitude correction: '
                            '{:.3f} +/- {:.3f} (mag)'.format(mag_corr[0], mag_corr[1]))
 
-        del imgarr, result, src_pos, fluxes, rapers
+        del imgarr, result, src_pos, fluxes, rapers, data, phot_cat_cleaned
         gc.collect()
 
         return std_cat, std_fkeys, opt_aprad, mag_conv, mag_corr, True, ['', '', '']
@@ -1163,7 +1189,9 @@ class AnalyseSatObs(object):
                                            radec_separator=config['radec_separator'])
             self._obj_info = self._obsTable.obj_info
 
-        del imgarr, res_vals
+        del imgarr, res_vals, extraction_result, bkg_data, hdr, file_name, location, catalog, band,\
+            src_tbl, ref_tbl_astro, ref_catalog_astro, ref_tbl_photo, ref_catalog_photo,\
+            src_cat_fname, astro_ref_cat_fname, photo_ref_cat_fname, kernel_fwhm, trail_data
         gc.collect()
 
         return result
@@ -1295,6 +1323,7 @@ class AnalyseSatObs(object):
             data_dict['bkg_data'].append(bkg_dict)
 
             del imgarr, img, bkg_data, bkg, bkg_rms, bkg_dict
+            gc.collect()
 
         # TEST: second version of trail detection.
         # If two or more images are available, subtract from each other and search for trails
@@ -1308,7 +1337,7 @@ class AnalyseSatObs(object):
                 (n_imgs > 1 and not np.any(has_trail_check)):
             self._log.critical("None of the input images have satellite trail(s) detected!!! "
                                "Skipping further steps.")
-            gc.collect()
+
             return None, ['DetectError',
                           'Satellite trail(s) detection fail.',
                           'Difficult to solve.']
@@ -1316,7 +1345,6 @@ class AnalyseSatObs(object):
             data_dict['trail_img_idx'] = np.asarray(has_trail_check).nonzero()[0]
             data_dict['ref_img_idx'] = np.asarray(~has_trail_check).nonzero()[0]
 
-        gc.collect()
         return data_dict, None
 
     def _multi_img_detection(self, data_dict: dict):
@@ -1498,6 +1526,12 @@ class AnalyseSatObs(object):
                                     reg_data=reg_data,
                                     fname=fname_houg_lin_fit)
 
+            del trail_imgs_dict, param_fit_dict, reg_data
+            gc.collect()
+
+        del data
+        gc.collect()
+
     def _plot_trail_detection(self, param_dict: dict, fname: str,
                               img_norm: str = 'lin', cmap: str = None):
         """Plot trail detection"""
@@ -1595,6 +1629,9 @@ class AnalyseSatObs(object):
 
         plt.close(fig=fig)
 
+        del img, segm, label_image, trail_mask
+        gc.collect()
+
     def _plot_centroid_fit(self, fit_results: dict, fname: str, reg_data: dict):
         """"""
 
@@ -1669,6 +1706,9 @@ class AnalyseSatObs(object):
 
         plt.close(fig=fig)
 
+        del fit_results, reg_data
+        gc.collect()
+
     def _plot_voting_variance(self, fit_results: dict, fname: str, reg_data: dict):
         """Plot results from quadratic fit.
 
@@ -1737,6 +1777,9 @@ class AnalyseSatObs(object):
 
         plt.close(fig=fig)
 
+        del fit_results, reg_data
+        gc.collect()
+
     def _plot_hough_space(self, param_dict: dict, fname: str,
                           img_norm: str = 'lin', cmap: str = None):
         """Plot Hough space"""
@@ -1800,6 +1843,9 @@ class AnalyseSatObs(object):
             plt.show()
 
         plt.close(fig=fig)
+
+        del img, param_dict
+        gc.collect()
 
     def _plot_photometry_snr(self, src_pos: list, fluxes: np.ndarray,
                              apers: list, optimum_aper: float,
@@ -1890,6 +1936,9 @@ class AnalyseSatObs(object):
             plt.show()
 
         plt.close(fig=fig)
+
+        del src_pos, fluxes
+        gc.collect()
 
     def _plot_aperture_photometry(self, fluxes: np.ndarray, rapers: list,
                                   opt_aprad: float, file_base: str):
@@ -1999,6 +2048,9 @@ class AnalyseSatObs(object):
             plt.show()
 
         plt.close(fig=fig)
+
+        del fluxes
+        gc.collect()
 
     def _plot_final_result(self, img_dict: dict, reg_data: dict,
                            obs_date: tuple, expt: float, std_pos: np.ndarray,
@@ -2134,6 +2186,9 @@ class AnalyseSatObs(object):
 
         plt.close(fig=fig)
 
+        del img, image, hdr, wcsprm, sat_aper, std_apers, img_dict, reg_data, std_pos
+        gc.collect()
+
     def _save_plot(self, fname: str):
         """Save plots"""
 
@@ -2206,6 +2261,9 @@ class AnalyseSatObs(object):
             mask_img = np.where(mask_img == 1., True, False)
             mask |= mask_img
             mask_list.append(mask_img * 1.)
+
+        del image, reg_data
+        gc.collect()
 
         return mask, mask_list
 

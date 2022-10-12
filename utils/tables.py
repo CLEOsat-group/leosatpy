@@ -23,6 +23,7 @@
 
 """ Modules """
 import datetime
+import gc
 import os
 import logging
 import re
@@ -419,7 +420,8 @@ class ObsTables(object):
         self._obs_info = obs_info
         # if not self._silent:
         #     self._log.info('  Table updated')
-        del obs_info
+        del obs_info, obs_info_tmp
+        gc.collect()
 
     def _update_row(self, obs_info, idx, kwargs, def_cols, expt):
         """ Update row in result table"""
@@ -481,6 +483,9 @@ class ObsTables(object):
 
         new_df = pd.DataFrame(new_dict)
         obs_info = obs_info.append(new_df, ignore_index=False)
+
+        del new_df, new_dict
+        gc.collect()
 
         return obs_info
 
@@ -547,10 +552,16 @@ class ObsTables(object):
             df.reset_index()
             df_list.append(df)
 
+            del data, df
+            gc.collect()
+
         df = pd.concat(df_list)
         df.reset_index()
 
         self._vis_info = df
+
+        del df, df_list
+        gc.collect()
 
     def _create_obs_table(self):
         """Method to create csv file that contains basic model info"""

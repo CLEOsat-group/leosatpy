@@ -157,6 +157,9 @@ def get_average_magnitude(flux, flux_err, std_fluxes, std_mags, mag_corr, mag_sc
     mag_avg_w = np.average(mag_cleaned, weights=1. / mag_err_cleaned ** 2)
     mag_avg_err = np.nanmean(mag_err_cleaned)
 
+    del flux, flux_err, std_fluxes, std_mags, mag_corr
+    gc.collect()
+
     return mag_avg_w, mag_avg_err
 
 
@@ -351,7 +354,12 @@ def calculate_trail_parameter(fit_result):
 
     e = np.sqrt(1. - ((T / 2.) ** 2. / (L / 2.) ** 2.))
 
-    return L, err_L, T, err_T, theta_p, theta_p_err, np.rad2deg(theta_p), np.rad2deg(theta_p_err), e
+    del fit_result
+    gc.collect()
+
+    return (L, err_L,
+            T, err_T, theta_p, theta_p_err,
+            np.rad2deg(theta_p), np.rad2deg(theta_p_err), e)
 
 
 def fit_trail_params(Hij, rhos, thetas, theta_0, image_size, cent_ind, win_size):
@@ -512,7 +520,7 @@ def create_hough_space_vectorized(image: np.ndarray,
     # rhos in rows and thetas in columns (rho, theta)
     accumulator = np.transpose(accumulator)
 
-    del image, cos_thetas, sin_thetas, edge_points, rho_values, vals, ranges
+    del image, cos_thetas, sin_thetas, edge_points, rho_values, vals, ranges, bins
     gc.collect()
 
     return accumulator, rhos, thetas, drho, dtheta
@@ -528,6 +536,9 @@ def quantize(df, colname='orientation', tolerance=0.005):
                   .groupby(model.labels_)
                   .transform(lambda v: (v.max() + v.min()) / 2.))
           )
+
+    del model
+    gc.collect()
 
     return df
 
@@ -578,6 +589,8 @@ def get_trail_properties(segm_map, df):
                     'img_labeled': segm_map,
                     'trail_mask': dilated
                 }}
+    del segm_map, binary_img, fit_res, dilated, df
+    gc.collect()
 
     return reg_dict
 
@@ -648,6 +661,10 @@ def detect_sat_trails(image: np.ndarray,
     if labels.size == 0:
         if not silent:
             log.info("  ==> NO satellite trails detected.")
+        del image, blurred_f, filter_blurred_f, sharpened, \
+            threshold, sources, segm, segm_init, \
+            regs, df
+        gc.collect()
         return None, False
 
     segm.keep_labels(labels=labels, relabel=False)
@@ -670,6 +687,10 @@ def detect_sat_trails(image: np.ndarray,
         else:
             if not silent:
                 log.info("  ==> NO satellite trails detected.")
+            del image, blurred_f, filter_blurred_f, sharpened, \
+                threshold, sources, segm, segm_init, \
+                regs, df
+            gc.collect()
             return None, False
     else:
         df1 = quantize(df, colname='orientation_deg', tolerance=config['MAX_DISTANCE'])
@@ -680,6 +701,12 @@ def detect_sat_trails(image: np.ndarray,
         if df1.empty:
             if not silent:
                 log.info("  ==> NO satellite trails detected.")
+
+            del image, blurred_f, filter_blurred_f, sharpened, \
+                threshold, sources, segm, segm_init, \
+                regs, df
+            gc.collect()
+
             return None, False
 
         # grouped = df1.groupby(by='groups')
@@ -699,7 +726,16 @@ def detect_sat_trails(image: np.ndarray,
 
         trail_data['reg_info_lst'].append(reg_dict)
 
+        del df1, df2, reg_dict
+        gc.collect()
+
     trail_data['N_trails'] = n_trail
+
+    del image, blurred_f, filter_blurred_f, sharpened, \
+        threshold, sources, segm, segm_init, \
+        regs, df
+
+    gc.collect()
 
     return trail_data, True
 

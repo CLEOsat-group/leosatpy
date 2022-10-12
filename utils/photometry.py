@@ -20,6 +20,7 @@
 # -----------------------------------------------------------------------------
 
 """ Modules """
+import gc
 import os
 import inspect
 import logging
@@ -116,6 +117,9 @@ def convert_ssds_to_bvri(f, x1, x2, x3):
     _mags = np.mean(list(zip(y1, y2)), axis=1)
     e_mags = np.mean(list(zip(e_y1, e_y2)), axis=1)
 
+    del f, x1, x2, x3
+    gc.collect()
+
     return _mags, e_mags
 
 
@@ -186,6 +190,9 @@ def get_optimum_aper_rad(image: np.ndarray,
         log.info('    ==> best-fit aperture radius: %3.1f (FWHM)' % max_snr_aprad)
         log.info('    ==> optimum aperture radius (r x 1.5): %3.1f (FWHM)' % optimum_aprad)
 
+    del image, std_cat
+    gc.collect()
+
     return output, rapers, max_snr_aprad, optimum_aprad
 
 
@@ -203,6 +210,9 @@ def get_snr(flux_star: np.array, flux_bkg: np.array,
     dark_noise = dc * t_exp * area
 
     snr = counts_source / np.sqrt(counts_source + sky_shot + read_noise + dark_noise)
+
+    del flux_star, flux_bkg
+    gc.collect()
 
     return snr
 
@@ -275,7 +285,11 @@ def get_aper_photometry(image: np.ndarray,
     flux_error = np.sqrt(flux_var / gain + bkg_var)
     phot_table['aperture_sum_bkgsub_err'] = flux_error
 
-    return phot_table['aperture_sum_bkgsub'].values, flux_error, phot_table, bkg_median, bkg_std
+    del image, src_pos
+    gc.collect()
+
+    return (phot_table['aperture_sum_bkgsub'].values,
+            flux_error, phot_table, bkg_median, bkg_std)
 
 
 def get_std_photometry(image, std_cat, src_pos, fwhm, config):
@@ -292,5 +306,8 @@ def get_std_photometry(image, std_cat, src_pos, fwhm, config):
         aper_flux_counts, aper_flux_count_err, _, aper_bkg_counts, _ = phot_res
         std_cat[f'flux_counts_{key}'] = aper_flux_counts
         std_cat[f'flux_counts_err_{key}'] = aper_flux_count_err
+
+    del src_pos, image
+    gc.collect()
 
     return std_cat
