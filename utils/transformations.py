@@ -396,47 +396,6 @@ def fine_transformation(observation, catalog, wcsprm, threshold=10,
     return wcsprm, score
 
 
-def calculate_rms(observation, catalog, wcsprm, silent=False):
-    """Calculate the root-mean-square deviation of the astrometry fit"""
-
-    # Initialize logging for this user-callable function
-    log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
-
-    # finding pixel scale
-    on_sky = wcsprm.p2s([[0, 0], [1, 1]], 0)["world"]
-    px_scale = np.sqrt((on_sky[0, 0] - on_sky[1, 0]) ** 2
-                       + (on_sky[0, 1] - on_sky[1, 1]) ** 2)
-    px_scale = px_scale * 60. * 60.  # in arcsec
-
-    _, _, obs_x, obs_y, cat_x, cat_y, dist, _ = find_matches(observation, catalog, wcsprm, threshold=3)
-    rms = np.sqrt(np.mean(np.square(dist)))
-    if not silent:
-        log.info("Within 3  pixel or {:.3g} arcsec {} sources where matched. "
-                 "The rms is {:.3g} pixel or {:.3g} arcsec".format(px_scale * 3,
-                                                                   len(obs_x),
-                                                                   rms, rms * px_scale))
-
-    _, _, obs_x, obs_y, cat_x, cat_y, dist, _ = find_matches(observation, catalog, wcsprm, threshold=5)
-    rms = np.sqrt(np.mean(np.square(dist)))
-    if not silent:
-        log.info("Within 5  pixel or {:.3g} arcsec {} sources where matched."
-                 " The rms is {:.3g} pixel or {:.3g} arcsec".format(px_scale * 5,
-                                                                    len(obs_x),
-                                                                    rms, rms * px_scale))
-
-    _, _, obs_x, obs_y, cat_x, cat_y, dist, _ = find_matches(observation, catalog, wcsprm,
-                                                             threshold=_base_conf.RMS_PX_THRESHOLD)
-    rms = np.sqrt(np.mean(np.square(dist)))
-    if not silent:
-        log.info("Within {} pixel or {:.3g} arcsec {} sources where matched. "
-                 "The rms is {:.3g} pixel "
-                 "or {:.3g} arcsec".format(_base_conf.RMS_PX_THRESHOLD,
-                                           px_scale * _base_conf.RMS_PX_THRESHOLD,
-                                           len(obs_x), rms, rms * px_scale))
-
-    return {"radius_px": _base_conf.RMS_PX_THRESHOLD, "matches": len(obs_x), "rms": rms}
-
-
 def find_matches(obs, cat, wcsprm=None, threshold=10):
     """Match observation with reference catalog using minimum distance."""
 
@@ -487,7 +446,7 @@ def find_matches(obs, cat, wcsprm=None, threshold=10):
 def cross_corr_to_fourier_space(a):
     """Transform 2D array into fourier space. Use padding and normalization."""
 
-    aa = (a - np.mean(a)) / np.std(a)
+    aa = (a - np.nanmean(a)) / np.nanstd(a)
 
     # wraps around so half the size should be fine, pads 2D array with zeros
     aaa = np.pad(aa, (2, 2), 'constant')
@@ -557,8 +516,8 @@ def peak_with_cross_correlation(log_distance_obs: np.ndarray, angle_obs: np.ndar
     H_cat = histogram2d(*vals, bins=bins,
                         range=ranges)
 
-    H_obs = (H_obs - np.nanmean(H_obs)) / np.nanstd(H_obs)
-    H_cat = (H_cat - np.nanmean(H_cat)) / np.nanstd(H_cat)
+    # H_obs = (H_obs - np.nanmean(H_obs)) / np.nanstd(H_obs)
+    # H_cat = (H_cat - np.nanmean(H_cat)) / np.nanstd(H_cat)
 
     ff_obs = cross_corr_to_fourier_space(H_obs)
     ff_cat = cross_corr_to_fourier_space(H_cat)
