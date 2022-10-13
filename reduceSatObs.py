@@ -107,6 +107,7 @@ class ReduceSatObs(object):
 
     def __init__(self,
                  input_path,
+                 args: argparse.Namespace = None,
                  silent=False, verbose=False,
                  log=_log, log_level=_log_level):
         """ Constructor with default values """
@@ -2100,7 +2101,7 @@ def main():
     args = pargs.args_parsed
     main.__doc__ = pargs.args_doc
 
-    ReduceSatObs(input_path=args.input, silent=args.silent, verbose=args.verbose)
+    ReduceSatObs(input_path=args.input, args=args, silent=args.silent, verbose=args.verbose)
 
 
 # -----------------------------------------------------------------------------
