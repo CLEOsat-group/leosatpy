@@ -87,12 +87,6 @@ stream.setFormatter(_base_conf.FORMATTER)
 _log.addHandler(stream)
 _log_level = _log.level
 
-
-# Warnings
-# np.seterr(divide='ignore', invalid='ignore')
-# np.errstate(invalid='ignore')
-# warnings.simplefilter('ignore', category=AstropyWarning)
-
 # -----------------------------------------------------------------------------
 
 # changelog
