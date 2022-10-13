@@ -164,10 +164,10 @@ class AnalyseSatObs(object):
             raise ValueError('Args argument must be a dict or argparse.Namespace.')
 
         plot_images = args.plot_images
-        # ignore_warnings = args.ignore_warnings
+        ignore_warnings = args.ignore_warnings
         if silent:
             verbose = False
-            # ignore_warnings = True
+            ignore_warnings = True
             plot_images = False
 
         if verbose:
