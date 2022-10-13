@@ -32,6 +32,7 @@ from datetime import datetime
 from datetime import timedelta
 import configparser
 import collections
+import argparse
 
 from pathlib import Path
 
@@ -106,9 +107,10 @@ class ReduceSatObs(object):
     """ Class to reduce satellite observations from different telescopes."""
 
     def __init__(self,
-                 input_path,
-                 silent=False, verbose=False,
-                 log=_log, log_level=_log_level):
+                 input_path: str,
+                 args: argparse.Namespace = None,
+                 silent: bool = False, verbose: bool = False,
+                 log: logging.Logger = _log, log_level: int = _log_level):
         """ Constructor with default values """
 
         ignore_warnings = args.ignore_warnings
@@ -2100,7 +2102,7 @@ def main():
     args = pargs.args_parsed
     main.__doc__ = pargs.args_doc
 
-    ReduceSatObs(input_path=args.input, silent=args.silent, verbose=args.verbose)
+    ReduceSatObs(input_path=args.input, args=args, silent=args.silent, verbose=args.verbose)
 
 
 # -----------------------------------------------------------------------------

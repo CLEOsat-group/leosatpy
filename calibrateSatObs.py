@@ -33,6 +33,7 @@ from datetime import timedelta
 import collections
 import configparser
 from pathlib import Path
+import argparse
 
 # THIRD PARTY
 import numpy as np
@@ -121,9 +122,9 @@ class CalibrateObsWCS(object):
     """Class to calibrate the image world coordinate system."""
 
     def __init__(self,
-                 input_path, args=None,
-                 silent=False, verbose=False,
-                 log=_log, log_level=_log_level):
+                 input_path: str, args: argparse.Namespace = None,
+                 silent: bool = False, verbose: bool = False,
+                 log: logging.Logger = _log, log_level: int = _log_level):
         """ Constructor with default values """
 
         if args is None:
@@ -143,22 +144,6 @@ class CalibrateObsWCS(object):
 
         if ignore_warnings:
             _base_conf.load_warnings()
-            # suppress runtime and astropy warnings
-            # warnings.simplefilter(action="ignore", category=RuntimeWarning)
-            # warnings.simplefilter(action='ignore', category=UserWarning)
-            # warnings.simplefilter(action='ignore', category=AstropyWarning)
-            # warnings.filterwarnings(action='ignore', category=wcs.FITSFixedWarning)
-            # warnings.filterwarnings(action='ignore', category=fits.column.VerifyWarning)
-            # warnings.filterwarnings(action='ignore', category=fits.card.VerifyWarning)
-            #
-            # # the following warning gets cast by Gaia query: XXX.convert_unit_to(u.deg)
-            # warnings.filterwarnings(action='ignore', category=np.ma.core.MaskedArrayFutureWarning)
-            # warnings.filterwarnings(action='ignore', category=UserWarning)
-            # warnings.filterwarnings(action='ignore', category=FutureWarning)
-            #
-            # # numpy warnings
-            # np.seterr(divide='ignore', invalid='ignore')
-            # np.errstate(invalid='ignore')
 
         if plt is None or silent or not plot_images:
             plt.ioff()
