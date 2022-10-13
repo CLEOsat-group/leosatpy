@@ -547,7 +547,6 @@ def peak_with_cross_correlation(log_distance_obs: np.ndarray, angle_obs: np.ndar
 
     # min max of both
     bins = np.array([len(bins_dist), len(bins_ang)])  # .astype('uint64')
-    # bins = [bins_dist, bins_ang]
 
     vals = np.array([log_distance_obs, angle_obs])  # .astype('float32')
     ranges = np.array([[minimum_distance, maximum_distance],
@@ -575,8 +574,6 @@ def peak_with_cross_correlation(log_distance_obs: np.ndarray, angle_obs: np.ndar
 
     cross_corr[(frequ < threshold) & (frequ > -threshold)] = 0  # how to choose the frequency cut off?
 
-    del frequ
-
     cross_corr = np.real(np.fft.ifft2(cross_corr))
     cross_corr = np.fft.fftshift(cross_corr)  # the zero shift is at (0,0), this moves it to the middle
     # print(cross_corr.shape)
@@ -584,16 +581,7 @@ def peak_with_cross_correlation(log_distance_obs: np.ndarray, angle_obs: np.ndar
     # take first peak
     peak = np.argwhere(cross_corr == np.max(cross_corr))[0]
     around_peak = cross_corr[peak[0] - 1:peak[0] + 2, peak[1] - 1:peak[1] + 2]
-    # print(peak, around_peak)
-    # fig, ax = plt.subplots(1, 1, figsize=(10, 6))
 
-    # ax.imshow(cross_corr, origin='lower',
-    #           cmap=plt.cm.get_cmap('viridis'),
-    #           aspect='auto')
-    #
-    # ax.set_title('Input image')
-    # plt.tight_layout()
-    # plt.show()
     # finding the sub pixel shift of the true peak
     peak_x_subpixel = np.sum(np.sum(around_peak, axis=1)
                              * (np.arange(around_peak.shape[0]) + 1)) / np.sum(around_peak) - 2

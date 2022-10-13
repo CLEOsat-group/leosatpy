@@ -72,9 +72,9 @@ class ParseArguments(object):
         progressArgs.add_argument("-v", "--verbose", default=False, action='store_true',
                                   help="More console output about what is happening. Helpful for debugging.")
 
-        # progressArgs.add_argument("-w", "--ignore_warnings", default=True, action='store_false',
-        #                           help="Set False to see all Warnings about the header if there is problems. "
-        #                                "Default is True.")
+        progressArgs.add_argument("-w", "--ignore_warnings", default=True, action='store_false',
+                                  help="Set False to see all Warnings about the header if there is problems. "
+                                       "Default is True.")
 
         parser.add_argument('--version', action='version', version=__version__)
 

@@ -73,12 +73,12 @@ else:
     # mpl.rcParams['font.family'] = 'Arial'
 
 # Project modules
-import config.base_conf as _base_conf
 from utils.arguments import ParseArguments
 from utils.dataset import DataSet
 from utils.tables import ObsTables
 import utils.sources as sext
 import utils.transformations as imtrans
+import config.base_conf as _base_conf
 
 # -----------------------------------------------------------------------------
 
@@ -130,10 +130,10 @@ class CalibrateObsWCS(object):
             raise ValueError('Args argument must be a dict or argparse.Namespace.')
 
         plot_images = args.plot_images
-        # ignore_warnings = args.ignore_warnings
+        ignore_warnings = args.ignore_warnings
         if silent:
             verbose = False
-            # ignore_warnings = True
+            ignore_warnings = True
             plot_images = False
 
         if verbose:
@@ -141,12 +141,24 @@ class CalibrateObsWCS(object):
             log.setLevel("debug".upper())
             log_level = log.level
 
-        # if ignore_warnings:
-        #     np.seterr(divide='ignore', invalid='ignore')
-        #     np.errstate(invalid='ignore')
-        #
-        #     warnings.simplefilter('ignore', category=UserWarning)
-        #     warnings.simplefilter('ignore', category=AstropyWarning)
+        if ignore_warnings:
+            _base_conf.load_warnings()
+            # suppress runtime and astropy warnings
+            # warnings.simplefilter(action="ignore", category=RuntimeWarning)
+            # warnings.simplefilter(action='ignore', category=UserWarning)
+            # warnings.simplefilter(action='ignore', category=AstropyWarning)
+            # warnings.filterwarnings(action='ignore', category=wcs.FITSFixedWarning)
+            # warnings.filterwarnings(action='ignore', category=fits.column.VerifyWarning)
+            # warnings.filterwarnings(action='ignore', category=fits.card.VerifyWarning)
+            #
+            # # the following warning gets cast by Gaia query: XXX.convert_unit_to(u.deg)
+            # warnings.filterwarnings(action='ignore', category=np.ma.core.MaskedArrayFutureWarning)
+            # warnings.filterwarnings(action='ignore', category=UserWarning)
+            # warnings.filterwarnings(action='ignore', category=FutureWarning)
+            #
+            # # numpy warnings
+            # np.seterr(divide='ignore', invalid='ignore')
+            # np.errstate(invalid='ignore')
 
         if plt is None or silent or not plot_images:
             plt.ioff()

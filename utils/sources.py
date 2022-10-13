@@ -114,8 +114,8 @@ else:
     # mpl.rcParams['font.family'] = 'Arial'
 
 # pipeline-specific modules
-import config.base_conf as _base_conf
 import utils.photometry as phot
+import config.base_conf as _base_conf
 
 # -----------------------------------------------------------------------------
 

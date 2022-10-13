@@ -21,6 +21,7 @@ import numpy as np
 from colorlog import ColoredFormatter
 from astropy import wcs
 from astropy.io import fits
+from astropy.utils.exceptions import (AstropyUserWarning, AstropyWarning)
 
 from config.telescope_conf import *
 
@@ -38,19 +39,25 @@ LOG_LEVEL = logging.INFO
 LOGFORMAT = '[%(log_color)s%(levelname)8s%(reset)s] %(log_color)s%(message)s%(reset)s'
 FORMATTER = ColoredFormatter(LOGFORMAT)
 
-# suppress runtime and astropy warnings
-warnings.simplefilter(action="ignore", category=RuntimeWarning)
-warnings.filterwarnings('ignore', category=wcs.FITSFixedWarning)
-warnings.filterwarnings('ignore', category=fits.column.VerifyWarning)
-warnings.filterwarnings('ignore', category=fits.card.VerifyWarning)
 
-# the following warning gets cast by Gaia query: XXX.convert_unit_to(u.deg)
-warnings.filterwarnings('ignore', category=np.ma.core.MaskedArrayFutureWarning)
-warnings.filterwarnings('ignore', category=UserWarning)
-warnings.filterwarnings('ignore', category=FutureWarning)
+def load_warnings():
 
-np.seterr(divide='ignore', invalid='ignore')
-np.errstate(invalid='ignore')
+    warnings.simplefilter(action="ignore", category=RuntimeWarning)
+    warnings.simplefilter(action='ignore', category=UserWarning)
+    warnings.simplefilter(action='ignore', category=AstropyWarning)
+    warnings.filterwarnings(action='ignore', category=wcs.FITSFixedWarning)
+    warnings.filterwarnings(action='ignore', category=fits.column.VerifyWarning)
+    warnings.filterwarnings(action='ignore', category=fits.card.VerifyWarning)
+
+    # the following warning gets cast by Gaia query: XXX.convert_unit_to(u.deg)
+    warnings.filterwarnings(action='ignore', category=np.ma.core.MaskedArrayFutureWarning)
+    warnings.filterwarnings(action='ignore', category=UserWarning)
+    warnings.filterwarnings(action='ignore', category=FutureWarning)
+
+    # numpy warnings
+    np.seterr(divide='ignore', invalid='ignore')
+    np.errstate(invalid='ignore')
+
 
 ROOT_DIR = os.path.realpath(os.path.join(os.path.dirname(__file__), '..'))
 

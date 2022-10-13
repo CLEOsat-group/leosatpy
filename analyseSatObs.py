@@ -97,7 +97,6 @@ else:
     mpl.rc('figure', dpi=300, facecolor='w', edgecolor='k')
     mpl.rc('text.latex', preamble=r'\usepackage{sfmath}')
 
-import config.base_conf as _base_conf
 from utils.arguments import ParseArguments
 from utils.dataset import DataSet
 from utils.tables import ObsTables
@@ -105,6 +104,7 @@ import utils.sources as sext
 import utils.satellites as sats
 import utils.transformations as imtrans
 import utils.photometry as phot
+import config.base_conf as _base_conf
 
 # -----------------------------------------------------------------------------
 
@@ -177,6 +177,9 @@ class AnalyseSatObs(object):
 
         if plt is None or silent or not plot_images:
             plt.ioff()
+
+        if ignore_warnings:
+            _base_conf.load_warnings()
 
         # set variables
         self._root_path = Path(os.getcwd())

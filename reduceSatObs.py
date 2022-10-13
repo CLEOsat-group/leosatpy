@@ -111,13 +111,18 @@ class ReduceSatObs(object):
                  log=_log, log_level=_log_level):
         """ Constructor with default values """
 
+        ignore_warnings = args.ignore_warnings
         if silent:
             verbose = False
+            ignore_warnings = True
 
         if verbose:
             log = logging.getLogger()
             log.setLevel("debug".upper())
             log_level = log.level
+
+        if ignore_warnings:
+            _base_conf.load_warnings()
 
         # set variables
         self._config = collections.OrderedDict()
