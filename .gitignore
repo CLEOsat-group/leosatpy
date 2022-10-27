@@ -154,3 +154,11 @@ dmypy.json
 cython_debug/
 
 # End of https://www.toptal.com/developers/gitignore/api/python,jupyternotebooks
+
+!/change_header_value.py
+!/rebin_images.py
+!/reduceCalibObs.py
+!/README.html
+!/utils/reduction.py
+!/scripts/
+!/.gitignore

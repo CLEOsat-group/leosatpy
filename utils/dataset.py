@@ -386,7 +386,7 @@ class DataSet(object):
                 image_typs = [combos[s] for s in self._sub_mode]
                 imagetyp = '|'.join(image_typs)
             else:
-                imagetyp = 'science|light|object|light frame'
+                imagetyp = _base_conf.IMAGETYP_COMBOS['light']
             add_filters["imagetyp"] = imagetyp
 
             _files = data.filter(regex_match=True, **add_filters)

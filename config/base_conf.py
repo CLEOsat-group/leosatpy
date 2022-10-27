@@ -108,7 +108,8 @@ BINNING_DKEYS = ('BINX', 'BINY')
 IMAGETYP_REDUCE_ORDER = np.array(['bias', 'darks', 'flats'])
 IMAGETYP_COMBOS = {'bias': "zero|bias|bias frame",
                    'darks': "dark|dark frame",
-                   'flats': "flat|flat frame"}
+                   'flats': "flat|flat frame",
+                   'light': "science|light|object|light frame"}
 
 
 # Default result table column names.
