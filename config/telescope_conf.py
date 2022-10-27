@@ -92,11 +92,11 @@ dk154_params = {
     'add_imagetyp': {'flat': {'object': 'flat_v'}},
 
     # defaults for reduction
-    'bias_cor': True,
-    'dark_cor': False,
-    'flat_cor': True,
-    'flat_dark_cor': False,
-    'cosmic_correct': True,
+    # 'bias_cor': True,
+    # 'dark_cor': False,
+    # 'flat_cor': True,
+    # 'flat_dark_cor': False,
+    # 'cosmic_correct': True,
 
     # keywords to exclude from the header update while preparing the file
     'keys_to_exclude': None,
@@ -175,11 +175,11 @@ cbnuo_params = {
     'add_imagetyp_keys': False,
 
     # defaults for reduction
-    'bias_cor': True,  # correct bias
-    'dark_cor': True,  # correct dark
-    'flat_cor': True,  # correct flat
-    'flat_dark_cor': False,  # flat-dark correction
-    'cosmic_correct': True,  # correct for cosmic rays
+    # 'bias_cor': True,  # correct bias
+    # 'dark_cor': True,  # correct dark
+    # 'flat_cor': True,  # correct flat
+    # 'flat_dark_cor': False,  # flat-dark correction
+    # 'cosmic_correct': True,  # correct for cosmic rays
 
     # keywords to exclude from the header update while preparing the file
     'keys_to_exclude': ['DELMAG', 'FWHMH', 'FWHMV', 'FWHMHS', 'FWHMVS', 'NSTAR'],
@@ -257,11 +257,11 @@ ca123dlrmkiii_param = {
     'add_imagetyp_keys': False,
 
     # defaults for reduction
-    'bias_cor': True,
-    'dark_cor': False,
-    'flat_cor': False,
-    'flat_dark_cor': False,
-    'cosmic_correct': True,
+    # 'bias_cor': True,
+    # 'dark_cor': False,
+    # 'flat_cor': False,
+    # 'flat_dark_cor': False,
+    # 'cosmic_correct': True,
 
     # keywords to exclude from the header update while preparing the file
     'keys_to_exclude': None,
@@ -333,23 +333,23 @@ ckoir_param = {
     'trimsec': None,
     'oscan_cor': None,
 
-    'imagetyp_light': 'Light Frame',
-    'imagetyp_bias': 'Bias Frame',
-    'imagetyp_dark': 'Dark Frame',
-    'imagetyp_flat': 'Flat Field',
-    # 'imagetyp_light': 'Light',
-    # 'imagetyp_bias': 'Bias',
-    # 'imagetyp_dark': 'Dark',
-    # 'imagetyp_flat': 'Flat',
+    # 'imagetyp_light': 'Light Frame',
+    # 'imagetyp_bias': 'Bias Frame',
+    # 'imagetyp_dark': 'Dark Frame',
+    # 'imagetyp_flat': 'Flat Field',
+    'imagetyp_light': 'LIGHT',
+    'imagetyp_bias': 'BIAS',
+    'imagetyp_dark': 'DARK',
+    'imagetyp_flat': 'FLAT',
     'add_imagetyp_keys': True,
-    'add_imagetyp': {'light': {'imagetyp': 'LIGHT'}, 'bias': {'imagetyp': 'BIAS'},
-                     'dark': {'imagetyp': 'DARK'}, 'flat': {'imagetyp': 'FLAT'}},
+    'add_imagetyp': {'light': {'imagetyp': 'Light Frame'}, 'bias': {'imagetyp': 'Bias Frame'},
+                     'dark': {'imagetyp': 'Dark Frame'}, 'flat': {'imagetyp': 'Flat Field'}},
 
-    'bias_cor': True,
-    'dark_cor': True,
-    'flat_cor': True,
-    'flat_dark_cor': False,
-    'cosmic_correct': True,
+    # 'bias_cor': True,
+    # 'dark_cor': True,
+    # 'flat_cor': True,
+    # 'flat_dark_cor': False,
+    # 'cosmic_correct': True,
 
     # keywords to exclude from the header update while preparing the file
     'keys_to_exclude': None,
