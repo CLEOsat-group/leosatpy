@@ -451,7 +451,6 @@ class ReduceSatObs(object):
                 for i in range(2):
                     exptimes = exptimes_list[i]
                     for dexpt in img_exptimes:
-
                         if dexpt not in exptimes:
                             continue
                         dark_exptime = exptimes[dexpt][0]
