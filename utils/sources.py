@@ -1704,8 +1704,12 @@ def select_std_stars(ref_cat: pd.DataFrame,
     cols = ['objID', 'RA', 'DEC', 'xcentroid', 'ycentroid']
     cols += filter_keys
 
-    # remove nan and err=0 values
+    # exclude non-star sources from GSC2.4
     cat_srt = ref_cat.copy()
+    if 'classification' in ref_cat:
+        cat_srt = ref_cat.drop(ref_cat[ref_cat.classification > 0].index)
+
+    # remove nan and err=0 values
     df = cat_srt.dropna(subset=filter_keys)
     df = df[df[filter_keys[1]] != 0.]
 

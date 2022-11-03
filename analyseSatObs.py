@@ -710,6 +710,7 @@ class AnalyseSatObs(object):
         # choose reference image if available (!!! only first at the moment !!!)
         ref_img_idx = None
         has_ref = False
+        N_ref = None
         if list(data_dict['ref_img_idx']):
             idx_list = data_dict['ref_img_idx']
             ref_img_idx = data_dict['ref_img_idx'][0]
@@ -718,9 +719,13 @@ class AnalyseSatObs(object):
                 _, idx = self._dataset_all.select_file_from_list(data=np.array(data_dict['file_names'])[idx_list])
                 ref_img_idx = data_dict['ref_img_idx'][np.array(idx)]
             has_ref = True
+            N_ref = len(data_dict['ref_img_idx'])
 
+        src_mask = None
         df = img_dict['cats_cleaned_rem']['ref_cat_cleaned']
         if not has_ref and not df.empty:
+            src_mask = np.zeros(imgarr.shape)
+
             # filter apertures outside of image
             trail_stars = df.drop((df.loc[(df['xcentroid'] < 0) |
                                           (df['ycentroid'] < 0) |
@@ -733,17 +738,20 @@ class AnalyseSatObs(object):
 
             for i in range(_pos.shape[0]):
                 rr, cc = disk((_pos[:, 1][i], _pos[:, 0][i]), 3. * fwhm)
-                imgarr[rr, cc] = 0.
+                src_mask[rr, cc] = 1
+
+            src_mask = np.ma.make_mask(src_mask)
 
         ref_img_warped = None
         if has_ref:
             ref_imgarr = data_dict['images'][ref_img_idx]
             ref_bkg = data_dict['bkg_data'][ref_img_idx]['bkg']
 
+            # todo: if raise error use simple offset to determine shift (mask trail before shift detection)
             T, _ = astroalign.find_transform(imgarr - img_bkg, ref_imgarr - ref_bkg,
-                                             detection_sigma=5,
+                                             detection_sigma=2.,
                                              max_control_points=150,
-                                             min_area=5)
+                                             min_area=8)
             ref_img_warped, footprint = astroalign.apply_transform(T,
                                                                    ref_imgarr,
                                                                    imgarr,
@@ -757,21 +765,27 @@ class AnalyseSatObs(object):
 
             src_pos = [reg_info['coords']]
             src_pos_err = [reg_info['coords_err']]
-
-            # create a temporary mask
             ang = Angle(reg_info['orient_deg'], 'deg')
-            trail_mask, trail_aper = self._get_mask(src_pos=src_pos[0],
-                                                    width=reg_info['width'] + 25,
-                                                    height=3. * reg_info['height'],
-                                                    theta=ang,
-                                                    img_size=imgarr.shape)
-            src_mask = None
+
+            # # create a temporary mask
+            # trail_mask, trail_aper = self._get_mask(src_pos=src_pos[0],
+            #                                         width=reg_info['width'] + 25,
+            #                                         height=5. * reg_info['height'],
+            #                                         theta=ang,
+            #                                         img_size=imgarr.shape)
+            # trail_mask = np.ma.make_mask(trail_mask)
             if has_ref:
-                mean, _, std = sigma_clipped_stats(ref_img_warped, grow=False)
-                ref_img_warped_masked = ref_img_warped * trail_mask
-                ref_img_warped_masked -= mean
-                threshold = detect_threshold(ref_img_warped_masked, 2.5, mean, std)
-                sources = detect_sources(ref_img_warped_masked,
+                alpha = 30,
+                sigma_blurr = 3
+                blurred_f = nd.gaussian_filter(ref_img_warped, 2.)
+                filter_blurred_f = nd.gaussian_filter(blurred_f, sigma_blurr)
+                sharpened = blurred_f + alpha * (blurred_f - filter_blurred_f)
+
+                mean, _, std = sigma_clipped_stats(sharpened, grow=False)
+                sharpened -= mean
+
+                threshold = detect_threshold(sharpened, 1.5, mean, std)
+                sources = detect_sources(sharpened,
                                          threshold=threshold,
                                          npixels=5, connectivity=8)
                 if sources is not None:
@@ -780,7 +794,16 @@ class AnalyseSatObs(object):
                     footprint = None  # np.ones((2, 2))
                     src_mask = segm.make_source_mask(footprint=footprint)
 
-            imgarr = imgarr * ~src_mask if src_mask is not None else imgarr
+            # imgarr = imgarr * ~src_mask if src_mask is not None else imgarr
+            # phot_mask = ~trail_mask | src_mask if src_mask is not None else ~trail_mask
+            # if src_mask is not None:
+            #     imgarr[src_mask | ~trail_mask] = np.nan
+            # fig = plt.figure(figsize=(10, 6))
+            # gs = gridspec.GridSpec(1, 1)
+            # ax = fig.add_subplot(gs[0, 0])
+            # ax.imshow(src_mask*1)
+            # plt.show()
+            # print(src_mask)
 
             width = reg_info['width']
             optimum_apheight = config['APER_RAD'] * fwhm * 2.
@@ -795,6 +818,7 @@ class AnalyseSatObs(object):
 
             _, _, sat_phot, _, _ = phot.get_aper_photometry(image=imgarr,
                                                             src_pos=src_pos[0],
+                                                            mask=src_mask,
                                                             aper_mode='rect',
                                                             width=width, height=optimum_apheight,
                                                             w_in=w_in, w_out=w_out,
@@ -829,7 +853,8 @@ class AnalyseSatObs(object):
                       'e_TrailCDEC': wy_err,  # in arcseconds
                       'TrailANG': reg_info['orient_deg'],  # in deg
                       'e_TrailANG': reg_info['e_orient_deg'],  # in deg
-                      'OptAperHeight': '%3.2f' % optimum_apheight}  # in px
+                      'OptAperHeight': '%3.2f' % optimum_apheight,
+                      'HasRef': 'T' if has_ref else 'F', 'NRef': N_ref}  # in px
 
             self._obsTable.update_obs_table(file=file, kwargs=kwargs,
                                             radec_separator=obspar['radec_separator'])

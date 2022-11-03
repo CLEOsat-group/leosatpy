@@ -219,6 +219,7 @@ def get_snr(flux_star: np.array, flux_bkg: np.array,
 
 def get_aper_photometry(image: np.ndarray,
                         src_pos: np.ndarray,
+                        mask: np.array = None,
                         bkg_sigma: float = 3.,
                         aper_mode: str = 'circ',
                         r_aper: float = 1.7,
@@ -245,8 +246,12 @@ def get_aper_photometry(image: np.ndarray,
                                        w=width,
                                        h=height,
                                        theta=theta)
-    bkg_stats = ApertureStats(image, annulus_aperture,
+
+    # get statistics with mask in mind
+    bkg_stats = ApertureStats(image, annulus_aperture, mask=mask,
                               sigma_clip=sigclip, sum_method='exact')
+    aper_stats = ApertureStats(image, aperture, mask=mask,
+                               sigma_clip=None, sum_method='exact')
 
     # Background median and standard deviation of annulus
     bkg_median = bkg_stats.median
@@ -259,10 +264,10 @@ def get_aper_photometry(image: np.ndarray,
         error = np.sqrt(image)
 
     #
-    aperture_area = aperture.area
-    annulus_area = annulus_aperture.area
+    aperture_area = aper_stats.sum_aper_area.value  # aperture.area
+    annulus_area = bkg_stats.sum_aper_area.value
 
-    phot_table = aperture_photometry(image, aperture, error=error)
+    phot_table = aperture_photometry(image, aperture, error=error, mask=mask)
 
     # rename pix position to make it consistent
     names = ('xcenter', 'ycenter')
