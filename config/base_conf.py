@@ -137,7 +137,7 @@ DEF_RES_TBL_COL_NAMES = ['File', 'Object', 'Sat-Name', 'AltID', 'UniqueID',
                          'TrailCRA', 'e_TrailCRA', 'TrailCDEC', 'e_TrailCDEC',
                          'TrailANG', 'e_TrailANG', 'OptAperHeight',
                          'CalRA', 'CalDEC', 'CentX', 'CentY', 'PixScale', 'DetRotAng',
-                         'bias_cor', 'dark_cor', 'flat_cor', 'WCS_cal', 'mag_conv']
+                         'bias_cor', 'dark_cor', 'flat_cor', 'WCS_cal', 'mag_conv', 'QlfAperRad']
 
 DEF_RES_TBL_COL_UNITS = ['', '', '', '',
                          '', '', '', '(J2000)', '', '(s)',

@@ -180,11 +180,12 @@ def get_optimum_aper_rad(image: np.ndarray,
     max_snr_idx = np.nanargmax(np.nanmedian(output[:, :, 2], axis=1))
     max_snr_aprad = rapers[max_snr_idx]
     optimum_aprad = max_snr_aprad * 1.5
-
+    qlf_aprad = True
     if optimum_aprad > 3.:
         log.warning('Optimum radius seems high [%.1f x FWHM] '
                     '- setting to %.1f x FWHM' % (optimum_aprad, aper_rad))
         optimum_aprad = aper_rad
+        qlf_aprad = False
 
     if not silent:
         log.info('    ==> best-fit aperture radius: %3.1f (FWHM)' % max_snr_aprad)
@@ -193,7 +194,7 @@ def get_optimum_aper_rad(image: np.ndarray,
     del image, std_cat
     gc.collect()
 
-    return output, rapers, max_snr_aprad, optimum_aprad
+    return output, rapers, max_snr_aprad, optimum_aprad, qlf_aprad
 
 
 def get_snr(flux_star: np.array, flux_bkg: np.array,

@@ -389,7 +389,8 @@ class AnalyseSatObs(object):
 
         # select std stars and perform aperture photometry
         std_photometry_results = self._run_std_photometry(data=trail_img_dict)
-        std_apphot, std_filter_keys, optimum_aprad, mag_conv, mag_corr, state, fail_msg = std_photometry_results
+        (std_apphot, std_filter_keys, optimum_aprad,
+         mag_conv, mag_corr, qlf_aprad, state, fail_msg) = std_photometry_results
         if not state:
             self._log.critical("Standard star selection and photometry has FAILED!!! "
                                "Skipping further steps. ")
@@ -399,7 +400,8 @@ class AnalyseSatObs(object):
 
         # prepare trail image and perform aperture photometry with optimum aperture
         sat_apphot = self._run_sat_photometry(data_dict=data_dict,
-                                              img_dict=trail_img_dict)
+                                              img_dict=trail_img_dict,
+                                              qlf_aprad=qlf_aprad)
 
         # load tle data, extract info for the satellite and calc mags, angles etc.
         state, fail_msg = self._get_final_results(img_dict=trail_img_dict,
@@ -692,7 +694,7 @@ class AnalyseSatObs(object):
 
     def _run_sat_photometry(self,
                             data_dict: dict,
-                            img_dict: dict):
+                            img_dict: dict, qlf_aprad: bool):
         """Perform aperture photometry on satellite trails"""
 
         config = self._config
@@ -854,7 +856,8 @@ class AnalyseSatObs(object):
                       'TrailANG': reg_info['orient_deg'],  # in deg
                       'e_TrailANG': reg_info['e_orient_deg'],  # in deg
                       'OptAperHeight': '%3.2f' % optimum_apheight,
-                      'HasRef': 'T' if has_ref else 'F', 'NRef': N_ref}  # in px
+                      'HasRef': 'T' if has_ref else 'F', 'NRef': N_ref,
+                      'QlfAperRad': 'T' if qlf_aprad else 'F'}  # in px
 
             self._obsTable.update_obs_table(file=file, kwargs=kwargs,
                                             radec_separator=obspar['radec_separator'])
@@ -925,13 +928,12 @@ class AnalyseSatObs(object):
                                                              num_std_min=config['NUM_STD_MIN'],
                                                              silent=self._silent)
         if std_cat is None:
-
             del data, imgarr, catalog, phot_cat_cleaned, std_cat
             gc.collect()
 
-            return None, None, None, None, None, False, ['StdSelectError',
-                                                         'No suitable standard stars found',
-                                                         'To be solved']
+            return None, None, None, None, None, None, False, ['StdSelectError',
+                                                               'No suitable standard stars found',
+                                                               'To be solved']
 
         if not self._silent:
             self._log.info(f"> Check intra-distance of std stars")
@@ -967,7 +969,7 @@ class AnalyseSatObs(object):
                                            rdnoise=rdnoise,
                                            silent=self._silent)
 
-        fluxes, rapers, max_snr_aprad, opt_aprad = result
+        fluxes, rapers, max_snr_aprad, opt_aprad, qlf_aprad = result
 
         # plot result of aperture photometry
         self._plot_aperture_photometry(fluxes=fluxes,
@@ -994,14 +996,13 @@ class AnalyseSatObs(object):
         mag_corr = self._get_magnitude_correction(df=std_cat,
                                                   file_base=file_name)
         if not mag_corr:
-
             del data, imgarr, catalog, phot_cat_cleaned, std_cat, result, fluxes
             gc.collect()
 
-            return None, None, None, None, None, False, ['MagCorrectError',
-                                                         'Error during interpolation.',
-                                                         'Check number and '
-                                                         'quality of standard stars and SNR']
+            return None, None, None, None, None, None, False, ['MagCorrectError',
+                                                               'Error during interpolation.',
+                                                               'Check number and '
+                                                               'quality of standard stars and SNR']
 
         if not self._silent:
             self._log.info('    ==> estimated magnitude correction: '
@@ -1010,7 +1011,7 @@ class AnalyseSatObs(object):
         del imgarr, result, src_pos, fluxes, rapers, data, phot_cat_cleaned
         gc.collect()
 
-        return std_cat, std_fkeys, opt_aprad, mag_conv, mag_corr, True, ['', '', '']
+        return std_cat, std_fkeys, opt_aprad, mag_conv, mag_corr, qlf_aprad, True, ['', '', '']
 
     def _get_magnitude_correction(self, df: pd.DataFrame, file_base: str):
         """Estimate magnitude correction"""
@@ -1217,8 +1218,8 @@ class AnalyseSatObs(object):
                                            radec_separator=config['radec_separator'])
             self._obj_info = self._obsTable.obj_info
 
-        del imgarr, res_vals, extraction_result, bkg_data, hdr, file_name, location, catalog, band,\
-            src_tbl, ref_tbl_astro, ref_catalog_astro, ref_tbl_photo, ref_catalog_photo,\
+        del imgarr, res_vals, extraction_result, bkg_data, hdr, file_name, location, catalog, band, \
+            src_tbl, ref_tbl_astro, ref_catalog_astro, ref_tbl_photo, ref_catalog_photo, \
             src_cat_fname, astro_ref_cat_fname, photo_ref_cat_fname, kernel_fwhm, trail_data
         gc.collect()
 
