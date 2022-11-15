@@ -123,21 +123,24 @@ class ObsTables(object):
         search_path = Path(src_loc).parents[level_up]
 
         # get times
-        # date_obs = self._obj_info['Date-Obs'].values[0]
-        # obs_date = date_obs.split('-')
+        date_obs = self._obj_info['Date-Obs'].values[0]
+        obs_date = date_obs.split('-')
+
         sat_type = 'oneweb'
         if 'STARLINK' in sat_name:
             sat_type = 'starlink'
         if 'BLUEWALKER' in sat_name:
             sat_type = 'bluewalker'
+
         # regex = re.compile(r'tle_{0}_{1}_.+.txt'.format(sat_type,
         #                                                 obs_date))
-        # regex = re.compile(rf'tle_{sat_type}_{obs_date[0]}[-_]{obs_date[1]}[-_]{obs_date[2]}.+.txt')
+
+        regex = re.compile(rf'tle_{sat_type}_{obs_date[0]}[-_]{obs_date[1]}[-_]{obs_date[2]}.+.txt')
         # print(regex)
         path = os.walk(search_path)
         for root, dirs, files in path:
-            # f = sorted([s for s in files if re.search(regex, s)])
-            f = sorted([s for s in files if f'tle_{sat_type}' in s])
+            f = sorted([s for s in files if re.search(regex, s)])
+            # f = sorted([s for s in files if f'tle_{sat_type}' in s])
             if len(f) > 0:
                 [tle_filenames.append((s, Path(os.path.join(root, s)))) for s in f]
 
