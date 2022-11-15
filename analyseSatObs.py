@@ -469,6 +469,8 @@ class AnalyseSatObs(object):
         sat_h_orb_ref = _base_conf.SAT_HORB_REF['ONEWEB']
         if 'STARLINK' in sat_name:
             sat_h_orb_ref = _base_conf.SAT_HORB_REF['STARLINK']
+        if 'BLUEWALKER' in sat_name:
+            sat_h_orb_ref = _base_conf.SAT_HORB_REF['BLUEWALKER']
 
         # get time delta of obs mid time
         date_obs = obj_info['Date-Obs'].to_numpy(dtype=object)[0]
@@ -525,7 +527,7 @@ class AnalyseSatObs(object):
         # if date_obs < "2022-0-01":
         if not pd.isnull(sat_info['AltID']).any():
             sat_name = f'{sat_name} ({sat_info["AltID"].values[0]})'
-        if not pd.isnull(sat_info['UniqueID']).any():
+        if not pd.isnull(sat_info['UniqueID']).any() and 'BLUEWALKER' not in sat_name:
             sat_name = f'{sat_name}-{sat_info["UniqueID"].values[0]}'
 
         sat_vel = self._get_angular_velocity(sat_name=sat_name,
@@ -581,16 +583,17 @@ class AnalyseSatObs(object):
             dist_obs_sat = sats.get_obs_range(sat_elev, sat_alt, geo_alt, geo_lat)
 
             # angles theta, phi, alpha_sun
-            sun_az, sun_elev_deg, theta, sun_elev_rad = sats.sun_inc_elv_angle(dtobj_sat,
-                                                                               (sat_lat, sat_lon))
+            sun_inc_ang = sats.sun_inc_elv_angle(dtobj_sat,
+                                                 (sat_lat, sat_lon))
 
             phi_rad = np.arcsin((eta / sat_alt) * np.sin(np.deg2rad(sat_elev)))
             phi = np.rad2deg(phi_rad)
 
-            sun_sat_ang, sun_phase_angle = sats.get_solar_phase_angle(sat_az=sat_az, sat_alt=sat_elev,
-                                                                      sun_az=sun_az, sun_alt=sun_elev_deg,
-                                                                      obs_range=dist_obs_sat,
-                                                                      obsDate=dtobj_sat)
+            sun_sat_ang, sun_phase_angle, sun_az, sun_alt = sats.get_solar_phase_angle(sat_az=sat_az,
+                                                                                       sat_alt=sat_elev,
+                                                                                       geo_loc=(geo_lat, geo_lon),
+                                                                                       obs_range=dist_obs_sat,
+                                                                                       obsDate=dtobj_sat)
             # get scaled estimated magnitude with scale factor -5log(range/h_orb_ref)
             mag_scale = -5. * np.log10((dist_obs_sat / sat_h_orb_ref))
 
@@ -649,7 +652,8 @@ class AnalyseSatObs(object):
                          'ObsMag', 'e_ObsMag',
                          'EstMag', 'e_EstMag',
                          'EstScaleMag', 'e_EstScaleMag',
-                         'SunElevAng', 'FluxScale', 'MagScale', 'MagCorrect', 'e_MagCorrect',
+                         'SunAzAng', 'SunElevAng',
+                         'FluxScale', 'MagScale', 'MagCorrect', 'e_MagCorrect',
                          'dt_tle-obs', 'mag_conv']
 
             tbl_vals = [hdr[obsparams['ra']], hdr[obsparams['dec']], hdr[obsparams['exptime']],
@@ -657,11 +661,11 @@ class AnalyseSatObs(object):
                         time_on_det, time_on_det_err,
                         obs_trail_len, obs_trail_len_err,
                         est_trail_len, est_trail_len_err,
-                        sun_sat_ang, sun_phase_angle, theta, phi,
+                        sun_sat_ang, sun_phase_angle, sun_inc_ang, phi,
                         obs_mag_avg_w, obs_mag_avg_err,
                         est_mag_avg_w, est_mag_avg_err,
                         est_mag_avg_w_scaled, est_mag_avg_err_scaled,
-                        sun_elev_deg, (est_trail_len / obs_trail_len), mag_scale,
+                        sun_az, sun_alt, (est_trail_len / obs_trail_len), mag_scale,
                         mag_corr[0], mag_corr[1], dt_sec,
                         'T' if mag_conv else 'F']
 
@@ -769,13 +773,6 @@ class AnalyseSatObs(object):
             src_pos_err = [reg_info['coords_err']]
             ang = Angle(reg_info['orient_deg'], 'deg')
 
-            # # create a temporary mask
-            # trail_mask, trail_aper = self._get_mask(src_pos=src_pos[0],
-            #                                         width=reg_info['width'] + 25,
-            #                                         height=5. * reg_info['height'],
-            #                                         theta=ang,
-            #                                         img_size=imgarr.shape)
-            # trail_mask = np.ma.make_mask(trail_mask)
             if has_ref:
                 alpha = 30,
                 sigma_blurr = 3
@@ -795,17 +792,6 @@ class AnalyseSatObs(object):
 
                     footprint = None  # np.ones((2, 2))
                     src_mask = segm.make_source_mask(footprint=footprint)
-
-            # imgarr = imgarr * ~src_mask if src_mask is not None else imgarr
-            # phot_mask = ~trail_mask | src_mask if src_mask is not None else ~trail_mask
-            # if src_mask is not None:
-            #     imgarr[src_mask | ~trail_mask] = np.nan
-            # fig = plt.figure(figsize=(10, 6))
-            # gs = gridspec.GridSpec(1, 1)
-            # ax = fig.add_subplot(gs[0, 0])
-            # ax.imshow(src_mask*1)
-            # plt.show()
-            # print(src_mask)
 
             width = reg_info['width']
             optimum_apheight = config['APER_RAD'] * fwhm * 2.
@@ -1080,6 +1066,7 @@ class AnalyseSatObs(object):
         data['trail_data']['mask_list'] = mask_list
 
         if ref_tbl_photo.empty or not mask[mask > 0.].any():
+            del imgarr, src_tbl, ref_tbl_photo, mask_list
             return data, False, ['IntegrityError',
                                  'Empty data frame or empty mask',
                                  'Check input data, trail/sources detection']
@@ -1088,12 +1075,15 @@ class AnalyseSatObs(object):
                                                                 catalog=ref_tbl_photo,
                                                                 fwhm=fwhm)
         if ref_cat_cln is None:
+            del imgarr, src_tbl, ref_tbl_photo, ref_cat_cln, ref_cat_removed, mask_list
             return data, False, ['SrcMatchError',
                                  'No standard stars left '
                                  'after removing stars close to trail',
                                  'To be solved']
         # print(ref_cat_cln)
         # print(ref_cat_removed)
+
+        del imgarr, mask_list
 
         data['cats_cleaned'] = {ref_cat_str: ref_cat_cln}
         data['cats_cleaned_rem'] = {ref_cat_str: ref_cat_removed}
@@ -1104,7 +1094,10 @@ class AnalyseSatObs(object):
                                        threshold=10)
         not_cat_matched, in_cat_cln_matched, _, _, _, _, _, state = matches
 
+        del matches, _
+
         if not state:
+            del src_tbl, ref_tbl_photo, ref_cat_cln, ref_cat_removed
             return data, False, ['SrcMatchError',
                                  'No sources after matching '
                                  'with photometric reference catalog',
@@ -1117,9 +1110,11 @@ class AnalyseSatObs(object):
                                        src_tbl,
                                        threshold=10)
         not_cat_matched, in_cat_cln_matched, _, _, _, _, _, state = matches
-
         data['cats_cleaned_rem'].update({ref_cat_str: not_cat_matched})
 
+        del matches, _, src_tbl, ref_tbl_photo, ref_cat_cln, \
+            ref_cat_removed, not_cat_matched, in_cat_cln_matched
+        gc.collect()
         if not state:
             return data, False, ['SrcMatchError',
                                  'No sources after matching '
@@ -1432,21 +1427,6 @@ class AnalyseSatObs(object):
             diff_img = img_one - img_two_warped_scaled
             diff_img[diff_img < 0.] = 0
 
-            # fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-            # ax.imshow(diff_img, origin='lower',
-            #           cmap=plt.cm.get_cmap('viridis'),
-            #           aspect='auto', )
-            #
-            # ax.set_title('Input image')
-            # plt.tight_layout()
-            # plt.show()
-
-            # sm = sext.SourceMask(diff_img, nsigma=2., npixels=550)
-            # # mask = sm.multiple(filter_fwhm=[1.01, 1.5, 2, 3, 4, 5, 6],
-            # #                    tophat_size=[4, 3.75, 2, 1.1, 1.01])
-            # mask = sm.multiple(filter_fwhm=[1.5, 5],
-            #                    tophat_size=[1.5])
-
             # continue
             if not self._silent:
                 self._log.info(f"> Find satellite trail(s) in image: {file_name_clean}")
@@ -1492,6 +1472,7 @@ class AnalyseSatObs(object):
 
         # get ephemeris
         self._set_observer()
+
         satellite = Orbital(sat_name, tle_file=tle_location)
         prev_sat_az_alt = satellite.get_observer_look(exposure_start,
                                                       self._obsparams["longitude"],
@@ -2290,6 +2271,8 @@ class AnalyseSatObs(object):
             mask_img = np.where(mask_img == 1., True, False)
             mask |= mask_img
             mask_list.append(mask_img * 1.)
+            del mask_img, rect_mask, aperture, positions
+            gc.collect()
 
         del image, reg_data
         gc.collect()
@@ -2324,7 +2307,8 @@ def main():
     args = pargs.args_parsed
     main.__doc__ = pargs.args_doc
 
-    AnalyseSatObs(input_path=args.input, args=args, silent=args.silent, verbose=args.verbose)
+    AnalyseSatObs(input_path=args.input, args=args,
+                  silent=args.silent, verbose=args.verbose)
 
 
 # -----------------------------------------------------------------------------

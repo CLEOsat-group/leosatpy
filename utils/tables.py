@@ -123,19 +123,21 @@ class ObsTables(object):
         search_path = Path(src_loc).parents[level_up]
 
         # get times
-        date_obs = self._obj_info['Date-Obs'].values[0]
-        obs_date = date_obs.split('-')
+        # date_obs = self._obj_info['Date-Obs'].values[0]
+        # obs_date = date_obs.split('-')
         sat_type = 'oneweb'
         if 'STARLINK' in sat_name:
             sat_type = 'starlink'
-
+        if 'BLUEWALKER' in sat_name:
+            sat_type = 'bluewalker'
         # regex = re.compile(r'tle_{0}_{1}_.+.txt'.format(sat_type,
         #                                                 obs_date))
-        regex = re.compile(rf'tle_{sat_type}_{obs_date[0]}[-_]{obs_date[1]}[-_]{obs_date[2]}.+.txt')
-
+        # regex = re.compile(rf'tle_{sat_type}_{obs_date[0]}[-_]{obs_date[1]}[-_]{obs_date[2]}.+.txt')
+        # print(regex)
         path = os.walk(search_path)
         for root, dirs, files in path:
-            f = sorted([s for s in files if re.search(regex, s)])
+            # f = sorted([s for s in files if re.search(regex, s)])
+            f = sorted([s for s in files if f'tle_{sat_type}' in s])
             if len(f) > 0:
                 [tle_filenames.append((s, Path(os.path.join(root, s)))) for s in f]
 
@@ -274,6 +276,7 @@ class ObsTables(object):
                 return
 
             vis_info_masked = vis_info[mask]
+
             date_info = vis_info_masked[['UT Date', 'UT time']].copy(deep=True)
             # print(date_info)
             date_info['Time'] = date_info.apply(lambda row:
@@ -283,20 +286,16 @@ class ObsTables(object):
             date_arr = date_info['Time'].to_numpy(dtype=object)
             dt_secs = np.array([abs((date_arr[i] - obs_date).total_seconds())
                                 for i in range(date_arr.shape[0])])
-            # print(dt_secs)
             pos_info = vis_info_masked[['SatRA', 'SatDEC']].to_numpy(dtype=object)
             c1 = SkyCoord(ra=pos_info[:, 0], dec=pos_info[:, 1], unit=(u.hourangle, u.deg))
             sep = c1.separation(c0).arcsecond
-            # print(sep)
+
             dt_idx = np.argmin(dt_secs)
             sep_idx = np.argmin(sep)
-            if not dt_idx == sep_idx:
-                self._log.error("  Satellite ID not found in visibility file. "
-                                "This should not happen!!!")
-                return
-            else:
-                mask = dt_idx
-                self._sat_info = vis_info_masked.iloc[mask].to_frame(0).T
+
+            mask = sep_idx if not dt_idx == sep_idx else dt_idx
+
+            self._sat_info = vis_info_masked.iloc[mask].to_frame(0).T
         else:
             self._log.error("  Satellite ID not found in visibility file. "
                             "This should not happen!!!")
@@ -328,12 +327,16 @@ class ObsTables(object):
 
         # OneWeb
         sat_name = 'ONEWEB' if ('OW' in obj_name or 'ONEWEB' in obj_name) else 'N/A'
+
         # StarLink
         sat_name = 'STARLINK' if 'STARLINK' in obj_name else sat_name
 
+        # Bluewalker
+        sat_name = 'BLUEWALKER' if 'BLUEWALKER' in obj_name else sat_name
+
         # get the satellite id number and convert to 4 digit string
         nb_str = ''.join(n for n in obj_name if n.isdigit())
-        sat_id = f"{sat_name}-{int(nb_str):04d}"
+        sat_id = f"{sat_name}-{int(nb_str):d}" if 'BLUEWALKER' in sat_name else f"{sat_name}-{int(nb_str):04d}"
 
         return sat_id
 

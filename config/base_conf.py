@@ -131,7 +131,7 @@ DEF_RES_TBL_COL_NAMES = ['File', 'Object', 'Sat-Name', 'AltID', 'UniqueID',
                          'ObsTrailLength', 'e_ObsTrailLength', 'EstTrailLength', 'e_EstTrailLength',
                          'SunSatAng', 'SunPhaseAng', 'SunIncAng', 'ObsAng',
                          'ObsMag', 'e_ObsMag', 'EstMag', 'e_EstMag',
-                         'EstScaleMag', 'e_EstScaleMag', 'SunElevAng',
+                         'EstScaleMag', 'e_EstScaleMag', 'SunAzAng', 'SunElevAng',
                          'FluxScale', 'MagScale', 'MagCorrect', 'e_MagCorrect', 'dt_tle-obs',
                          'TrailCX', 'e_TrailCX', 'TrailCY', 'e_TrailCY',
                          'TrailCRA', 'e_TrailCRA', 'TrailCDEC', 'e_TrailCDEC',
@@ -193,7 +193,7 @@ DEF_KEY_TRANSLATIONS = {
 # list of available catalogs for photometry
 ALLCATALOGS = ['GAIADR1', 'GAIADR2', 'GAIADR3', 'GAIAEDR3',
                '2MASS', 'PS1DR1', 'PS1DR2',
-               'GSC241', 'GSC242']
+               'GSC241', 'GSC242', 'GSC243']
 
 DEF_PHOTOMETRY_CATALOG = 'GSC242'
 
@@ -238,6 +238,11 @@ SUPPORTED_CATALOGS = {
                'pmra': '', 'pmra_error': '',
                'pmdec': '', 'pmdec_error': '',
                'mag': 'mag', 'objID': 'objID', 'epoch': ''},
+    'GSC243': {'RA': 'ra', 'RA_error': 'raErr',
+               'DEC': 'dec', 'DEC_error': 'decErr',
+               'pmra': 'rapm', 'pmra_error': 'rapmErr',
+               'pmdec': 'decpm', 'pmdec_error': 'decpmErr',
+               'mag': 'mag', 'objID': 'objID', 'epoch': 'epoch'},
     'GSC242': {'RA': 'ra', 'RA_error': 'raErr',
                'DEC': 'dec', 'DEC_error': 'decErr',
                'pmra': 'rapm', 'pmra_error': 'rapmErr',
@@ -329,10 +334,10 @@ OFFSET_BINWIDTH = 1  # width in pixel for the offset determination
 N_TRAILS_MAX = 1
 
 # number of angles to use in hough transform
-NUM_THETAS = 6200
+NUM_THETAS = 7500
 
 # Hough space sub-window size
-SUB_WIN_SIZE_HOUGH = (150, 80)
+SUB_WIN_SIZE_HOUGH = (50, 50)
 
 # standard star and trail photometry
 NUM_STD = 100  # maximum number of standard stars sources to consider
@@ -368,7 +373,7 @@ if ASTROMETRIC_CAT_ENVVAR in os.environ:
 else:
     SERVICELOCATION = DEF_CAT_URL
 
-SAT_HORB_REF = {'STARLINK': 550., 'ONEWEB': 1200.}
+SAT_HORB_REF = {'STARLINK': 550., 'ONEWEB': 1200., 'BLUEWALKER': 550.}
 
 REARTH_EQU = 6378.137  # Radius at sea level at the equator in km
 REARTH_POL = 6356.752  # Radius at poles in km

@@ -436,7 +436,7 @@ def find_matches(obs, cat, wcsprm=None, threshold=10):
     obs_matched = obs.iloc[dist < threshold]
     cat_matched = cat.iloc[matches[dist < threshold]]
 
-    del matches
+    del matches, obs, cat, wcsprm
 
     dist = dist[dist < threshold]
 
@@ -515,9 +515,6 @@ def peak_with_cross_correlation(log_distance_obs: np.ndarray, angle_obs: np.ndar
     vals = np.array([log_distance_cat, angle_cat])  # .astype('float32')
     H_cat = histogram2d(*vals, bins=bins,
                         range=ranges)
-
-    # H_obs = (H_obs - np.nanmean(H_obs)) / np.nanstd(H_obs)
-    # H_cat = (H_cat - np.nanmean(H_cat)) / np.nanstd(H_cat)
 
     ff_obs = cross_corr_to_fourier_space(H_obs)
     ff_cat = cross_corr_to_fourier_space(H_cat)

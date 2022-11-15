@@ -20,6 +20,8 @@
 # -----------------------------------------------------------------------------
 from __future__ import annotations
 
+import sys
+
 """ Modules """
 
 import os
@@ -41,8 +43,9 @@ import ephem
 
 from scipy import ndimage as nd
 from skimage import morphology as morph
+from skimage.draw import line
 from skimage.measure import (label, regionprops, regionprops_table)
-from skimage.transform import hough_line_peaks
+from skimage.transform import hough_line_peaks, hough_line
 
 from astropy.stats import (sigma_clipped_stats, sigma_clip)
 from astropy import constants as const
@@ -184,7 +187,7 @@ def sun_inc_elv_angle(obsDate: str | datetime, geo_loc: tuple):
     theta = 90. + sunEL
 
     # return results
-    return sun_az, -90. + theta, theta, sun_el
+    return theta
 
 
 def get_elevation(lat, long):
@@ -219,7 +222,30 @@ def get_radius_earth(B):
     return R
 
 
-def get_solar_phase_angle(sat_az, sat_alt, sun_az, sun_alt, obs_range, obsDate):
+from math import radians, cos, sin, asin, sqrt
+
+
+def ang_distance(lat1, lat2, lon1, lon2):
+
+    # Haversine formula
+    if lon2 > lon1:
+        delta_lambda = math.radians(lon2 - lon1)
+    else:
+        delta_lambda = math.radians(lon1 - lon2)
+
+    phi_1 = math.radians(lat1)
+    phi_2 = math.radians(lat2)
+
+    delta_phi = math.radians(lat2 - lat1)
+    delta_lambda = 2. * np.pi - delta_lambda if delta_lambda > np.pi else delta_lambda
+
+    a = math.sin(delta_phi / 2.0) ** 2 + math.cos(phi_1) * math.cos(phi_2) * math.sin(delta_lambda / 2.0) ** 2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+    return c
+
+
+def get_solar_phase_angle(sat_az, sat_alt, geo_loc, obs_range, obsDate):
     """Get the solar phase angle via Sun-Sat angle"""
 
     au = _base_conf.AU_TO_KM
@@ -229,17 +255,34 @@ def get_solar_phase_angle(sat_az, sat_alt, sun_az, sun_alt, obs_range, obsDate):
     a = sun.earth_distance * au
     b = obs_range
 
-    angle_c = ephem.separation((sat_az, sat_alt), (sun_az, sun_alt))
+    # get satellite latitude and longitude
+    (geo_lat, geo_lon) = geo_loc
+
+    dtobj = obsDate
+    if isinstance(obsDate, str):
+        # convert the time of observation
+        d = parser.parse(obsDate)
+        dtobj = datetime(d.year, d.month, d.day,
+                         d.hour, d.minute, d.second)
+
+    # get sun elevation and azimuth angle from
+    sun_el, sun_az = astronomy.get_alt_az(dtobj, geo_lon, geo_lat)
+
+    sun_az = np.rad2deg(sun_az)
+    sun_alt = np.rad2deg(sun_el)
+
+    sun_az = sun_az + 360. if sun_az < 0. else sun_az
+
+    angle_c = ang_distance(sun_alt, sat_alt, sun_az, sat_az)
     c = math.sqrt(math.pow(a, 2) + math.pow(b, 2) - 2 * a * b * math.cos(angle_c))
-
     angle_a = math.acos((math.pow(b, 2) + math.pow(c, 2) - math.pow(a, 2)) / (2 * b * c))
-
     angle_b = math.pi - angle_a - angle_c
 
     phase_angle = np.pi - angle_c - angle_b
+    phase_angle = np.rad2deg(phase_angle)
     sun_sat_ang = np.rad2deg(angle_c)
 
-    return sun_sat_ang, np.rad2deg(phase_angle)
+    return sun_sat_ang, phase_angle, sun_az, sun_alt
 
 
 def get_obs_range(sat_elev, h_orb, h_obs_km, lat):
@@ -552,47 +595,14 @@ def get_min_trail_length(config: dict):
     sat_h_orb_ref = _base_conf.SAT_HORB_REF['ONEWEB']
     if 'STARLINK' in sat_id:
         sat_h_orb_ref = _base_conf.SAT_HORB_REF['STARLINK']
+    if 'BLUEWALKER' in sat_id:
+        sat_h_orb_ref = _base_conf.SAT_HORB_REF['BLUEWALKER']
 
     H_sat = sat_h_orb_ref * 1000.
     R = const.R_earth.value + H_sat
     y = np.sqrt(const.G.value * const.M_earth.value / R ** 3)
     y *= 6.2831853
     return np.rad2deg(y) * 3600. / pixscale * 0.1
-
-
-def get_trail_properties(segm_map, df):
-    """"""
-
-    binary_img = np.zeros(segm_map.shape)
-    for row in df.itertuples(name='label'):
-        binary_img[segm_map.data == row.label] = 1
-
-    # apply dilation
-    footprint = np.ones((1, 1))
-    dilated = nd.binary_dilation(binary_img, structure=footprint, iterations=5)
-
-    # get length, width, and orientation
-    fit_res = perform_fit_on_hough_transform(dilated)
-
-    reg_dict = {'coords': fit_res[0],  # 'coords':  reg.centroid[::-1],
-                'coords_err': fit_res[1],
-                'width': fit_res[2], 'e_width': fit_res[3],
-                'height': fit_res[4], 'e_height': fit_res[5],
-                'orient_rad': fit_res[6],
-                'e_orient_rad': fit_res[7],
-                'orient_deg': fit_res[8],
-                'e_orient_deg': fit_res[9],
-                'param_fit_dict': fit_res[11],
-                'detection_imgs': {
-                    'img_sharp': None,
-                    'segm_map': None,
-                    'img_labeled': segm_map,
-                    'trail_mask': dilated
-                }}
-    del segm_map, binary_img, fit_res, dilated, df
-    gc.collect()
-
-    return reg_dict
 
 
 def detect_sat_trails(image: np.ndarray,
@@ -678,7 +688,7 @@ def detect_sat_trails(image: np.ndarray,
                 df['axis_major_length'].values[0] > min_trail_length:
             if not silent:
                 log.info("  ==> 1 satellite trails detected.")
-            reg_dict = get_trail_properties(segm, df)
+            reg_dict = get_trail_properties(segm, df, silent=True)
             reg_dict['detection_imgs'].update({'img_sharp': sharpened,
                                                'segm_map': segm_init})
 
@@ -719,7 +729,7 @@ def detect_sat_trails(image: np.ndarray,
         df2 = grouped.get_group(ind)
 
         segm.keep_labels(labels=df['label'], relabel=False)
-        reg_dict = get_trail_properties(segm, df2)
+        reg_dict = get_trail_properties(segm, df2, silent=True)
 
         reg_dict['detection_imgs'].update({'img_sharp': sharpened,
                                            'segm_map': segm_init})
@@ -745,255 +755,106 @@ def get_distance(loc1, loc2):
     return distance.distance(loc1, loc2, ellipsoid='WGS-84').km
 
 
-def perform_fit_on_hough_transform(image: np.ndarray) -> tuple:
-    """ Perform a Hough transform on the selected region and fit parameter """
+def get_trail_properties(segm_map, df,
+                         silent: bool = False):
+    """"""
 
-    # generate Hough space H(theta, rho)
-    res = create_hough_space_vectorized(image=image,
-                                        num_thetas=_base_conf.NUM_THETAS)
-    hspace, dist, theta, dist_step, theta_step = res
+    binary_img = np.zeros(segm_map.shape)
+    for row in df.itertuples(name='label'):
+        binary_img[segm_map.data == row.label] = 1
 
-    # apply gaussian filter to smooth the image
-    hspace_smooth = nd.gaussian_filter(hspace, 2)
+    # apply dilation
+    footprint = np.ones((1, 1))
+    dilated = nd.binary_dilation(binary_img, structure=footprint, iterations=5)
 
-    # find peaks in H-space and determine length, width, orientation, and
-    # centroid coordinates of each satellite trail
-    peak = list(zip(*hough_line_peaks(hspace_smooth, theta, dist,
-                                      num_peaks=_base_conf.N_TRAILS_MAX)))
+    # create hough space and get peaks
+    hspace_smooth, peaks, dist, theta = get_hough_transform(dilated, silent=silent)
 
-    indices = np.where(hspace_smooth == peak[0][0])
+    if len(peaks) > 1:
+        edge_height, edge_width = dilated.shape[:2]
+        edge_height_half, edge_width_half = edge_height / 2, edge_width / 2
+        del hspace_smooth
+        sel_dict = {i: [] for i in range(len(peaks))}
+
+        for i in range(len(peaks)):
+            angle = peaks[i][1]
+            dist = peaks[i][2]
+            a = np.cos(np.deg2rad(angle))
+            b = np.sin(np.deg2rad(angle))
+            x0 = (a * dist) + edge_width_half
+            y0 = (b * dist) + edge_height_half
+            x1 = int(x0 + edge_width * (-b))
+            y1 = int(y0 + edge_height * a)
+            x2 = int(x0 - edge_width * (-b))
+            y2 = int(y0 - edge_height * a)
+            cc, rr = line(x1, y1, x2, y2)
+            idx = (rr >= 0) & (cc >= 0) & (rr < edge_width) & (cc < edge_height)
+            label_list = np.unique(segm_map.data[rr[idx], cc[idx]])
+            [sel_dict[i].append(row.Index) for row in df.itertuples(name='label') if row.label in label_list]
+
+        # select only the label that belong to the first peak
+        # this can be extended later to let the user choose which to pick
+        # set 0 for first entry
+        _df = df.iloc[sel_dict[0]]
+        binary_img = np.zeros(segm_map.shape)
+        for row in _df.itertuples(name='label'):
+            binary_img[segm_map.data == row.label] = 1
+
+        # apply dilation
+        footprint = np.ones((1, 1))
+        dilated = nd.binary_dilation(binary_img, structure=footprint, iterations=5)
+
+        # create hough space and get peaks
+        hspace_smooth, peaks, dist, theta = get_hough_transform(dilated, silent=silent)
+
+    indices = np.where(hspace_smooth == peaks[0][0])
     row_ind, col_ind = indices[0][0], indices[1][0]
     center_idx = (row_ind, col_ind)
 
     sub_win_size = _base_conf.SUB_WIN_SIZE_HOUGH
     theta_init = np.deg2rad(theta[col_ind])
     fit_res = fit_trail_params(hspace_smooth, dist, theta, theta_init,
-                               image.shape, center_idx, sub_win_size)
+                               dilated.shape, center_idx, sub_win_size)
 
-    del image, hspace, hspace_smooth, res, \
-        indices, row_ind, col_ind, dist, theta, dist_step, theta_step
+    reg_dict = {'coords': fit_res[0],  # 'coords':  reg.centroid[::-1],
+                'coords_err': fit_res[1],
+                'width': fit_res[2], 'e_width': fit_res[3],
+                'height': fit_res[4], 'e_height': fit_res[5],
+                'orient_rad': fit_res[6],
+                'e_orient_rad': fit_res[7],
+                'orient_deg': fit_res[8],
+                'e_orient_deg': fit_res[9],
+                'param_fit_dict': fit_res[11],
+                'detection_imgs': {
+                    'img_sharp': None,
+                    'segm_map': None,
+                    'img_labeled': segm_map,
+                    'trail_mask': dilated
+                }}
+
+    del segm_map, binary_img, fit_res, dilated, df, hspace_smooth, \
+        indices, row_ind, col_ind, dist, theta
     gc.collect()
 
-    return fit_res
+    return reg_dict
 
 
-# def detect_sat_trails_old(image: np.ndarray,
-#                           bkg_rms: float,
-#                           gfwhm: float = 2.5,
-#                           low_threshold: float = None,
-#                           high_threshold: float = None,
-#                           borderLen: int = 3,
-#                           small_edge: int = 64,
-#                           buf: int = 8,
-#                           min_len: int = 100,
-#                           min_e: float = 0.99,
-#                           min_area: float = 1500.,
-#                           eps_ang: float = 1.,
-#                           num_trials_max: int = 1,
-#                           silent: bool = False):
-#     """ Find satellite trails in image and extract region properties.
-#
-#     Use a modified version of the Hough line detection to detect the trails and to estimate length, width,
-#     orientation of multiple satellite trails.
-#
-#     Based on the method for the detection of extended line-segments by
-#     Xu, Z., Shin, B.-S., Klette, R. 2015.
-#     Closed form line-segment extraction using the Hough transform.
-#     Pattern Recognition 48, 4012–4023, doi:10.1016/j.patcog.2015.06.008
-#
-#     Parameters
-#     ----------
-#         image: np.ndarray
-#             np.ndarray containing the image to investigate.
-#         bkg_rms: float
-#             Mean background variation.
-#         gfwhm: float, optional
-#             The size of a Gaussian filter to use before edge detection.
-#             Defaults to 2.
-#         low_threshold: float, None, optional
-#             The lower threshold for hysteresis linking of edge pieces.
-#             This should be less than ``high_threshold``.
-#         high_threshold: float, None, optional
-#             The upper threshold for hysteresis linking of edge pieces.
-#         borderLen: int, optional
-#             Width in pixels used to zero-out image borders.
-#             Defaults to 3 pixels.
-#         small_edge: int, optional
-#             Size of perimeter of small objects to remove in edge image.
-#             This significantly reduces noise before doing Hough Transform.
-#             If set too high, you might remove the edge of the satellite you are trying to find.
-#             Defaults to 64.
-#         buf: int, optional
-#             Size of the footprint used fast binary morphological dilation.
-#             Defaults to 5.
-#         min_len: int, optional
-#             Minimum line length for line segments
-#         min_area: float, optional
-#             Minimum area of the detected region to be considered a trail
-#         min_e: float, optional
-#             Minimum eccentricity the region should have.
-#         eps_ang: float, optional
-#             Epsilon angle used to check for vertical and horizontal lines.
-#         num_trials_max: int, optional
-#             The maximum number of trails expected in the image.
-#         silent: bool, optional
-#             If True, only minimal output is shown.
-#
-#     """
-#     # Initialize logging for this user-callable function
-#     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
-#
-#     if not isinstance(image, np.ndarray):
-#         raise ValueError(f"Input {image} not ndarray object.")
-#
-#     # set the high threshold to background variation
-#     if high_threshold is None:
-#         high_threshold = bkg_rms
-#     if low_threshold is None:
-#         low_threshold = 0.05 * high_threshold
-#     trail_data = {'reg_info_lst': []}
-#     # forbidden_ang = [0., 45., 90.]
-#     img_orig = image.copy()
-#
-#     if not silent:
-#         log.info("> Extract satellite trails from image")
-#
-#     # remove negative data in image
-#     image[image < 0.] = 0
-#
-#     # apply gaussian filter to smooth the image
-#     image = nd.gaussian_filter(image, gfwhm)
-#
-#     # detect edges using canny
-#     edges = feature.canny(image,
-#                           use_quantiles=False, low_threshold=low_threshold,
-#                           high_threshold=high_threshold)
-#
-#     # zero out the borders with width given by borderLen
-#     if borderLen > 0:
-#         lenx, leny = edges.shape
-#         edges[0:borderLen, 0:leny] = 0
-#         edges[lenx - borderLen:lenx, 0:leny] = 0
-#         edges[0:lenx, 0:borderLen] = 0
-#         edges[0:lenx, leny - borderLen:leny] = 0
-#
-#     # filter image for small and star-like objects
-#     edges = morph.remove_small_objects(edges,
-#                                        min_size=small_edge,
-#                                        connectivity=8)
-#
-#     # run binary morphological dilation to erode lines
-#     dilated = morph.binary_dilation(edges, footprint=np.ones((buf, buf)))
-#
-#     # run binary morphological closing to close gaps between separated lines
-#     closed = morph.binary_closing(dilated * 1, footprint=np.ones((buf, buf)))
-#
-#     # create labels
-#     label_image = label(closed)
-#     # regs = regionprops(label_image, intensity_image=img_orig)
-#     regs = regionprops(label_image)
-#
-#     # loop regions and exclude by area, eccentricity or length
-#     for reg in regs:
-#
-#         log.debug('{0:3d} {1:6d} '
-#                   '{2:0.2f} {3:0.2f} '
-#                   '{4:0.2f}'.format(reg.label, reg.area,
-#                                     reg.eccentricity,
-#                                     reg.feret_diameter_max,
-#                                     np.sqrt(reg.feret_diameter_max)))
-#
-#         if (reg.area < min_area) | (reg.eccentricity < min_e) | \
-#                 (reg.major_axis_length < min_len):
-#             for coo in reg.coords:
-#                 label_image[coo[0], coo[1]] -= reg.label
-#
-#     # create new region frame
-#     new_edge = label_image > 0
-#
-#     # fit lines to the cleaned labels
-#     label_image = label(new_edge)
-#     # regs = regionprops(label_image, intensity_image=img_orig)
-#     regs = regionprops(label_image)
-#     # fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-#     # ax.imshow(label_image, origin='lower',
-#     #           cmap=plt.cm.get_cmap('viridis'),
-#     #           aspect='auto')
-#     # # aper.plot(axes=ax)
-#     # ax.set_title('Input image')
-#     # plt.tight_layout()
-#     # plt.show()
-#     if len(regs) == 0:
-#         if not silent:
-#             log.info("  ==> NO satellite trails detected.")
-#         del image, img_orig, dilated, closed, edges, new_edge, label_image
-#         return None, False
-#
-#     ntrail = 0
-#     for reg in regs:
-#         log.debug('{0:3d} {1:0.2f} {2:0.2f} '
-#                   '{3:0.2f} {4:0.2f} {5:6d}'.format(reg.label, reg.orientation,
-#                                                     reg.feret_diameter_max,
-#                                                     np.sqrt(reg.feret_diameter_max),
-#                                                     reg.eccentricity, reg.area))
-#         orientation = np.rad2deg(reg.orientation)
-#
-#         # exclude results that are within eps_ang around forbidden_ang
-#         # test_orient = np.any(abs(np.subtract(forbidden_ang, orientation)) <= eps_ang)
-#         # print(orientation, test_orient, reg.feret_diameter_max)
-#
-#         new_label_image = np.where(label_image == reg.label, 1., 0.)
-#
-#         # generate Hough space H(theta, rho)
-#         res = create_hough_space_vectorized(image=new_label_image,
-#                                             num_thetas=_base_conf.NUM_THETAS)
-#
-#         hspace, dist, theta, dist_step, theta_step = res
-#
-#         # apply gaussian filter to smooth the image
-#         hspace2 = nd.gaussian_filter(hspace, 2)
-#
-#         # find peaks in H-space and determine length, width, orientation, and
-#         # centroid coordinates of each satellite trail
-#         peak = list(zip(*hough_line_peaks(hspace2, theta, dist,
-#                                           num_peaks=num_trials_max)))
-#         if not peak:
-#             continue
-#
-#         indices = np.where(hspace2 == peak[0][0])
-#         row_ind, col_ind = indices[0][0], indices[1][0]
-#         center_idx = (row_ind, col_ind)
-#
-#         sub_win_size = _base_conf.SUB_WIN_SIZE_HOUGH
-#         theta_init = np.deg2rad(theta[col_ind])
-#         fit_res = fit_trail_params(hspace2, dist, theta, theta_init,
-#                                    image.shape, center_idx, sub_win_size)
-#
-#         xy_cent, xy_cent_err, L, err_L, T, err_T, theta_p_rad, e_theta_p_rad, \
-#         theta_p_deg, e_theta_p_deg, e, fit_dict = fit_res
-#
-#         reg_dict = {'coords': xy_cent,  # 'coords':  reg.centroid[::-1],
-#                     'coords_err': xy_cent_err,
-#                     'width': L, 'e_width': err_L,
-#                     'height': T, 'e_height': err_L,
-#                     'orient_rad': theta_p_rad,
-#                     'e_orient_rad': e_theta_p_rad,
-#                     'orient_deg': theta_p_deg,
-#                     'e_orient_deg': e_theta_p_deg,
-#                     'param_fit_dict': fit_dict}
-#
-#         trail_data['reg_info_lst'].append(reg_dict)
-#         ntrail += 1
-#         del new_label_image, hspace, hspace2
-#
-#     del image, img_orig, dilated, closed, edges, new_edge, label_image
-#
-#     if ntrail == 0:
-#         if not silent:
-#             log.info("  ==> NO satellite trails detected.")
-#         return None, False
-#     else:
-#         if not silent:
-#             log.info("  ==> {} satellite trail(s) detected.".format(ntrail))
-#         trail_data['N_trails'] = ntrail
-#         return trail_data, True
+def get_hough_transform(image: np.ndarray,
+                        silent: bool = False):
+    """ Perform a Hough transform on the selected region and fit parameter """
+
+    # generate Hough space H(theta, rho)
+    res = create_hough_space_vectorized(image=image,
+                                        num_thetas=_base_conf.NUM_THETAS,
+                                        num_rhos=None, silent=silent)
+    hspace, dist, theta, _, _ = res
+    # apply gaussian filter to smooth the image
+    hspace_smooth = nd.gaussian_filter(hspace, 2)
+
+    del image, res, hspace, _
+
+    # find peaks in H-space and determine length, width, orientation, and
+    # centroid coordinates of each satellite trail
+    peaks = list(zip(*hough_line_peaks(hspace_smooth, theta, dist)))
+
+    return hspace_smooth, peaks, dist, theta

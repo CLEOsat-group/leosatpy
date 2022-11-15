@@ -85,6 +85,8 @@ from photutils import (
     BkgZoomInterpolator,  # For interpolating background
     make_source_mask)
 
+from photutils.aperture import CircularAperture
+
 from skimage.draw import disk
 
 try:
@@ -231,7 +233,7 @@ def build_auto_kernel(imgarr, fwhm=4.0, threshold=None, source_box=7,
     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
 
     if good_fwhm is None:
-        good_fwhm = [1.0, 8.0]
+        good_fwhm = [1.0, 10.0]
 
     # Try to use PSF derived from the image as detection kernel
     # The kernel must be derived from well-isolated sources not near the edge of the image
@@ -273,7 +275,7 @@ def build_auto_kernel(imgarr, fwhm=4.0, threshold=None, source_box=7,
             kernel_pos = [peaks['y_peak'][peak_ctr], peaks['x_peak'][peak_ctr]]
 
             kernel = imgarr[kernel_pos[0] - source_box:kernel_pos[0] + source_box + 1,
-                     kernel_pos[1] - source_box:kernel_pos[1] + source_box + 1].copy()
+                            kernel_pos[1] - source_box:kernel_pos[1] + source_box + 1].copy()
 
             if kernel is not None:
                 kernel = np.clip(kernel, 0, None)  # insure background subtracted kernel has no negative pixels
@@ -407,28 +409,31 @@ def clean_catalog_trail(imgarr, mask, catalog, fwhm, r=3.):
 
     if not np.any(trl_ind, axis=1).any():
         return None, None
+    del trl_ind
 
     df = catalog.copy()
 
+    src_pos = np.array(list(zip(df['xcentroid'], df['ycentroid'])))
+
     # loop over sources
     unwanted_indices = []
-    for index, row in df.iterrows():
-        src_ind = disk((row['xcentroid'], row['ycentroid']), radius)
-        for rs, cs in zip(src_ind[0], src_ind[1]):
-            dist = np.sqrt((rs - trl_ind[1]) ** 2 + (cs - trl_ind[0]) ** 2)
-            # fixme: the distance can be empty,
-            #  likely due to the trail being wrongly detected
-            dist_min = dist[np.argmin(dist)]
-            if dist_min <= radius:
-                unwanted_indices.append(index)
-                break
-            if dist_min > radius:
-                break
+    for i in range(len(src_pos)):
+        aperture = CircularAperture(src_pos[i], radius).to_mask(method='center')
+        mask2 = aperture.multiply(mask)
+        if mask2 is not None:
+            if np.any(mask2[mask2 > 0]):
+                unwanted_indices.append([i, True])
+        else:
+            unwanted_indices.append([i, False])
+        del mask2, aperture
 
-    desired_df = df.drop(unwanted_indices, axis=0)
-    removed_df = df.iloc[unwanted_indices]
+    unwanted_indices = np.array(unwanted_indices)
 
-    del imgarr, df, trl_ind
+    desired_df = df.drop(df.index[unwanted_indices[:, 0]], axis=0)
+    idx = np.where(unwanted_indices[:, 1])
+    removed_df = df.iloc[unwanted_indices[:, 0][idx]]
+
+    del imgarr, df, idx, unwanted_indices, mask
     gc.collect()
 
     return desired_df, removed_df
@@ -908,7 +913,7 @@ def extract_sources(img, fwhm=3.0, kernel=None,
         kernel_area = ((source_box // 2) ** 2) * np.pi
         log.debug("   based on a default kernel.")
 
-    num_brightest = 10 if len(segm.areas) > 10 else len(segm.areas)
+    num_brightest = 20 if len(segm.areas) > 20 else len(segm.areas)
 
     mean_area = np.mean(segm.areas)
     max_area = np.sort(segm.areas)[-1 * num_brightest:].mean()
@@ -1381,7 +1386,7 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
         # get reference catalog for precise positions from the web
         ref_tbl_astro, ref_catalog_astro = \
             get_reference_catalog(ra=ra, dec=dec, sr=fov_radius_deg,
-                                  epoch=epoch, num_sources=3 * _base_conf.NUM_SOURCES_MAX,
+                                  epoch=epoch, num_sources=_base_conf.NUM_SOURCES_MAX,
                                   catalog='GAIAedr3',
                                   silent=silent)
         # add positions to table
@@ -1411,6 +1416,9 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
             ref_tbl_photo["xcentroid"] = pos_on_det[:, 0]
             ref_tbl_photo["ycentroid"] = pos_on_det[:, 1]
 
+            if 'classification' in ref_tbl_photo:
+                ref_tbl_photo = ref_tbl_photo[ref_tbl_photo.classification == 0]
+            ref_tbl_photo.reset_index()
             if not silent:
                 log.info("> Save photometry reference catalog.")
             save_catalog(cat=ref_tbl_photo, wcsprm=wcsprm, out_name=photo_ref_cat_fname,
@@ -1572,7 +1580,15 @@ def read_catalog(cat_fname: str, tbl_format: str = "ecsv") -> tuple:
     if 'catalog' in cat.meta.keys():
         catalog = cat.meta['catalog']
 
-    return cat.to_pandas(), kernel_fwhm, catalog
+    cat_df = cat.to_pandas()
+    del cat
+
+    # exclude non-star objects
+    if 'classification' in cat_df:
+        cat_df = cat_df[cat_df.classification == 0]
+    cat_df.reset_index()
+
+    return cat_df, kernel_fwhm, catalog
 
 
 def save_catalog(cat: pandas.DataFrame,
@@ -1602,7 +1618,6 @@ def save_catalog(cat: pandas.DataFrame,
         cat_out["ycentroid"] = pos_on_det[:, 1]
         cols = ['RA', 'DEC', 'xcentroid', 'ycentroid', 'mag', 'objID']
 
-    # todo: optional format maybe?
     # cat['xcentroid'].format = '.10f'
     # cat['ycentroid'].format = '.10f'
     # cat['flux'].format = '.10f'
@@ -1611,7 +1626,7 @@ def save_catalog(cat: pandas.DataFrame,
         cat_out = cat_out[cols]
 
     # convert to astropy.Table and add meta info
-    cat_out = Table.from_pandas(cat_out, index=True)
+    cat_out = Table.from_pandas(cat_out, index=False)
     cat_out.meta = {'kernel_fwhm': kernel_fwhm,
                     'catalog': catalog}
 
@@ -1638,8 +1653,10 @@ def select_reference_catalog(band: str, source: str = "auto") -> str:
     -------
     catalog_name
         The selected catalog for photometry as str.
-    """
+
     # todo: add preferable catalog and allow multiple catalogs for a specific band
+    """
+
     # Initialize logging for this user-callable function
     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
 
