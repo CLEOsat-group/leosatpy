@@ -287,6 +287,7 @@ class AnalyseSatObs(object):
                         f"RA={obj_pointing[0]}, DEC={obj_pointing[1]} "
                         f"observed with the {self._telescope} telescope")
 
+                # result, error = self._analyse_sat_trails(files=files, sat_name=sat_name)
                 try:
                     result, error = self._analyse_sat_trails(files=files, sat_name=sat_name)
                 except Exception as e:
@@ -600,8 +601,8 @@ class AnalyseSatObs(object):
             mag_scale = -5. * np.log10((dist_obs_sat / sat_h_orb_ref))
 
             # observed trail count
-            obs_trail_count = sat_apphot[i][0]['aperture_sum_bkgsub'].values[0]
-            obs_trail_count_err = sat_apphot[i][0]['aperture_sum_bkgsub_err'].values[0]
+            obs_trail_count = sat_apphot[i]['aperture_sum_bkgsub'].values[0]
+            obs_trail_count_err = sat_apphot[i]['aperture_sum_bkgsub_err'].values[0]
 
             # estimated trail count
             est_trail_count = obs_trail_count * (est_trail_len / obs_trail_len)
@@ -686,7 +687,6 @@ class AnalyseSatObs(object):
                                     obs_date=(date_obs, obs_mid),
                                     expt=exptime,
                                     std_pos=std_pos,
-                                    mask=sat_apphot[i][1],
                                     file_base=file_name)
 
         if not self._silent:
@@ -816,14 +816,17 @@ class AnalyseSatObs(object):
                                                             h_in=h_in, h_out=h_out,
                                                             theta=ang)
 
-            trail_aperture = RectangularAperture(src_pos[0],
-                                                 w=w_out,
-                                                 h=h_out + 10.,
-                                                 theta=ang)
-            trail_mask = trail_aperture.to_mask(method='center')
+            # mask for sources on trail
+            # trail_aperture = RectangularAperture(src_pos[0],
+            #                                      w=w_out,
+            #                                      h=h_out + 10.,
+            #                                      theta=ang)
+            # trail_mask = trail_aperture.to_mask(method='center')
+            #
+            # src_mask = trail_mask.to_image(imgarr.shape, bool) * src_mask
+            # sat_phot_dict[i] = (sat_phot, src_mask)
 
-            src_mask = trail_mask.to_image(imgarr.shape, bool) * src_mask
-            sat_phot_dict[i] = (sat_phot, src_mask)
+            sat_phot_dict[i] = sat_phot
 
             # convert pixel to world coordinates with uncertainties
             w = WCS(hdr)
@@ -2075,7 +2078,6 @@ class AnalyseSatObs(object):
 
     def _plot_final_result(self, img_dict: dict, reg_data: dict,
                            obs_date: tuple, expt: float, std_pos: np.ndarray,
-                           mask: np.ndarray,
                            file_base: str, img_norm: str = 'lin', cmap: str = 'Greys'):
         """Plot final result of satellite photometry"""
 
@@ -2085,8 +2087,7 @@ class AnalyseSatObs(object):
         hdr = img_dict['hdr']
         wcsprm = WCS(hdr).wcs
 
-        # src_mask = np.where(mask, 1, 0)
-        label_img = np.where(mask, 1, np.nan)
+        # label_img = np.where(mask, 1, np.nan)
         # label_img = SegmentationImage(label(src_mask))
         # label_img.relabel_consecutive(start_label=1)
 

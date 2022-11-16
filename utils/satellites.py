@@ -525,7 +525,7 @@ def create_hough_space_vectorized(image: np.ndarray,
 
     # image properties
     edge_height, edge_width = image.shape[:2]
-    edge_height_half, edge_width_half = edge_height / 2., edge_width / 2.
+    edge_height_half, edge_width_half = edge_height // 2, edge_width // 2
 
     # get step-size for rho and theta
     d = np.sqrt(np.square(edge_height) + np.square(edge_width))
@@ -769,30 +769,33 @@ def get_trail_properties(segm_map, df,
 
     if len(peaks) > 1:
         edge_height, edge_width = dilated.shape[:2]
-        edge_height_half, edge_width_half = edge_height / 2, edge_width / 2
+        edge_height_half, edge_width_half = edge_height // 2, edge_width // 2
         del hspace_smooth
         sel_dict = {i: [] for i in range(len(peaks))}
 
         for i in range(len(peaks)):
             angle = peaks[i][1]
             dist = peaks[i][2]
+
             a = np.cos(np.deg2rad(angle))
             b = np.sin(np.deg2rad(angle))
             x0 = (a * dist) + edge_width_half
             y0 = (b * dist) + edge_height_half
-            x1 = int(x0 + edge_width * (-b))
-            y1 = int(y0 + edge_height * a)
-            x2 = int(x0 - edge_width * (-b))
-            y2 = int(y0 - edge_height * a)
-            cc, rr = line(x1, y1, x2, y2)
-            idx = (rr >= 0) & (cc >= 0) & (rr < edge_width) & (cc < edge_height)
-            label_list = np.unique(segm_map.data[rr[idx], cc[idx]])
+            x1 = int(x0 + abs(edge_width - 5. - x0) * (-b))
+            y1 = int(y0 + abs(edge_height - 5. - y0) * a)
+            x2 = int(x0 - abs(edge_width - 5. - x0) * (-b))
+            y2 = int(y0 - abs(edge_height - 5. - y0) * a)
+
+            rr, cc = line(y1, x1, y2, x2)
+
+            label_list = np.unique(segm_map.data[rr, cc])
             [sel_dict[i].append(row.Index) for row in df.itertuples(name='label') if row.label in label_list]
 
         # select only the label that belong to the first peak
         # this can be extended later to let the user choose which to pick
         # set 0 for first entry
-        _df = df.iloc[sel_dict[0]]
+        df.reset_index()
+        _df = df.loc[sel_dict[0]]
         binary_img = np.zeros(segm_map.shape)
         for row in _df.itertuples(name='label'):
             binary_img[segm_map.data == row.label] = 1
