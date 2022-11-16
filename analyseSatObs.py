@@ -29,6 +29,7 @@
 import argparse
 import gc
 import itertools
+import operator
 import os
 import logging
 import sys
@@ -56,6 +57,7 @@ from astropy.visualization.mpl_normalize import ImageNormalize
 from astropy.coordinates import Angle
 from astropy.stats import sigma_clipped_stats
 from skimage.draw import disk
+from skimage.measure import label
 
 from photutils.aperture import (RectangularAperture, CircularAperture)
 from photutils.centroids import (centroid_sources, centroid_2dg)
@@ -598,8 +600,8 @@ class AnalyseSatObs(object):
             mag_scale = -5. * np.log10((dist_obs_sat / sat_h_orb_ref))
 
             # observed trail count
-            obs_trail_count = sat_apphot[i]['aperture_sum_bkgsub'].values[0]
-            obs_trail_count_err = sat_apphot[i]['aperture_sum_bkgsub_err'].values[0]
+            obs_trail_count = sat_apphot[i][0]['aperture_sum_bkgsub'].values[0]
+            obs_trail_count_err = sat_apphot[i][0]['aperture_sum_bkgsub_err'].values[0]
 
             # estimated trail count
             est_trail_count = obs_trail_count * (est_trail_len / obs_trail_len)
@@ -684,6 +686,7 @@ class AnalyseSatObs(object):
                                     obs_date=(date_obs, obs_mid),
                                     expt=exptime,
                                     std_pos=std_pos,
+                                    mask=sat_apphot[i][1],
                                     file_base=file_name)
 
         if not self._silent:
@@ -743,7 +746,7 @@ class AnalyseSatObs(object):
                                      trail_stars['ycentroid'])))
 
             for i in range(_pos.shape[0]):
-                rr, cc = disk((_pos[:, 1][i], _pos[:, 0][i]), 3. * fwhm)
+                rr, cc = disk((_pos[:, 1][i], _pos[:, 0][i]), 2. * fwhm)
                 src_mask[rr, cc] = 1
 
             src_mask = np.ma.make_mask(src_mask)
@@ -755,7 +758,7 @@ class AnalyseSatObs(object):
 
             # todo: if raise error use simple offset to determine shift (mask trail before shift detection)
             T, _ = astroalign.find_transform(imgarr - img_bkg, ref_imgarr - ref_bkg,
-                                             detection_sigma=2.,
+                                             detection_sigma=1.5,
                                              max_control_points=150,
                                              min_area=8)
             ref_img_warped, footprint = astroalign.apply_transform(T,
@@ -812,7 +815,15 @@ class AnalyseSatObs(object):
                                                             w_in=w_in, w_out=w_out,
                                                             h_in=h_in, h_out=h_out,
                                                             theta=ang)
-            sat_phot_dict[i] = sat_phot
+
+            trail_aperture = RectangularAperture(src_pos[0],
+                                                 w=w_out,
+                                                 h=h_out + 10.,
+                                                 theta=ang)
+            trail_mask = trail_aperture.to_mask(method='center')
+
+            src_mask = trail_mask.to_image(imgarr.shape, bool) * src_mask
+            sat_phot_dict[i] = (sat_phot, src_mask)
 
             # convert pixel to world coordinates with uncertainties
             w = WCS(hdr)
@@ -2064,6 +2075,7 @@ class AnalyseSatObs(object):
 
     def _plot_final_result(self, img_dict: dict, reg_data: dict,
                            obs_date: tuple, expt: float, std_pos: np.ndarray,
+                           mask: np.ndarray,
                            file_base: str, img_norm: str = 'lin', cmap: str = 'Greys'):
         """Plot final result of satellite photometry"""
 
@@ -2072,6 +2084,11 @@ class AnalyseSatObs(object):
         bkg = img_dict['bkg_data']['bkg']
         hdr = img_dict['hdr']
         wcsprm = WCS(hdr).wcs
+
+        # src_mask = np.where(mask, 1, 0)
+        label_img = np.where(mask, 1, np.nan)
+        # label_img = SegmentationImage(label(src_mask))
+        # label_img.relabel_consecutive(start_label=1)
 
         image = img - bkg  # subtract background
         image[image < 0.] = 0.
@@ -2132,11 +2149,17 @@ class AnalyseSatObs(object):
                   cmap=cmap,
                   interpolation='bicubic',
                   norm=nm,
-                  aspect='equal')
+                  aspect='equal', zorder=2)
+
+        # cmap = matplotlib.colors.ListedColormap(['red'])
+        # nm = matplotlib.colors.BoundaryNorm([0, 1], cmap.N)
+        # ax.imshow(label_img, cmap=cmap,
+        #           norm=nm,
+        #           origin='lower', aspect='equal', alpha=1, zorder=3)
 
         # add apertures
-        std_apers.plot(axes=ax, **{'color': 'red', 'lw': 1.25, 'alpha': 0.75})
-        sat_aper.plot(axes=ax, **{'color': 'limegreen', 'lw': 1.25, 'alpha': 0.75})
+        std_apers.plot(axes=ax, **{'color': 'red', 'lw': 1.25, 'alpha': 0.75, 'zorder': 2})
+        sat_aper.plot(axes=ax, **{'color': 'limegreen', 'lw': 1.25, 'alpha': 0.75, 'zorder': 2.5})
 
         # Add compass
         self._add_compass(ax=ax, x0=x0, y0=y0, larr=larr, theta=theta, color='k')
@@ -2184,6 +2207,7 @@ class AnalyseSatObs(object):
                            fancybox=False, framealpha=0.25,
                            handlelength=0, handletextpad=0)
         legend.set_draggable(state=1)
+        legend.set_zorder(2.5)
 
         plt.tight_layout()
 

@@ -44,7 +44,7 @@ import ephem
 from scipy import ndimage as nd
 from skimage import morphology as morph
 from skimage.draw import line
-from skimage.measure import (label, regionprops, regionprops_table)
+from skimage.measure import regionprops_table
 from skimage.transform import hough_line_peaks, hough_line
 
 from astropy.stats import (sigma_clipped_stats, sigma_clip)
@@ -222,9 +222,6 @@ def get_radius_earth(B):
     return R
 
 
-from math import radians, cos, sin, asin, sqrt
-
-
 def ang_distance(lat1, lat2, lon1, lon2):
 
     # Haversine formula
@@ -237,7 +234,7 @@ def ang_distance(lat1, lat2, lon1, lon2):
     phi_2 = math.radians(lat2)
 
     delta_phi = math.radians(lat2 - lat1)
-    delta_lambda = 2. * np.pi - delta_lambda if delta_lambda > np.pi else delta_lambda
+    delta_lambda = 2. * math.pi - delta_lambda if delta_lambda > math.pi else delta_lambda
 
     a = math.sin(delta_phi / 2.0) ** 2 + math.cos(phi_1) * math.cos(phi_2) * math.sin(delta_lambda / 2.0) ** 2
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
@@ -278,7 +275,7 @@ def get_solar_phase_angle(sat_az, sat_alt, geo_loc, obs_range, obsDate):
     angle_a = math.acos((math.pow(b, 2) + math.pow(c, 2) - math.pow(a, 2)) / (2 * b * c))
     angle_b = math.pi - angle_a - angle_c
 
-    phase_angle = np.pi - angle_c - angle_b
+    phase_angle = math.pi - angle_c - angle_b
     phase_angle = np.rad2deg(phase_angle)
     sun_sat_ang = np.rad2deg(angle_c)
 
@@ -303,7 +300,7 @@ def get_obs_range(sat_elev, h_orb, h_obs_km, lat):
     # O = observer position on the surface
     # C = Geo-center
 
-    gamma = 90 + sat_elev  # degrees, Angle with center in the observer - <SOC>
+    gamma = 90. + sat_elev  # degrees, Angle with center in the observer - <SOC>
 
     # Length of the CO side = Rearth
     # Length of the CS side = Rearth + Horb
@@ -315,7 +312,7 @@ def get_obs_range(sat_elev, h_orb, h_obs_km, lat):
     beta = math.asin(CO / CS * math.sin(gamma * math.pi / 180.)) * 180. / math.pi  # degrees
 
     # derivation of the alpha angle, <OCS>
-    alpha = 180 - gamma - beta  # degrees,
+    alpha = 180. - gamma - beta  # degrees,
 
     # Use of the cos law for derivation of the distance from Observer to
     # Satellite (OS), accounting for its elevation (or zenith) angle
@@ -607,8 +604,8 @@ def get_min_trail_length(config: dict):
 
 def detect_sat_trails(image: np.ndarray,
                       config: dict,
-                      alpha: float = 10,
-                      sigma_blurr: float = 3,
+                      alpha: float = 10.,
+                      sigma_blurr: float = 3.,
                       borderLen: int = 3,
                       silent: bool = False):
     """ Find satellite trails in image and extract region properties.
@@ -849,7 +846,7 @@ def get_hough_transform(image: np.ndarray,
                                         num_rhos=None, silent=silent)
     hspace, dist, theta, _, _ = res
     # apply gaussian filter to smooth the image
-    hspace_smooth = nd.gaussian_filter(hspace, 2)
+    hspace_smooth = nd.gaussian_filter(hspace, 2.)
 
     del image, res, hspace, _
 
