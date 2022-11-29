@@ -333,7 +333,7 @@ class ObsTables(object):
         # remove extensions to name
         if '-N' in obj_name:
             idx = obj_name.index('-N')
-            obj_name = obj_name[:idx - 2]
+            obj_name = obj_name[:idx]
 
         # remove binning from name
         for i in [1, 2, 4]:
