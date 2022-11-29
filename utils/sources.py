@@ -253,7 +253,7 @@ def build_auto_kernel(imgarr, fwhm=4.0, threshold=None, source_box=7,
     kernel_psf = False
 
     # find peaks 3 times above the threshold
-    peaks = find_peaks(kern_img, threshold=2. * threshold,
+    peaks = find_peaks(kern_img, threshold=threshold, npeaks=250,
                        box_size=isolation_size, border_width=25)
 
     if peaks is None or (peaks is not None and len(peaks) == 0):
@@ -268,7 +268,6 @@ def build_auto_kernel(imgarr, fwhm=4.0, threshold=None, source_box=7,
     if peaks is not None:
         # Sort based on peak_value to identify the brightest sources for use as a kernel
         peaks.sort('peak_value', reverse=True)
-
         if saturation_limit:
             sat_peaks = np.where(peaks['peak_value'] > saturation_limit)[0]
             sat_index = sat_peaks[-1] + 1 if len(sat_peaks) > 0 else 0
@@ -607,8 +606,8 @@ def compute_2d_background(imgarr, box_size, win_size,
             bkg = my_background(imgarr,
                                 # box_size=(0.6 * box_size, 0.6 * box_size),
                                 # filter_size=(0.5 * win_size, 0.5 * win_size),
-                                box_size=(7, 7),
-                                filter_size=(5, 5),
+                                box_size=(9, 9),
+                                filter_size=(7,7),
                                 mask=mask,
                                 # interp=interpolator,
                                 exclude_percentile=percentile,
@@ -869,7 +868,7 @@ def extract_source_catalog(imgarr, config, vignette=-1,
                                                              fwhm=kernel_fwhm,
                                                              source_box=source_box,
                                                              # centering_mode=None,
-                                                             nlargest=_base_conf.NUM_SOURCES_MAX,
+                                                             nlargest=None,
                                                              MAX_AREA_LIMIT=_base_conf.MAX_AREA_LIMIT,
                                                              silent=silent)
     if not state:
@@ -1192,7 +1191,7 @@ def find_fwhm(psf: np.ndarray, default_fwhm: float) -> float | None:
     # Initialize logging for this user-callable function
     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
 
-    daogroup = DAOGroup(crit_separation=8.)
+    daogroup = DAOGroup(crit_separation=11.)
     mmm_bkg = MMMBackground()
     iraffind = DAOStarFinder(threshold=2.5 * mmm_bkg(psf),
                              sigma_radius=2.5, exclude_border=True,
@@ -1207,7 +1206,7 @@ def find_fwhm(psf: np.ndarray, default_fwhm: float) -> float | None:
                                                       psf_model=gaussian_prf,
                                                       fitter=fitter,
                                                       fitshape=(11, 11),
-                                                      niters=2)
+                                                      niters=None)
     phot_results = itr_phot_obj(psf)
 
     # Insure none of the fluxes determined by photutils is np.nan
@@ -1330,7 +1329,7 @@ def get_reference_catalog(ra, dec, sr=0.5, epoch=None, num_sources=None, catalog
     return ref_table.to_pandas(), catalog
 
 
-def get_reference_catalog_phot(ra, dec, sr=0.1, epoch=None, num_sources=None, catalog='GSC242',
+def get_reference_catalog_phot(ra, dec, sr=0.1, epoch=None, num_sources=None, catalog='GSC243',
                                full_catalog=False, silent=False):
     """ Extract reference catalog from VO web service.
     Queries the catalog available at the ``SERVICELOCATION`` specified
@@ -1467,7 +1466,7 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
     elif mode == 'photo' and catalog.upper() not in _base_conf.SUPPORTED_CATALOGS:
         log.warning(f"Given photometry catalog '{catalog}' NOT SUPPORTED. "
                     "Defaulting to GSC242")
-        catalog = "GSC242"
+        catalog = "GSC243"
 
     # check output
     if config["_src_cat_fname"] is not None:
