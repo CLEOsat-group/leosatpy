@@ -607,17 +607,12 @@ class CalibrateObsWCS(object):
                                        wcsprm,
                                        threshold=compare_threshold)
         _, _, _, _, distances, best_score, state = matches
-        # if len(distances) == 0:  # meaning the list is empty
-        #     best_score = 0
-        # else:
-        #     rms = np.sqrt(np.mean(np.square(distances)))
-        #     best_score = len(obs_x) / (rms + 10)  # start with the current best score
 
         fine_transformation_success = False
         if self._fine_transformation:
             if not self._silent:
                 self._log.info("  > Refine scale and rotation")
-            lis = [2, 3, 5, 8, 10, 6, 4, 20, 2, 1, 0.5]
+            lis = [2, 3, 5, 8, 10, 6, 4, 20, 2, 1, 0.5, 0.25]
             if self._high_res:
                 lis = [200, 300, 100, 150, 80, 40, 70, 20, 100, 30, 9, 5]
             skip_rot_scale = True
@@ -629,7 +624,7 @@ class CalibrateObsWCS(object):
                                                                 compare_threshold=compare_threshold,
                                                                 skip_rot_scale=skip_rot_scale,
                                                                 silent=self._silent)
-
+                print(best_score, score)
                 if i == 20:
                     # only allow rot and scaling for the last few tries
                     skip_rot_scale = False

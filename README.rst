@@ -51,15 +51,15 @@ Supported Telescopes
 
 Observations from the following telescopes are currently supported:
 
-* 1.54-metre Danish telescope at La Silla, Chile.
-* 0.6-metre telescope of the Chungbuk National University Observatory in Jincheon, South Korea
-* 0.6-metre Chakana telescope at the Ckoirama Observatory, Antofagasta, Chile.
-* 1.23-metre telescope at Calar Alto, Spain
-* 0.9-metre Small and Moderate Aperture Research Telescope System (SMARTS) Telescope
-  at Cerro Tololo Inter-american Observatory (CTIO)
-* 28-cm DDOTI telescopes at the Observatorio Astronómico Nacional (OAN) in
-  Sierra San Pedro Martír (SPM), Baja California, México
-* 0.5-metre MOSS telescope at the Oukaïmeden Observatory in Morocco
+* 0.6-metre Chakana telescope at the Ckoirama Observatory of the Universidad de Antofagasta, Antofagasta, Chile.
+* 0.9-metre Small and Moderate Aperture Research Telescope System (SMARTS) telescope
+  at Cerro Tololo Inter-american Observatory (CTIO), Chile.
+* 1.54-metre Danish telescope at the La Silla Observatory, Chile.
+* 0.28-metre DDOTI telescopes at the Observatorio Astronómico Nacional (OAN) in
+  Sierra San Pedro Martír (SPM), Baja California, México.
+* 0.5-metre MOSS telescope at the Oukaïmeden Observatory, Morocco.
+* 0.6-metre telescope of the Chungbuk National University Observatory in Jincheon, South Korea.
+* 1.23-metre telescope at the Calar Alto Observatory, Spain.
 
 .. put links to telescopes
 
