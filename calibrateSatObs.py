@@ -624,7 +624,7 @@ class CalibrateObsWCS(object):
                                                                 compare_threshold=compare_threshold,
                                                                 skip_rot_scale=skip_rot_scale,
                                                                 silent=self._silent)
-                print(best_score, score)
+
                 if i == 20:
                     # only allow rot and scaling for the last few tries
                     skip_rot_scale = False
