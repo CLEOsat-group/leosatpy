@@ -59,7 +59,7 @@ from astropy.stats import sigma_clipped_stats
 from skimage.draw import disk
 from skimage.measure import label
 
-from photutils.aperture import (RectangularAperture, CircularAperture)
+from photutils.aperture import (RectangularAperture, RectangularAnnulus, CircularAperture)
 from photutils.centroids import (centroid_sources, centroid_2dg)
 from photutils.segmentation import detect_sources
 from photutils import SegmentationImage
@@ -245,29 +245,28 @@ class AnalyseSatObs(object):
         self._dataset_all = ds
 
         # set variables for use
-        inst_list = ds.instruments
-        tel_list = ds.telescopes
-        obspar_list = ds.obsparams
-        obsfiles_grouped = ds.datasets
-        N_tels = len(tel_list)
+        inst_list = ds.instruments_list
+        inst_data = ds.instruments
+        N_inst = len(inst_list)
 
         fails = []
         pass_counter = 0
         time_stamp = self.get_time_stamp()
 
         # loop telescopes
-        for i in range(N_tels):
-            self._telescope = tel_list[i]
-            self._instrument = inst_list[i]
-            self._obsparams = obspar_list[i]
-            self._dataset_object = obsfiles_grouped[i]
+        for i in range(N_inst):
+            inst = inst_list[i]
+            self._instrument = inst
+            self._telescope = inst_data[inst]['telescope']
+            self._obsparams = inst_data[inst]['obsparams']
+            self._dataset_object = inst_data[inst]['dataset']
 
             # loop over groups and run reduction for each group
-            for obj_pointing, file_list in obsfiles_grouped[i]:
+            for obj_pointing, file_list in self._dataset_object:
                 files = file_list['file'].values
                 N_files = len(file_list)
 
-                unique_obj = np.unique(np.array([self._obsTable.get_satellite_id(f)
+                unique_obj = np.unique(np.array([self._obsTable.get_satellite_id(f)[0]
                                                  for f in file_list['object'].values]))
                 if len(unique_obj) > 1:
                     self._log.warning("More than one object name identified. "
@@ -279,7 +278,7 @@ class AnalyseSatObs(object):
                                   'Check/Compare FITS header and visibility files for naming issues.'])
                     continue
 
-                sat_name = self._obsTable.get_satellite_id(unique_obj[0])
+                sat_name, _ = self._obsTable.get_satellite_id(unique_obj[0])
                 if not self._silent:
                     self._log.info("====> Analyse satellite trail run <====")
                     self._log.info(
@@ -287,17 +286,17 @@ class AnalyseSatObs(object):
                         f"RA={obj_pointing[0]}, DEC={obj_pointing[1]} "
                         f"observed with the {self._telescope} telescope")
 
-                # result, error = self._analyse_sat_trails(files=files, sat_name=sat_name)
-                try:
-                    result, error = self._analyse_sat_trails(files=files, sat_name=sat_name)
-                except Exception as e:
-                    exc_type, exc_obj, exc_tb = sys.exc_info()
-                    fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-                    self._log.critical(f"Unexpected behaviour: {e} in file {fname}, "
-                                       f"line {exc_tb.tb_lineno}")
-                    error = [str(e), f'file: {fname}, line: {exc_tb.tb_lineno}',
-                             'Please report to christian.adam84@gmail.com']
-                    result = False
+                result, error = self._analyse_sat_trails(files=files, sat_name=sat_name)
+                # try:
+                #     result, error = self._analyse_sat_trails(files=files, sat_name=sat_name)
+                # except Exception as e:
+                #     exc_type, exc_obj, exc_tb = sys.exc_info()
+                #     fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                #     self._log.critical(f"Unexpected behaviour: {e} in file {fname}, "
+                #                        f"line {exc_tb.tb_lineno}")
+                #     error = [str(e), f'file: {fname}, line: {exc_tb.tb_lineno}',
+                #              'Please report to christian.adam84@gmail.com']
+                #     result = False
 
                 if result:
                     self._log.info(f">> Report: Satellite detection and analysis was {pass_str}")
@@ -450,23 +449,19 @@ class AnalyseSatObs(object):
         """
 
         obj_info = self._obj_info
-        # print(obj_info)
+
         hdr = img_dict['hdr']
         obsparams = self._obsparams
         file_name = img_dict['fname']
         n_trails_max = _base_conf.N_TRAILS_MAX
 
-        if not self._silent:
-            self._log.info("> Perform final analysis of satellite trail data")
+        # get additional info
+        exptime = hdr['exptime']
+        pixelscale = hdr['pixscale']  # arcsec/pix
+        pixelscale_err = 0.05 * pixelscale
 
         if not self._silent:
-            self._log.info("  > Load satellite visibility data")
-        state = self._obsTable.load_visibility_file(img_filter=hdr['FILTER'],
-                                                    src_loc=img_dict['loc'])
-        if not state:
-            return state, ['LoadVisError',
-                           'Visibility file not found',
-                           'Check that the naming of the visibility file ']
+            self._log.info("> Perform final analysis of satellite trail data")
 
         # get nominal orbit altitude
         sat_h_orb_ref = _base_conf.SAT_HORB_REF['ONEWEB']
@@ -483,6 +478,37 @@ class AnalyseSatObs(object):
         dtobj_obs = datetime.strptime(f"{date_obs}T{obs_mid}", "%Y-%m-%dT%H:%M:%S.%f")
         pointing = (obj_info['RA'].to_numpy(dtype=object)[0],
                     obj_info['DEC'].to_numpy(dtype=object)[0])
+
+        # standard star data
+        _aper_sum = np.array(list(zip(std_apphot['flux_counts_aper'],
+                                      std_apphot['flux_counts_err_aper'])))
+        _mags = np.array(list(zip(std_apphot[std_filter_keys[0]],
+                                  std_apphot[std_filter_keys[1]])))
+        std_pos = np.array(list(zip(std_apphot['xcentroid'],
+                                    std_apphot['ycentroid'])))
+
+        for i in range(n_trails_max):
+            reg_info = img_dict["trail_data"]['reg_info_lst'][i]
+
+            if not self._silent:
+                self._log.info("  > Plot trail detection result")
+            # final plot
+            self._plot_final_result(img_dict=img_dict,
+                                    reg_data=reg_info,
+                                    obs_date=(date_obs, obs_mid),
+                                    expt=exptime,
+                                    std_pos=std_pos,
+                                    file_base=file_name)
+
+        if not self._silent:
+            self._log.info("  > Load satellite visibility data")
+        state = self._obsTable.load_visibility_file(img_filter=hdr['FILTER'],
+                                                    src_loc=img_dict['loc'])
+        if not state:
+            return state, ['LoadVisError',
+                           'Visibility file not found',
+                           'Check that the naming of the visibility file ']
+
         self._obsTable.get_sat_data_from_visibility(sat_name=sat_name,
                                                     obs_date=dtobj_obs,
                                                     pointing=pointing)
@@ -546,19 +572,6 @@ class AnalyseSatObs(object):
         geo_lat = obsparams['latitude']
         geo_alt = obsparams['altitude'] / 1.e3  # in km
         # geo_alt = sats.get_elevation(lat=geo_lat, long=geo_lon) / 1.e3  # in km
-
-        # get additional info
-        exptime = hdr['exptime']
-        pixelscale = hdr['pixscale']  # arcsec/pix
-        pixelscale_err = 0.05 * pixelscale
-
-        # standard star data
-        _aper_sum = np.array(list(zip(std_apphot['flux_counts_aper'],
-                                      std_apphot['flux_counts_err_aper'])))
-        _mags = np.array(list(zip(std_apphot[std_filter_keys[0]],
-                                  std_apphot[std_filter_keys[1]])))
-        std_pos = np.array(list(zip(std_apphot['xcentroid'],
-                                    std_apphot['ycentroid'])))
 
         for i in range(n_trails_max):
             reg_info = img_dict["trail_data"]['reg_info_lst'][i]
@@ -644,8 +657,11 @@ class AnalyseSatObs(object):
 
                 est_mag_avg_w_scaled, est_mag_avg_err_scaled = est_mag_avg_scaled
 
-            # result table
-            tbl_names = [obsparams['ra'], obsparams['dec'], obsparams['exptime'],
+            # result table obspar['object']: hdr[obspar['object']],
+            #                       obspar['instrume']: hdr[obspar['instrume']],
+            tbl_names = [obsparams['ra'],  obsparams['dec'],
+                         obsparams['instrume'], obsparams['object'],
+                         obsparams['exptime'],
                          'SatAngularSpeed',
                          'ObsSatRange',
                          'ToD', 'e_ToD',
@@ -659,7 +675,16 @@ class AnalyseSatObs(object):
                          'FluxScale', 'MagScale', 'MagCorrect', 'e_MagCorrect',
                          'dt_tle-obs', 'mag_conv']
 
-            tbl_vals = [hdr[obsparams['ra']], hdr[obsparams['dec']], hdr[obsparams['exptime']],
+            ra = hdr[obsparams['ra']]
+            dec = hdr[obsparams['dec']]
+            if obsparams['radec_separator'] == 'XXX':
+                ra = round(hdr[obsparams['ra']], _base_conf.ROUND_DECIMAL)
+                dec = round(hdr[obsparams['dec']], _base_conf.ROUND_DECIMAL)
+
+            tbl_vals = [ra, dec,
+                        hdr[obsparams['instrume']],
+                        hdr[obsparams['object']],
+                        hdr[obsparams['exptime']],
                         sat_vel, dist_obs_sat,
                         time_on_det, time_on_det_err,
                         obs_trail_len, obs_trail_len_err,
@@ -678,16 +703,7 @@ class AnalyseSatObs(object):
             result['RADEC_Separator'] = obsparams['radec_separator']
             file = img_dict['fname']
             self._obsTable.update_obs_table(file=file,
-                                            kwargs=result,
-                                            radec_separator=obsparams['radec_separator'])
-
-            # final plot
-            self._plot_final_result(img_dict=img_dict,
-                                    reg_data=reg_info,
-                                    obs_date=(date_obs, obs_mid),
-                                    expt=exptime,
-                                    std_pos=std_pos,
-                                    file_base=file_name)
+                                            kwargs=result, obsparams=obsparams)
 
         if not self._silent:
             if dt_sec > exptime / 2.:
@@ -800,9 +816,12 @@ class AnalyseSatObs(object):
             optimum_apheight = config['APER_RAD'] * fwhm * 2.
             w_in = reg_info['width'] + config['RSKYIN'] * fwhm
             w_out = reg_info['width'] + config['RSKYOUT'] * fwhm
-            h_in = config['RSKYIN'] * fwhm * 2
-            h_out = config['RSKYOUT'] * fwhm * 2
-            # print(width, optimum_apheight, w_in, w_out, h_in, h_out)
+
+            # this offset can be used in case two parallel trails are close together and affect the
+            # background aperture of the other
+            h_offset = 15 if 'BLUEWALKER-3-016' in file_name else 0
+            h_in = config['RSKYIN'] * fwhm * 2. + h_offset
+            h_out = config['RSKYOUT'] * fwhm * 2. + h_offset
 
             if not self._silent:
                 self._log.info(f'  > Measure photometry for satellite trail.')
@@ -816,15 +835,23 @@ class AnalyseSatObs(object):
                                                             h_in=h_in, h_out=h_out,
                                                             theta=ang)
 
-            # mask for sources on trail
-            # trail_aperture = RectangularAperture(src_pos[0],
-            #                                      w=w_out,
-            #                                      h=h_out + 10.,
-            #                                      theta=ang)
-            # trail_mask = trail_aperture.to_mask(method='center')
+            # this can be helpful
+            # annulus_aperture = RectangularAnnulus(src_pos[0], w_in=w_in, w_out=w_out,
+            #                                       h_in=h_in, h_out=h_out, theta=ang)
+            # aperture = RectangularAperture(src_pos[0],
+            #                                w=width,
+            #                                h=optimum_apheight,
+            #                                theta=ang)
+            # plt.imshow(imgarr, interpolation='nearest')
             #
-            # src_mask = trail_mask.to_image(imgarr.shape, bool) * src_mask
-            # sat_phot_dict[i] = (sat_phot, src_mask)
+            # ap_patches = aperture.plot(**{'color': 'white',
+            #                               'lw': 2, 'label': 'Photometry aperture'})
+            # ann_patches = annulus_aperture.plot(**{'color': 'red',
+            #                                        'lw': 2, 'label': 'Background annulus'})
+            # handles = (ap_patches[0], ann_patches[0])
+            # plt.legend(loc='best', facecolor='#458989', labelcolor='white',
+            #            handles=handles, prop={'weight': 'bold', 'size': 11})
+            # plt.show()
 
             sat_phot_dict[i] = sat_phot
 
@@ -842,9 +869,20 @@ class AnalyseSatObs(object):
             wy_err = np.mean(abs(np.subtract(wy, wy[0])[1:])) * 3600.  # in arcseconds
 
             file = img_dict['fname']
-            kwargs = {obspar['exptime']: hdr[obspar['exptime']],
-                      obspar['ra']: hdr[obspar['ra']],
-                      obspar['dec']: hdr[obspar['dec']],
+
+            ra = hdr[obspar['ra']]
+            dec = hdr[obspar['dec']]
+            if obspar['radec_separator'] == 'XXX':
+                ra = round(hdr[obspar['ra']], _base_conf.ROUND_DECIMAL)
+                dec = round(hdr[obspar['dec']], _base_conf.ROUND_DECIMAL)
+            hdr[obspar['ra']] = ra
+            hdr[obspar['dec']] = dec
+
+            kwargs = {obspar['ra']: ra,
+                      obspar['dec']: dec,
+                      obspar['object']: hdr[obspar['object']],
+                      obspar['instrume']: hdr[obspar['instrume']],
+                      obspar['exptime']: hdr[obspar['exptime']],
                       'TrailCX': src_pos[0][1],  # in px
                       'e_TrailCX': src_pos_err[0][1],  # in px
                       'TrailCY': src_pos[0][0],  # in px
@@ -860,9 +898,9 @@ class AnalyseSatObs(object):
                       'QlfAperRad': 'T' if qlf_aprad else 'F'}  # in px
 
             self._obsTable.update_obs_table(file=file, kwargs=kwargs,
-                                            radec_separator=obspar['radec_separator'])
+                                            obsparams=obspar)
             self._obsTable.get_object_data(fname=file_name, kwargs=hdr,
-                                           radec_separator=obspar['radec_separator'])
+                                           obsparams=obspar)
             self._obj_info = self._obsTable.obj_info
 
         del imgarr, ref_img_warped, df, config, obspar, img_bkg, hdr, data_dict, img_dict
@@ -937,7 +975,7 @@ class AnalyseSatObs(object):
 
         if not self._silent:
             self._log.info(f"> Check intra-distance of std stars")
-        std_cat = sext.clean_catalog_distance(in_cat=std_cat, fwhm=kernel_fwhm, r=5.)
+        std_cat = sext.clean_catalog_distance(in_cat=std_cat, fwhm=kernel_fwhm, r=6.)
 
         # get reference positions
         ref_pos = np.array(list(zip(std_cat['xcentroid'], std_cat['ycentroid'])))
@@ -946,7 +984,7 @@ class AnalyseSatObs(object):
         x_init = ref_pos[:, 0]
         y_init = ref_pos[:, 1]
         x, y = centroid_sources(imgarr, x_init, y_init,
-                                box_size=9,
+                                box_size=11,
                                 centroid_func=centroid_2dg)
 
         # update the photometry table
@@ -1016,7 +1054,7 @@ class AnalyseSatObs(object):
     def _get_magnitude_correction(self, df: pd.DataFrame, file_base: str):
         """Estimate magnitude correction"""
         flux_ratios = df['flux_counts_inf_aper'] / df['flux_counts_aper']
-        # print(flux_ratios)
+
         corrections = np.array([-2.5 * np.log10(i) if i > 0.0 else np.nan for i in flux_ratios])
         corrections = corrections[~np.isnan(corrections)]
 
@@ -1037,7 +1075,7 @@ class AnalyseSatObs(object):
                                    label='Aperture Correction', rwidth=0.9)
 
         xmin, xmax = plt.xlim()
-        x = np.linspace(xmin, xmax, 200)
+        x = np.linspace(xmin, xmax, 500)
 
         mu, sigma = norm.fit(bins)
         best_fit_line = norm.pdf(x, mu, sigma)
@@ -1084,7 +1122,7 @@ class AnalyseSatObs(object):
             return data, False, ['IntegrityError',
                                  'Empty data frame or empty mask',
                                  'Check input data, trail/sources detection']
-
+        # split catalog in stars outside and inside the trail mask
         ref_cat_cln, ref_cat_removed = sext.clean_catalog_trail(imgarr=imgarr, mask=mask,
                                                                 catalog=ref_tbl_photo,
                                                                 fwhm=fwhm)
@@ -1094,8 +1132,6 @@ class AnalyseSatObs(object):
                                  'No standard stars left '
                                  'after removing stars close to trail',
                                  'To be solved']
-        # print(ref_cat_cln)
-        # print(ref_cat_removed)
 
         del imgarr, mask_list
 
@@ -1105,8 +1141,8 @@ class AnalyseSatObs(object):
         # match source catalog with cleaned reference catalog
         matches = imtrans.find_matches(ref_cat_cln,
                                        src_tbl,
-                                       threshold=10)
-        not_cat_matched, in_cat_cln_matched, _, _, _, _, _, state = matches
+                                       threshold=3. * fwhm)
+        not_cat_matched, in_cat_cln_matched, _, _, _, _, state = matches
 
         del matches, _
 
@@ -1115,28 +1151,32 @@ class AnalyseSatObs(object):
             return data, False, ['SrcMatchError',
                                  'No sources after matching '
                                  'with photometric reference catalog',
-                                 'Solution in work']
+                                 'To be solved']
 
         data['cats_cleaned'].update({ref_cat_str: not_cat_matched})
 
-        # match source catalog with cleaned reference catalog
-        matches = imtrans.find_matches(ref_cat_removed,
-                                       src_tbl,
-                                       threshold=10)
-        not_cat_matched, in_cat_cln_matched, _, _, _, _, _, state = matches
-        data['cats_cleaned_rem'].update({ref_cat_str: not_cat_matched})
+        if ref_cat_removed.empty:
+            # return result
+            return data, True, ['', '', '']
+        else:
 
-        del matches, _, src_tbl, ref_tbl_photo, ref_cat_cln, \
-            ref_cat_removed, not_cat_matched, in_cat_cln_matched
-        gc.collect()
-        if not state:
-            return data, False, ['SrcMatchError',
-                                 'No sources after matching '
-                                 'with photometric reference catalog',
-                                 'Solution in work']
+            # match source catalog with cleaned reference catalog
+            matches = imtrans.find_matches(ref_cat_removed,
+                                           src_tbl,
+                                           threshold=3. * fwhm)
+            not_cat_matched, in_cat_cln_matched, _, _, _, _, state = matches
+            data['cats_cleaned_rem'].update({ref_cat_str: not_cat_matched})
 
-        # return result
-        return data, True, ['', '', '']
+            del matches, _, src_tbl, ref_tbl_photo, ref_cat_cln, \
+                ref_cat_removed, not_cat_matched, in_cat_cln_matched
+            gc.collect()
+            if not state:
+                return data, False, ['SrcMatchError',
+                                     'No sources after matching '
+                                     'with photometric reference catalog',
+                                     'To be solved']
+            # return result
+            return data, True, ['', '', '']
 
     def _get_img_dict(self, data: dict, idx: int,
                       obsparam: dict,
@@ -1158,16 +1198,16 @@ class AnalyseSatObs(object):
         """
         config = obsparam
 
-        # print(mask)
         imgarr = data['images'][idx]
+
         # noinspection PyAugmentAssignment
         if mode == 'ref':
             imgarr = imgarr * mask
-            config['nsigma'] = 0.001
-            config['box_size'] = 10
-            config['win_size'] = 5
-            config['source_box'] = 4
-            config['isolation_size'] = 0.1
+            config['nsigma'] = 1.5
+            config['box_size'] = 27
+            config['win_size'] = 11
+            config['source_box'] = 9
+            config['isolation_size'] = 5
 
         hdr = data['header'][idx]
         file_name = data['file_names'][idx]
@@ -1181,9 +1221,10 @@ class AnalyseSatObs(object):
 
         # get wcs
         wcsprm = WCS(hdr).wcs
-        # print(bkg_file_name)
+
         # extract sources on detector
         params_to_add = dict(_fov_radius=None,
+                             _trail_data=trail_data,
                              _vignette=self._vignette,
                              _vignette_rectangular=self._vignette_rectangular,
                              _cutouts=self._cutouts,
@@ -1223,8 +1264,17 @@ class AnalyseSatObs(object):
         if mode != 'ref':
             if not self._silent:
                 self._log.info("> Load object information")
+
+            ra = hdr[obsparam['ra']]
+            dec = hdr[obsparam['dec']]
+            if obsparam['radec_separator'] == 'XXX':
+                ra = round(hdr[obsparam['ra']], _base_conf.ROUND_DECIMAL)
+                dec = round(hdr[obsparam['dec']], _base_conf.ROUND_DECIMAL)
+            hdr[obsparam['ra']] = ra
+            hdr[obsparam['dec']] = dec
+
             self._obsTable.get_object_data(fname=file_name, kwargs=hdr,
-                                           radec_separator=config['radec_separator'])
+                                           obsparams=obsparam)
             self._obj_info = self._obsTable.obj_info
 
         del imgarr, res_vals, extraction_result, bkg_data, hdr, file_name, location, catalog, band, \
@@ -1284,7 +1334,7 @@ class AnalyseSatObs(object):
             plt_path = Path(one_up, 'figures')
             if not plt_path.exists():
                 plt_path.mkdir(exist_ok=True)
-            sat_id = self._obsTable.get_satellite_id(hdr[obspar['object']])
+            sat_id, _ = self._obsTable.get_satellite_id(hdr[obspar['object']])
             plt_path_final = plt_path / sat_id
             if not plt_path_final.exists():
                 plt_path_final.mkdir(exist_ok=True)
@@ -1323,10 +1373,22 @@ class AnalyseSatObs(object):
 
                 img[img < 0.] = 0
 
+                ccd_mask_dict = {'CTIO': [[1405, 1791, 1920, 1957]],
+                                 'CBNUO-JC': [[225, 227, 1336, 2048]]}
+                detect_mask = None
+                if self._telescope in ['CTIO', 'CBNUO-JC']:
+                    detect_mask = np.zeros(img.shape)
+                    ccd_mask_list = ccd_mask_dict[self._telescope]
+                    for yx in ccd_mask_list:
+                        detect_mask[yx[0]:yx[1], yx[2]:yx[3]] = 1
+                    detect_mask = np.where(detect_mask == 1, True, False)
+                if not self._silent:
+                    self._log.info(f"> Find satellite trail(s) in image: {file_name_clean}")
+
                 # extract satellite trails from the image and create mask
                 masks_dict, has_trail = sats.detect_sat_trails(image=img,
                                                                config=_config,
-                                                               alpha=30,
+                                                               alpha=30, mask=detect_mask,
                                                                silent=self._silent)
                 kwargs = hdr.copy()
                 kwargs['HasTrail'] = 'T' if has_trail else 'F'
@@ -1337,10 +1399,17 @@ class AnalyseSatObs(object):
                     if not self._silent:
                         self._log.info("  > Plot trail detection results")
                     self._plot_fit_results(masks_dict, file_name_clean)
+
+                if obspar['radec_separator'] == 'XXX':
+                    kwargs[obspar['ra']] = round(hdr[obspar['ra']],
+                                                 _base_conf.ROUND_DECIMAL)
+                    kwargs[obspar['dec']] = round(hdr[obspar['dec']],
+                                                  _base_conf.ROUND_DECIMAL)
+
                 self._obsTable.update_obs_table(file=file_name_clean,
-                                                kwargs=kwargs,
-                                                radec_separator=obspar['radec_separator'])
+                                                kwargs=kwargs, obsparams=obspar)
                 self._obj_info = self._obsTable.obj_info
+
                 del masks_dict
 
             data_dict['telescope'].append(self._telescope)
@@ -1402,7 +1471,7 @@ class AnalyseSatObs(object):
         # loop over these permutations, subtract the second from the first.
         # The idea is that the trail is only positive if an image without trail is subtracted
         for p in perm_arr[::-1]:
-            # print(has_trail_votes[p[0]], has_no_trail_votes[p[0]], p[0])
+
             if has_trail_votes[p[0]]:
                 continue
 
@@ -1464,8 +1533,7 @@ class AnalyseSatObs(object):
                 perm_arr = np.delete(perm_arr, idx, axis=0)
 
             self._obsTable.update_obs_table(file=file_name_clean,
-                                            kwargs=kwargs,
-                                            radec_separator=obspar['radec_separator'])
+                                            kwargs=kwargs, obsparams=self._obsparams)
             self._obj_info = self._obsTable.obj_info
 
             del img_one, image_two, img_two_warped, diff_img, \
@@ -1487,7 +1555,12 @@ class AnalyseSatObs(object):
         # get ephemeris
         self._set_observer()
 
-        satellite = Orbital(sat_name, tle_file=tle_location)
+        try:
+            satellite = Orbital(sat_name, tle_file=tle_location)
+        except KeyError:
+            sat_name = sat_name.replace('-', ' ')
+            satellite = Orbital(sat_name, tle_file=tle_location)
+
         prev_sat_az_alt = satellite.get_observer_look(exposure_start,
                                                       self._obsparams["longitude"],
                                                       self._obsparams["latitude"],
@@ -2112,6 +2185,12 @@ class AnalyseSatObs(object):
             if theta < 0.:
                 x0 = plim * 0.025
                 y0 = plim * 0.955
+        if self._telescope == 'Takahashi FSQ 85':
+            x0 = plim * 1.25
+            y0 = plim * 0.025
+            if theta < 0.:
+                x0 = plim * 0.025
+                y0 = plim * 0.955
 
         larr = self._config['ARROW_LENGTH'] * plim  # 15% of the image size
         length = self._config['LINE_LENGTH']
@@ -2142,7 +2221,7 @@ class AnalyseSatObs(object):
 
         fig = plt.figure(figsize=figsize)
 
-        gs = gridspec.GridSpec(1, 1, )
+        gs = gridspec.GridSpec(1, 1)
         ax = fig.add_subplot(gs[0, 0])
 
         # plot the image
@@ -2150,17 +2229,11 @@ class AnalyseSatObs(object):
                   cmap=cmap,
                   interpolation='bicubic',
                   norm=nm,
-                  aspect='equal', zorder=2)
-
-        # cmap = matplotlib.colors.ListedColormap(['red'])
-        # nm = matplotlib.colors.BoundaryNorm([0, 1], cmap.N)
-        # ax.imshow(label_img, cmap=cmap,
-        #           norm=nm,
-        #           origin='lower', aspect='equal', alpha=1, zorder=3)
+                  aspect='equal')
 
         # add apertures
-        std_apers.plot(axes=ax, **{'color': 'red', 'lw': 1.25, 'alpha': 0.75, 'zorder': 2})
-        sat_aper.plot(axes=ax, **{'color': 'limegreen', 'lw': 1.25, 'alpha': 0.75, 'zorder': 2.5})
+        std_apers.plot(axes=ax, **{'color': 'red', 'lw': 1.25, 'alpha': 0.75})
+        sat_aper.plot(axes=ax, **{'color': 'green', 'lw': 1.25, 'alpha': 0.75})
 
         # Add compass
         self._add_compass(ax=ax, x0=x0, y0=y0, larr=larr, theta=theta, color='k')
@@ -2232,7 +2305,7 @@ class AnalyseSatObs(object):
         fig_type = self._config['FIG_TYPE']
         fig_dpi = self._config['FIG_DPI']
         if fig_type == 'png':
-            plt.savefig(fname + '.png', format='png')
+            plt.savefig(fname + '.png', format='png', dpi=fig_dpi)
             os.system(f'mogrify -trim {fname}.png ')
         elif fig_type == 'pdf':
             self._log.setLevel("warning".upper())
@@ -2240,10 +2313,13 @@ class AnalyseSatObs(object):
             self._log.setLevel("info".upper())
             os.system('pdfcrop ' + fname + '.pdf ' + fname + '.pdf')
         else:
-            self._log.warning(f"Selected figure type {fig_type} NOT SUPPORTED. "
-                              f"Figure will be saved as .png")
-            plt.savefig(fname + '.png', format='png')
+            self._log.info(f"Figure will be saved as .png and.pdf")
+            plt.savefig(fname + '.png', format='png', dpi=fig_dpi)
             os.system(f'mogrify -trim {fname}.png ')
+            self._log.setLevel("warning".upper())
+            plt.savefig(fname + '.pdf', format='pdf', dpi=fig_dpi)
+            self._log.setLevel("info".upper())
+            os.system('pdfcrop ' + fname + '.pdf ' + fname + '.pdf')
 
     @staticmethod
     def get_time_stamp() -> str:

@@ -57,6 +57,10 @@ from astropy.convolution import (
 from astropy.modeling.fitting import LevMarLSQFitter
 from packaging.version import Version
 
+import astroquery
+from astroquery.gaia import Gaia
+from astroquery.vizier import Vizier
+
 import photutils  # needed to check the version
 
 if Version(photutils.__version__) < Version('1.1.0'):
@@ -88,6 +92,7 @@ from photutils import (
 from photutils.aperture import CircularAperture
 
 from skimage.draw import disk
+import scipy.spatial as spsp
 
 try:
     import matplotlib
@@ -250,25 +255,25 @@ def build_auto_kernel(imgarr, fwhm=4.0, threshold=None, source_box=7,
     # find peaks 3 times above the threshold
     peaks = find_peaks(kern_img, threshold=3. * threshold,
                        box_size=isolation_size, border_width=25)
-    # print(peaks)
+
     if peaks is None or (peaks is not None and len(peaks) == 0):
         tmean = threshold.mean() if isinstance(threshold, np.ndarray) else threshold
         if tmean > kern_img.mean():
             kern_stats = sigma_clipped_stats(kern_img)
             threshold = kern_stats[2]
         peaks = find_peaks(kern_img, threshold=threshold, box_size=isolation_size)
-    # print(peaks)
+
     del kern_img
 
     if peaks is not None:
         # Sort based on peak_value to identify the brightest sources for use as a kernel
         peaks.sort('peak_value', reverse=True)
-        # print(peaks)
+
         if saturation_limit:
             sat_peaks = np.where(peaks['peak_value'] > saturation_limit)[0]
             sat_index = sat_peaks[-1] + 1 if len(sat_peaks) > 0 else 0
             peaks['peak_value'][:sat_index] = 0.
-        # print(peaks)
+
         fwhm_attempts = 0
         # Identify position of brightest, non-saturated peak (in numpy index order)
         for peak_ctr in range(len(peaks)):
@@ -411,9 +416,7 @@ def clean_catalog_trail(imgarr, mask, catalog, fwhm, r=3.):
         return None, None
     del trl_ind
 
-    df = catalog.copy()
-
-    src_pos = np.array(list(zip(df['xcentroid'], df['ycentroid'])))
+    src_pos = np.array(list(zip(catalog['xcentroid'], catalog['ycentroid'])))
 
     # loop over sources
     unwanted_indices = []
@@ -429,18 +432,53 @@ def clean_catalog_trail(imgarr, mask, catalog, fwhm, r=3.):
 
     unwanted_indices = np.array(unwanted_indices)
 
-    desired_df = df.drop(df.index[unwanted_indices[:, 0]], axis=0)
-    idx = np.where(unwanted_indices[:, 1])
-    removed_df = df.iloc[unwanted_indices[:, 0][idx]]
-
-    del imgarr, df, idx, unwanted_indices, mask
-    gc.collect()
-
-    return desired_df, removed_df
+    if list(unwanted_indices):
+        desired_df = catalog.drop(catalog.index[unwanted_indices[:, 0]], axis=0)
+        idx = np.where(unwanted_indices[:, 1])
+        removed_df = catalog.iloc[unwanted_indices[:, 0][idx]]
+        del idx, imgarr, catalog, unwanted_indices, mask
+        gc.collect()
+        return desired_df, removed_df
+    else:
+        del imgarr, unwanted_indices, mask
+        gc.collect()
+        return catalog, pd.DataFrame()
 
 
 def clean_catalog_distance(in_cat: pandas.DataFrame,
-                           fwhm: float, r: float = 5) -> Table:
+                           fwhm: float, r: float = 5.) -> Table:
+    """Remove sources that are close to each other"""
+
+    radius = r * fwhm
+
+    coords = in_cat[['xcentroid', 'ycentroid']].to_numpy()
+    distances = spsp.distance_matrix(coords, coords)
+    in_cat['dist'] = distances.tolist()
+
+    # CREATES d0, d1, d2, d3, ... COLUMNS
+    dist_cols = ['d' + str(i) for i in range(len(in_cat['ycentroid']))]
+    df = in_cat['dist'].apply(pd.Series)
+    df.columns = df.columns.map(lambda x: dist_cols[x])
+    df_ = pd.concat([in_cat, df], axis=1)
+
+    # RESHAPE DATA LONG
+    melted_df = df_.melt(id_vars=['objID', 'xcentroid', 'ycentroid'],
+                         value_vars=dist_cols,
+                         var_name='dist', value_name='dist_val', ignore_index=False)
+
+    # FILTER FOR DISTANCES (0, r)
+    unwanted_indices = melted_df[melted_df['dist_val'].between(0.,
+                                                               radius,
+                                                               inclusive=False)].index
+    in_cat_cln = in_cat.drop(unwanted_indices, axis=0)
+
+    del in_cat, unwanted_indices, df, df_
+    gc.collect()
+    return in_cat_cln
+
+
+def clean_catalog_distance_old(in_cat: pandas.DataFrame,
+                               fwhm: float, r: float = 5) -> Table:
     """Remove sources that are close to each other"""
 
     radius = r * fwhm
@@ -612,7 +650,7 @@ def compute_2d_background(imgarr, box_size, win_size,
 
     # write results to fits
     hdu1 = fits.PrimaryHDU(data=bkg_background)
-    hdu1.header.set('BKGMED', bkg_median)
+    hdu1.header.set('BEGRIMED', bkg_median)
     hdu1.header.set('RMSMED', bkg_rms_median)
     hdu2 = fits.ImageHDU(data=bkg_rms)
     new_hdul = fits.HDUList([hdu1, hdu2])
@@ -623,7 +661,8 @@ def compute_2d_background(imgarr, box_size, win_size,
     return bkg_background, bkg_median, bkg_rms, bkg_rms_median
 
 
-def compute_radius(wcs: WCS, naxis1: int, naxis2: int) -> float:
+def compute_radius(wcs: WCS, naxis1: int, naxis2: int,
+                   ra: float = None, dec: float = None) -> float:
     """Compute the radius from the center to the furthest edge of the WCS.
 
     Parameters
@@ -634,6 +673,10 @@ def compute_radius(wcs: WCS, naxis1: int, naxis2: int) -> float:
         Axis length used to calculate the image footprint.
     naxis2:
         Axis length used to calculate the image footprint.
+    ra:
+
+    dec:
+
 
     Returns
     -------
@@ -641,7 +684,8 @@ def compute_radius(wcs: WCS, naxis1: int, naxis2: int) -> float:
         Radius of field-of-view in arcmin.
     """
 
-    ra, dec = wcs.wcs.crval
+    if ra is None and dec is None:
+        ra, dec = wcs.wcs.crval
 
     img_center = SkyCoord(ra=ra * u.degree, dec=dec * u.degree)
 
@@ -654,7 +698,7 @@ def compute_radius(wcs: WCS, naxis1: int, naxis2: int) -> float:
 
     # make sure the radius is less than 1 deg because of GAIAdr3 search limit
     separations = img_center.separation(img_corners).value
-    radius = separations.max() if separations.max() < 1. else 0.9
+    radius = separations.max()
 
     return radius
 
@@ -778,7 +822,7 @@ def extract_source_catalog(imgarr, config, vignette=-1,
     nsigma = config['nsigma']
     estimate_bkg = config['estimate_bkg']
     bkg_fname = config['bkg_fname']
-    # print(bkg_fname)
+
     bkg_data = compute_2d_background(imgarr,
                                      box_size=box_size,
                                      win_size=win_size,
@@ -787,18 +831,21 @@ def extract_source_catalog(imgarr, config, vignette=-1,
                                      silent=silent)
 
     bkg_ra, bkg_median, bkg_rms_ra, bkg_rms_median = bkg_data
+
     # set thresholds
     threshold = nsigma * bkg_rms_ra
     dao_threshold = nsigma * bkg_rms_median
-    # print(threshold, dao_threshold)
+
     # subtract background from the image
     imgarr_bkg_subtracted = imgarr - bkg_ra
 
     if not silent:
         log.info("  > Mask image")
-    imgarr_bkg_subtracted = mask_image(imgarr_bkg_subtracted, bkg_median,
-                                       vignette=vignette, vignette_rectangular=vignette_rectangular,
-                                       cutouts=cutouts, only_rectangle=only_rectangle)
+    imgarr_bkg_subtracted = mask_image(imgarr_bkg_subtracted,
+                                       vignette=vignette,
+                                       vignette_rectangular=vignette_rectangular,
+                                       cutouts=cutouts,
+                                       only_rectangle=only_rectangle)
 
     if not silent:
         log.info("  > Auto build kernel")
@@ -822,7 +869,7 @@ def extract_source_catalog(imgarr, config, vignette=-1,
                                                              fwhm=kernel_fwhm,
                                                              source_box=source_box,
                                                              # centering_mode=None,
-                                                             nlargest=_base_conf.NUM_SOURCES_MAX,
+                                                             nlargest=None,
                                                              MAX_AREA_LIMIT=_base_conf.MAX_AREA_LIMIT,
                                                              silent=silent)
     if not state:
@@ -853,10 +900,16 @@ def extract_sources(img, fwhm=3.0, kernel=None,
         Numpy array of the science extension from the observations FITS file.
     fwhm: float
         Full-width half-maximum (fwhm) of the PSF in pixels.
+    kernel:
+        Filter kernel
+    segment_threshold:
+
     dao_threshold: float or None
         Value from the image which serves as the limit for determining sources.
         If None, compute a default value of (background+5*rms(background)).
         If threshold < 0.0, use absolute value as the scaling factor for default value.
+    dao_nsigma:
+
     source_box: int
         Size of box (in pixels) which defines the minimum size of a valid source.
     classify: bool
@@ -871,6 +924,7 @@ def extract_sources(img, fwhm=3.0, kernel=None,
         Centering using `segmentation` will rely on `photutils.segmentation.source_properties` to generate the
         properties for the source catalog. Centering using `starfind` will use
         `photutils.detection.IRAFStarFinder` to characterize each source in the catalog.
+    MAX_AREA_LIMIT:
     nlargest: int, None
         Number of the largest (brightest) sources in each chip/array to measure
         when using 'starfind' mode.
@@ -887,13 +941,15 @@ def extract_sources(img, fwhm=3.0, kernel=None,
     imgarr = img.copy()
 
     if dao_threshold is None:
-        dao_threshold, bkg = sigma_clipped_bkg(imgarr, sigma=3.0, nsigma=dao_nsigma, maxiters=3)
+        dao_threshold, bkg = sigma_clipped_bkg(imgarr, sigma=3.0,
+                                               nsigma=dao_nsigma, maxiters=None)
 
     if segment_threshold is None:
         segment_threshold = np.ones(imgarr.shape, imgarr.dtype) * dao_threshold
 
-    segm = detect_sources(imgarr, segment_threshold, npixels=source_box,
-                          kernel=kernel, connectivity=8)
+    img_convolved = convolve(imgarr, kernel)
+    segm = detect_sources(img_convolved, segment_threshold, npixels=source_box,
+                          connectivity=8)
 
     # photutils >= 0.7: segm=None; photutils < 0.7: segm.nlabels=0
     if segm is None or segm.nlabels == 0:
@@ -913,7 +969,11 @@ def extract_sources(img, fwhm=3.0, kernel=None,
         kernel_area = ((source_box // 2) ** 2) * np.pi
         log.debug("   based on a default kernel.")
 
-    num_brightest = 20 if len(segm.areas) > 20 else len(segm.areas)
+    num_brightest = 10 if len(segm.areas) > 10 else len(segm.areas)
+    # print(segm)
+    # plt.imshow(segm.data)
+    # plt.show()
+    # print(5*np.mean(segm.areas))
 
     mean_area = np.mean(segm.areas)
     max_area = np.sort(segm.areas)[-1 * num_brightest:].mean()
@@ -928,14 +988,16 @@ def extract_sources(img, fwhm=3.0, kernel=None,
         # reset kernel to only use the central 1/4 area and redefine the segment map
         kcenter = (kernel.shape[0] - 1) // 2
         koffset = (kcenter - 1) // 2
-        kernel = kernel[kcenter - koffset: kcenter + koffset + 1, kcenter - koffset: kcenter + koffset + 1].copy()
+        kernel = kernel[kcenter - koffset: kcenter + koffset + 1,
+                        kcenter - koffset: kcenter + koffset + 1].copy()
         kernel /= kernel.sum()  # normalize to total sum == 1
         log.debug(f"Looking for crowded sources using smaller kernel with shape: {kernel.shape}")
         segm = detect_sources(imgarr, segment_threshold, npixels=source_box, kernel=kernel)
 
     if deblend:
-        segm = deblend_sources(imgarr, segm, npixels=5,
-                               kernel=kernel, nlevels=32,
+        img_convolved = convolve(imgarr, kernel)
+        segm = deblend_sources(img_convolved, segm, npixels=5,
+                               nlevels=32,
                                contrast=1e-4)
 
     # If classify is turned on, it should modify the segmentation map
@@ -947,6 +1009,7 @@ def extract_sources(img, fwhm=3.0, kernel=None,
         bad_srcs = np.where(classify_sources(cat, fwhm) == 0)[0] + 1
 
         segm.remove_labels(bad_srcs)
+        del cat, bad_srcs
 
     if OLD_PHOTUTILS:
         flux_colname = 'source_sum'
@@ -989,7 +1052,7 @@ def extract_sources(img, fwhm=3.0, kernel=None,
 
             dao_threshold = segment_threshold[seg_slice].mean()
             daofind = DAOStarFinder(fwhm=fwhm, threshold=dao_threshold)
-            log.debug(f"Setting up DAOStarFinder with: \n    fwhm={fwhm}  threshold={dao_threshold}")
+            log.debug(f"Setting up DAOStarFinder with: \n    fwhm={fwhm} threshold={dao_threshold}")
 
             # Define raw data from this slice
             detection_img = img[seg_slice]
@@ -1021,9 +1084,10 @@ def extract_sources(img, fwhm=3.0, kernel=None,
                         segment_properties = SourceCatalog(detection_img, segment.data,
                                                            kernel=kernel)
                     else:
-                        segimg = SegmentationImage(segment.data)
-                        segment_properties = SourceCatalog(detection_img, segimg,
+                        seg_img = SegmentationImage(segment.data)
+                        segment_properties = SourceCatalog(detection_img, seg_img,
                                                            kernel=kernel)
+                        del seg_img
 
                     sat_table = segment_properties.to_table()
                     seg_table['flux'][max_row] = sat_table[flux_colname][0]
@@ -1043,11 +1107,15 @@ def extract_sources(img, fwhm=3.0, kernel=None,
                     seg_table['sky'][max_row] = sky if sky is not None and not np.isnan(sky) else 0.0
                     seg_table['mag'][max_row] = -2.5 * np.log10(sat_table[flux_colname][0])
 
+                    del segment_properties, sat_table
+
                 # Add row for the detected source to the master catalog
                 # apply offset to slice to convert positions into full-frame coordinates
                 seg_table['xcentroid'] += seg_xoffset
                 seg_table['ycentroid'] += seg_yoffset
                 src_table.add_row(seg_table[max_row])
+
+            del segment, seg_slice, seg_table, detection_img, daofind
 
             # If we have accumulated the desired number of sources, stop looking for more...
             if nlargest is not None and src_table is not None and len(src_table) == nlargest:
@@ -1056,23 +1124,29 @@ def extract_sources(img, fwhm=3.0, kernel=None,
         log.debug("Determining source properties as src_table...")
         cat = SourceCatalog(data=img, segment_img=segm, kernel=kernel)
         src_table = cat.to_table()
-
+        del cat
         # Make column names consistent with IRAFStarFinder column names
         src_table.rename_column(flux_colname, 'flux')
         src_table.rename_column(ferr_colname, 'flux_err')
         src_table.rename_column('max_value', 'peak')
 
+    gc.collect()
+
     if src_table is not None and len(src_table) >= 3:
         log.info(f"    Total Number of detected sources: {len(src_table)}")
     elif src_table is not None and len(src_table) < 3:
         log.critical(f"Less than 3 sources detected. Skipping further steps")
+
         del img, imgarr, segm, dao_threshold, segment_threshold
         gc.collect()
+
         return None, None, None, False
     else:
         log.info("    No detected sources!")
+
         del img, imgarr, segm, dao_threshold, segment_threshold
         gc.collect()
+
         return None, None, None, False
 
     # Move 'id' column from first to last position
@@ -1163,8 +1237,101 @@ def find_worst_residual_near_center(resid: np.ndarray):
     return np.unravel_index(np.argmax(rmasked), resid.shape)
 
 
-def get_reference_catalog(ra, dec, sr=0.1, epoch=None, num_sources=None, catalog='GSC242',
+def get_reference_catalog(ra, dec, sr=0.5, epoch=None, num_sources=None, catalog='GSC242',
                           full_catalog=False, silent=False):
+    """ Extract reference catalog from VO web service.
+    Queries the catalog available at the ``SERVICELOCATION`` specified
+    for this module to get any available astrometric source catalog entries
+    around the specified position in the sky based on a cone-search.
+
+    Parameters
+    ----------
+    ra: float
+        Right Ascension (RA) of center of field-of-view (in decimal degrees)
+    dec: float
+        Declination (Dec) of center of field-of-view (in decimal degrees)
+    sr: float, optional
+        Search radius (in decimal degrees) from field-of-view center to use
+        for sources from catalog. Default: 0.5 degrees
+    epoch: float, optional
+        Catalog positions returned for this field-of-view will have their
+        proper motions applied to represent their positions at this date, if
+        a value is specified at all, for catalogs with proper motions.
+    num_sources: int, None, optional
+        Maximum number of the brightest/faintest sources to return in catalog.
+        If `num_sources` is negative, return that number of the faintest
+        sources.  By default, all sources are returned.
+    catalog: str, optional
+        Name of catalog to query, as defined by web-service.  Default: 'GSC242'
+    full_catalog: bool, optional
+        Return the full set of columns provided by the web service.
+    silent: bool, optional
+        Set to True to suppress most console output
+
+    Returns
+    -------
+    csv: CSV object
+        CSV object of returned sources with all columns as provided by catalog
+    """
+
+    # Initialize logging for this user-callable function
+    log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
+    coord = SkyCoord(ra=ra, dec=dec, unit=(u.degree, u.degree), obstime=epoch)
+    radius = u.Quantity(sr, u.deg)
+
+    ref_table = None
+    if 'GAIA' in catalog:
+        # Gaia.MAIN_GAIA_TABLE = _base_conf.DEF_ASTROQUERY_CATALOGS[catalog.upper()]  # Select early Data Release 3
+        Gaia.ROW_LIMIT = -1  # Ensure the default row limit.
+
+        if not silent:
+            log.info("> Get astrometric reference catalog via astroquery")
+            log.info(f"  Downloading data... This may take a while!!! Don't panic")
+
+        query = f"""SELECT *
+            FROM {_base_conf.DEF_ASTROQUERY_CATALOGS[catalog.upper()]}
+            WHERE 1 = CONTAINS(
+               POINT({coord.ra.value}, {coord.dec.value}),
+               CIRCLE(ra, dec, {radius.value}))
+            AND phot_g_mean_mag < 16
+            AND parallax IS NOT NULL
+            ORDER BY phot_g_mean_mag ASC
+        """
+
+        j = Gaia.launch_job_async(query)
+        ref_table = j.get_results()
+    # if 'GSC' in catalog:
+    #     if not silent:
+    #         log.info("> Get photometric reference catalog via astroquery")
+    #     catname = _base_conf.DEF_ASTROQUERY_CATALOGS[catalog.upper()]
+    #     v = Vizier(columns=["**"], catalog=catname)
+    #     v.ROW_LIMIT = -1  # Ensure the default row limit.
+    #     ref_table = v.query_region(coord,
+    #                                radius=radius)
+    #     ref_table = ref_table[0]
+
+    # Add catalog name as metadata
+    ref_table.meta['catalog'] = catalog
+    ref_table.meta['epoch'] = epoch
+
+    # Convert a common set of columns into standardized column names
+    ref_table = convert_astrometric_table(ref_table, catalog)
+
+    if not full_catalog:
+        ref_table = ref_table['RA', 'DEC', 'mag', 'objID']
+
+    # sort table by magnitude, fainter to brightest
+    ref_table.sort('mag', reverse=True)
+
+    if num_sources is not None:
+        idx = -1 * num_sources
+        ref_table = ref_table[:idx] if num_sources < 0 else ref_table[idx:]
+
+    return ref_table.to_pandas(), catalog
+
+
+def get_reference_catalog_phot(ra, dec, sr=0.1, epoch=None, num_sources=None, catalog='GSC242',
+                               full_catalog=False, silent=False):
     """ Extract reference catalog from VO web service.
     Queries the catalog available at the ``SERVICELOCATION`` specified
     for this module to get any available astrometric source catalog entries
@@ -1188,7 +1355,7 @@ def get_reference_catalog(ra, dec, sr=0.1, epoch=None, num_sources=None, catalog
         If `num_sources` is negative, return that number of the faintest
         sources.  By default, all sources are returned.
     catalog: str, optional
-        Name of catalog to query, as defined by web-service.  Default: 'GSC241'
+        Name of catalog to query, as defined by web-service.  Default: 'GSC242'
     full_catalog: bool, optional
         Return the full set of columns provided by the web service.
     silent: bool, optional
@@ -1203,8 +1370,10 @@ def get_reference_catalog(ra, dec, sr=0.1, epoch=None, num_sources=None, catalog
     # Initialize logging for this user-callable function
     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
 
+    # sr = sr if sr < 1. else 0.95
+
     serviceType = 'vo/CatalogSearch.aspx'
-    spec_str = 'RA={}&DEC={}&SR={}&FORMAT={}&CAT={}&MINDET=5'
+    spec_str = 'RA={}&DEC={}&SR={}&FORMAT={}&CAT={}&MINDET=5&MAXOBJ=5000'
     headers = {'Content-Type': 'text/csv'}
     fmt = 'CSV'
     epoch_str = '&EPOCH={:.3f}'
@@ -1212,17 +1381,16 @@ def get_reference_catalog(ra, dec, sr=0.1, epoch=None, num_sources=None, catalog
     base_spec = spec_str.format(ra, dec, sr, fmt, catalog)
     spec = base_spec + epoch_str.format(epoch) if epoch else base_spec
     if not silent:
-        log.info("> Get reference catalog via VO web service")
+        log.info("> Get photometric reference catalog via VO web service")
 
     url_chk = url_checker(f'{_base_conf.SERVICELOCATION}/{serviceType}')
     if not url_chk[0]:
         log.error(f"  {url_chk[1]}. ")
         sys.exit(1)
     if not silent:
-        log.info(f"  {url_chk[1]}. Downloading data...")
+        log.info(f"  {url_chk[1]}. Downloading data... This may take a while!!! Don't panic")
 
     serviceUrl = f'{_base_conf.SERVICELOCATION}/{serviceType}?{spec}'
-    # print(serviceUrl)
     log.debug("Getting catalog using: \n    {}".format(serviceUrl))
     rawcat = requests.get(serviceUrl, headers=headers)
 
@@ -1242,7 +1410,7 @@ def get_reference_catalog(ra, dec, sr=0.1, epoch=None, num_sources=None, catalog
 
     # If we still have an error returned by the web-service, report the exact error
     if rstr[0].startswith('Error'):
-        log.warning(f"Astrometric catalog generation FAILED with: \n{rstr}")
+        log.warning(f"Catalog generation FAILED with: \n{rstr}")
 
     del rstr[0], rawcat, r_contents
     gc.collect()
@@ -1295,7 +1463,7 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
     if mode == 'astro' and catalog.upper() not in _base_conf.SUPPORTED_CATALOGS:
         log.warning(f"Given astrometry catalog '{catalog}' NOT SUPPORTED. "
                     "Defaulting to GAIAdr3")
-        catalog = "GAIAedr3"
+        catalog = "GAIAdr3"
     elif mode == 'photo' and catalog.upper() not in _base_conf.SUPPORTED_CATALOGS:
         log.warning(f"Given photometry catalog '{catalog}' NOT SUPPORTED. "
                     "Defaulting to GSC242")
@@ -1314,17 +1482,22 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
     if 'time-obs' in hdr:
         t = pd.to_datetime(f"{hdr['date-obs']}T{hdr['time-obs']}",
                            format=_base_conf.FRMT, utc=False)
-    epoch = Time(t).decimalyear
+    epoch = Time(t)
 
-    # estimate the radius of the FoV for ref. catalog creation
-    fov_radius = compute_radius(WCS(wcsprm.to_header()),
-                                naxis1=hdr['NAXIS1'], naxis2=hdr['NAXIS2'])
-
-    if mode == 'astro':
-        fov_radius = config["_fov_radius"]
-
-    fov_radius_deg = fov_radius
+    # set ra and dec
     ra, dec = wcsprm.crval
+    wcs = WCS(wcsprm.to_header())
+
+    fov_radius = config["_fov_radius"]
+    if mode == 'photo':
+        ra, dec = wcs.wcs_pix2world(hdr['NAXIS1'] // 2,
+                                    hdr['NAXIS2'] // 2, 0)
+
+        # estimate the radius of the FoV for ref. catalog creation
+        fov_radius = compute_radius(wcs,
+                                    naxis1=hdr['NAXIS1'],
+                                    naxis2=hdr['NAXIS2'],
+                                    ra=ra, dec=dec)
 
     # check for source catalog file. If present and not force extraction use these catalogs
     chk_src_cat = os.path.isfile(src_cat_fname + '.cat')
@@ -1371,6 +1544,9 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
         pos_on_sky = WCS(hdr).wcs_pix2world(src_tbl[["xcentroid", "ycentroid"]], 1)
         src_tbl["RA"] = pos_on_sky[:, 0]
         src_tbl["DEC"] = pos_on_sky[:, 1]
+
+        del pos_on_sky
+
         if mode == 'photo' and save_cat:
             if not silent:
                 log.info("> Save source catalog.")
@@ -1385,18 +1561,22 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
     else:
         # get reference catalog for precise positions from the web
         ref_tbl_astro, ref_catalog_astro = \
-            get_reference_catalog(ra=ra, dec=dec, sr=fov_radius_deg,
+            get_reference_catalog(ra=ra, dec=dec, sr=fov_radius,
                                   epoch=epoch, num_sources=_base_conf.NUM_SOURCES_MAX,
-                                  catalog='GAIAedr3',
+                                  catalog='GAIAdr3',
                                   silent=silent)
         # add positions to table
         pos_on_det = wcsprm.s2p(ref_tbl_astro[["RA", "DEC"]].values, 1)['pixcrd']
         ref_tbl_astro["xcentroid"] = pos_on_det[:, 0]
         ref_tbl_astro["ycentroid"] = pos_on_det[:, 1]
+
+        del pos_on_det
+
         if mode == 'photo' and save_cat:
             if not silent:
                 log.info("> Save astrometric reference catalog.")
-                save_catalog(cat=ref_tbl_astro, wcsprm=wcsprm, out_name=astro_ref_cat_fname,
+                save_catalog(cat=ref_tbl_astro, wcsprm=wcsprm,
+                             out_name=astro_ref_cat_fname,
                              mode='ref_astro', catalog=ref_catalog_astro)
 
     if mode == 'photo' and has_trail:
@@ -1407,22 +1587,36 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
         else:
             # get reference catalog
             ref_tbl_photo, ref_catalog_photo = \
-                get_reference_catalog(ra=ra, dec=dec, sr=fov_radius_deg,
-                                      epoch=epoch,  # num_sources=_base_conf.NUM_SOURCES_MAX,
-                                      catalog=catalog,
-                                      full_catalog=True, silent=silent)
+                get_reference_catalog_phot(ra=ra, dec=dec, sr=fov_radius,
+                                           epoch=epoch.decimalyear,  # num_sources=_base_conf.NUM_SOURCES_MAX,
+                                           catalog=catalog,
+                                           full_catalog=True, silent=silent)
+
             # add positions to table
             pos_on_det = wcsprm.s2p(ref_tbl_photo[["RA", "DEC"]].values, 1)['pixcrd']
             ref_tbl_photo["xcentroid"] = pos_on_det[:, 0]
             ref_tbl_photo["ycentroid"] = pos_on_det[:, 1]
 
+            # remove non-stars from catalog
             if 'classification' in ref_tbl_photo:
                 ref_tbl_photo = ref_tbl_photo[ref_tbl_photo.classification == 0]
-            ref_tbl_photo.reset_index()
+
+            # mask positions outside the image boundaries
+            mask = (ref_tbl_photo["xcentroid"] > 0) & \
+                   (ref_tbl_photo["xcentroid"] < hdr['NAXIS1']) & \
+                   (ref_tbl_photo["ycentroid"] > 0) & \
+                   (ref_tbl_photo["ycentroid"] < hdr['NAXIS2'])
+            ref_tbl_photo = ref_tbl_photo[mask]
+
+            # ref_tbl_photo.reset_index()
+
+            del pos_on_det
+
             if not silent:
                 log.info("> Save photometry reference catalog.")
             save_catalog(cat=ref_tbl_photo, wcsprm=wcsprm, out_name=photo_ref_cat_fname,
                          mode='ref_photo', catalog=ref_catalog_photo)
+    del imgarr
 
     return (src_tbl, ref_tbl_astro, ref_catalog_astro, ref_tbl_photo, ref_catalog_photo,
             src_cat_fname, astro_ref_cat_fname, photo_ref_cat_fname,
@@ -1430,7 +1624,6 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
 
 
 def mask_image(image,
-               bkg_median,
                vignette,
                vignette_rectangular,
                cutouts,
@@ -1453,7 +1646,7 @@ def mask_image(image,
         vignette = vignette * sidelength / 2.
         mask = (x[np.newaxis, :] - sidelength / 2) ** 2 + \
                (y[:, np.newaxis] - sidelength / 2) ** 2 < vignette ** 2
-        imgarr[~mask] = bkg_median
+        imgarr[~mask] = 0
 
     # ignore a fraction of the image at the corner
     if (0. < vignette_rectangular < 1.) & (vignette_rectangular != -1.):
@@ -1472,7 +1665,7 @@ def mask_image(image,
         bottom = y[:, np.newaxis] > cutoff_bottom
         top = y[:, np.newaxis] < cutoff_top
         mask = (left * bottom) * (right * top)
-        imgarr[~mask] = bkg_median
+        imgarr[~mask] = 0
 
     # cut out rectangular regions of the image, [(xstart, xend, ystart, yend)]
     if cutouts is not None and all(isinstance(el, list) for el in cutouts):
@@ -1487,7 +1680,7 @@ def mask_image(image,
             bottom = y[:, np.newaxis] > cutout[2]
             top = y[:, np.newaxis] < cutout[3]
             mask = (left * bottom) * (right * top)
-            imgarr[mask] = bkg_median
+            imgarr[mask] = 0
 
     # use only_rectangle within image format: (xstart, xend, ystart, yend)
     if only_rectangle is not None and isinstance(only_rectangle, tuple):
@@ -1501,7 +1694,7 @@ def mask_image(image,
         bottom = y[:, np.newaxis] > only_rectangle[2]
         top = y[:, np.newaxis] < only_rectangle[3]
         mask = (left * bottom) * (right * top)
-        imgarr[~mask] = bkg_median
+        imgarr[~mask] = 0
 
     return imgarr
 
@@ -1572,7 +1765,7 @@ def read_catalog(cat_fname: str, tbl_format: str = "ecsv") -> tuple:
     cat = ascii.read(cat_fname + '.cat', format=tbl_format)
 
     kernel_fwhm = 4.
-    catalog = 'GAIAedr3'
+    catalog = 'GAIAdr3'
 
     if 'kernel_fwhm' in cat.meta.keys():
         kernel_fwhm = cat.meta['kernel_fwhm']
@@ -1670,22 +1863,25 @@ def select_reference_catalog(band: str, source: str = "auto") -> str:
     if source != "auto":
         if source not in _base_conf.SUPPORTED_CATALOGS:
             log.error("Given catalog not supported. "
-                      "Possible catalogs are: {}".format(", ".join(_base_conf.SUPPORTED_CATALOGS.keys())))
+                      "Possible catalogs are: "
+                      "{}".format(", ".join(_base_conf.SUPPORTED_CATALOGS.keys())))
             sys.exit(1)
         else:
-            if source != _base_conf.SUPPORTED_BANDS[band]:
+            if source not in _base_conf.SUPPORTED_BANDS[band]:
                 log.error("Given band is not supported for this catalog. "
-                          "Possible catalog for {} band: {}".format(band, _base_conf.SUPPORTED_BANDS[band]))
+                          "Possible catalog for "
+                          "{} band: {}".format(band,
+                                               ", ".join(_base_conf.SUPPORTED_BANDS[band])))
                 sys.exit(1)
     if source == 'auto':
-        catalog_name = _base_conf.SUPPORTED_BANDS[band]
+        catalog_name = _base_conf.SUPPORTED_BANDS[band][0]
 
     return catalog_name
 
 
 def select_std_stars(ref_cat: pd.DataFrame,
                      catalog: str, band: str,
-                     num_std_max: int = 10,
+                     num_std_max: int = None,
                      num_std_min: int = 5,
                      silent: bool = False) -> tuple:
     """ Select standard stars for aperture photometry from photometric reference catalog
@@ -1714,35 +1910,36 @@ def select_std_stars(ref_cat: pd.DataFrame,
     # check for error column
     has_mag_conv = False
 
-    # convert fits filter to catalog filter + error (if available)
-    filter_keys = _base_conf.CATALOG_FILTER_EXT[catalog][band]['Prim']
-
-    # result column names
-    cols = ['objID', 'RA', 'DEC', 'xcentroid', 'ycentroid']
-    cols += filter_keys
-
     # exclude non-star sources from GSC2.4
     cat_srt = ref_cat.copy()
     if 'classification' in ref_cat:
         cat_srt = ref_cat.drop(ref_cat[ref_cat.classification > 0].index)
+    cat_srt = cat_srt.reset_index()
 
-    # remove nan and err=0 values
-    df = cat_srt.dropna(subset=filter_keys)
-    df = df[df[filter_keys[1]] != 0.]
+    # convert fits filter to catalog filter + error (if available)
+    filter_keys = _base_conf.CATALOG_FILTER_EXT[catalog][band]['Prim']
+
+    if band != 'w':
+        # remove nan and err=0 values
+        df = cat_srt.dropna(subset=filter_keys)
+        df = df[df[filter_keys[1]] != 0.]
+    else:
+        flat_list = sum(filter_keys, [])
+        df = cat_srt.dropna(subset=flat_list)
+        df = df[(df[filter_keys[0][1]] != 0.) & (df[filter_keys[1][1]] != 0.)]
 
     n = len(df)
     alt_filter_key = _base_conf.CATALOG_FILTER_EXT[catalog][band]['Alt']
-    if n < num_std_min and alt_filter_key is not None:
+    if n < num_std_min and alt_filter_key is not None and band != 'w':
         if not silent:
             log.warning(f"    ==> No or less than {num_std_min} stars "
                         f"in {filter_keys[0]} band.")
             log.warning(f"        Using alternative band with known magnitude conversion.")
         alt_filter_keys = np.asarray(alt_filter_key, str)
 
-        alt_cat = ref_cat.dropna(subset=alt_filter_keys.flatten())
+        alt_cat = cat_srt.dropna(subset=alt_filter_keys.flatten())
 
-        x1 = alt_cat[alt_filter_keys[0, :]]
-        x1 = x1.to_numpy()
+        x1 = alt_cat[alt_filter_keys[0, :]].to_numpy()
         x2 = alt_cat[alt_filter_keys[1, :]].to_numpy()
         x3 = alt_cat[alt_filter_keys[2, :]].to_numpy()
 
@@ -1763,14 +1960,42 @@ def select_std_stars(ref_cat: pd.DataFrame,
         cat_srt.update(new_df)
         has_mag_conv = True
 
+    elif band == 'w':
+        alt_filter_keys = np.asarray(filter_keys, str)
+        alt_cat = cat_srt.dropna(subset=alt_filter_keys.flatten())
+
+        x1 = alt_cat[alt_filter_keys[0, :]].to_numpy()
+        x2 = alt_cat[alt_filter_keys[1, :]].to_numpy()
+
+        has_data = np.any(np.array([x1, x2]), axis=1).all()
+        if not has_data:
+            log.critical("Insufficient data for magnitude conversion.")
+            del ref_cat, cat_srt, df, alt_cat
+            gc.collect()
+            return None, filter_keys, has_mag_conv
+
+        alt_mags = x2[:, 0] + 0.23 * (x1[:, 0] - x2[:, 0])
+        alt_mags_err = np.sqrt((0.23 * x1[:, 1])**2 + (0.77 * x2[:, 1])**2)
+
+        filter_keys = ['WMag', 'WMagErr']
+        new_df = pd.DataFrame({filter_keys[0]: alt_mags,
+                               filter_keys[1]: alt_mags_err}, index=alt_cat.index)
+
+        cat_srt = pd.concat([cat_srt, new_df], axis=1)
+        has_mag_conv = True
+
     # sort table by magnitude, brightest to fainter
     df = cat_srt.sort_values(by=[filter_keys[0]], axis=0, ascending=True, inplace=False)
-    df.dropna(subset=filter_keys, inplace=True)
+    df = df.dropna(subset=filter_keys, inplace=False)
 
     # select the std stars by number
     if num_std_max is not None:
         idx = num_std_max
         df = df[:idx]
+
+    # result column names
+    cols = ['objID', 'RA', 'DEC', 'xcentroid', 'ycentroid']
+    cols += filter_keys
 
     df = df[cols]
 

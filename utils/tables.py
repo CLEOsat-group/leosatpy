@@ -86,7 +86,7 @@ class ObsTables(object):
         self._def_cols = _base_conf.DEF_RES_TBL_COL_NAMES
         self._def_col_units = _base_conf.DEF_RES_TBL_COL_UNITS
         self._fname_table = self._def_path / self._def_name
-
+        self._def_key_transl = _base_conf.DEF_KEY_TRANSLATIONS
         self._create_obs_table()
 
     @property
@@ -136,7 +136,7 @@ class ObsTables(object):
         #                                                 obs_date))
 
         regex = re.compile(rf'tle_{sat_type}_{obs_date[0]}[-_]{obs_date[1]}[-_]{obs_date[2]}.+.txt')
-        # print(regex)
+
         path = os.walk(search_path)
         for root, dirs, files in path:
             f = sorted([s for s in files if re.search(regex, s)])
@@ -223,7 +223,7 @@ class ObsTables(object):
                             f'This should not happen.')
         self._obs_info = obs_info
 
-    def get_object_data(self, fname, kwargs, radec_separator=':'):
+    def get_object_data(self, fname, kwargs, obsparams):
         """Extract a row from the obs info table"""
         obs_info = self._obs_info
 
@@ -238,36 +238,46 @@ class ObsTables(object):
         mask = obs_info_tmp['File'] == fname_upper
         pos = np.flatnonzero(mask)
 
+        ra_key, ra_val = self._get_position_data(kwargs, obsparams, 'ra', 'RA')
+        de_key, de_val = self._get_position_data(kwargs, obsparams, 'dec', 'DEC')
+        inst_key, inst_val = self._get_position_data(kwargs, obsparams, 'instrume', 'Instrument')
+        obj_key, obj_val = self._get_position_data(kwargs, obsparams, 'object', 'Object')
+
         if list(pos):
             self._log.debug("  Possible match with previous entry found. Check RA and DEC.")
-            # check pointing in RA and DEC to exclude duplicates
-            ra_file = [kwargs[k] for k in _base_conf.DEF_KEY_TRANSLATIONS['RA']
-                       if k in kwargs][0]
-            dec_file = [kwargs[k] for k in _base_conf.DEF_KEY_TRANSLATIONS['DEC']
-                        if k in kwargs][0]
 
-            df = obs_info[mask][['RA', 'DEC']].astype(str)
+            df = obs_info[mask][['RA', 'DEC', 'Instrument', 'Object']].astype(str)
 
-            mask = (df.select_dtypes(object)
-                    .apply(lambda x: x.str.contains(radec_separator, case=False))
-                    .any().any())
-            if not mask:
-                df = df.astype(float)
+            coord_match = df.isin({'RA': [ra_val],
+                                   'DEC': [de_val],
+                                   'Instrument': [inst_val],
+                                   'Object': [obj_val]}).all(axis=1)
 
-            coord_match = df.isin({'RA': [ra_file], 'DEC': [dec_file]}).all(axis=1)
             if coord_match.any():
-                self._log.debug("  Coordinate/Pointing match found. Updating.")
-                idx = pos[coord_match]
-                self._obj_info = obs_info.iloc[idx]
+                if len(coord_match) == 1:
+                    self._log.debug("  Coordinate/Pointing match found. Updating.")
+                    idx = pos[coord_match]
+                    self._obj_info = obs_info.iloc[idx]
+                else:
+                    self._log.debug("  Multiple Coordinate/Pointing matches found."
+                                    " This should not happen.")
+                    idx = pos[coord_match[0]]
+                    self._obj_info = obs_info.iloc[idx]
             else:
-                self._log.error("  NO Coordinate/Pointing match found. This should not happen!!!")
+                self._log.error("  NO Coordinate/Pointing match found."
+                                " This should not happen!!!")
         else:
             self._log.error("  File not found. This should not happen!!!")
 
     def get_sat_data_from_visibility(self, sat_name: str, obs_date, pointing: tuple):
         """Extract a row from the visibility info table"""
         vis_info = self._vis_info
-        c0 = SkyCoord(ra=pointing[0], dec=pointing[1], unit=(u.hourangle, u.deg))
+
+        ra_unit = u.deg
+        matches = [":", " "]
+        if any(x in str(pointing[0]) for x in matches):
+            ra_unit = u.hourangle
+        c0 = SkyCoord(ra=pointing[0], dec=pointing[1], unit=(ra_unit, u.deg))
 
         mask = vis_info['ID'] == sat_name
         pos = np.flatnonzero(mask)
@@ -281,7 +291,6 @@ class ObsTables(object):
             vis_info_masked = vis_info[mask]
 
             date_info = vis_info_masked[['UT Date', 'UT time']].copy(deep=True)
-            # print(date_info)
             date_info['Time'] = date_info.apply(lambda row:
                                                 datetime.datetime.strptime(f"{row['UT Date']}T{row['UT time']}",
                                                                            "%Y-%m-%dT%H:%M:%S"), axis=1)
@@ -296,7 +305,7 @@ class ObsTables(object):
             dt_idx = np.argmin(dt_secs)
             sep_idx = np.argmin(sep)
 
-            mask = sep_idx if not dt_idx == sep_idx else dt_idx
+            mask = dt_idx if not dt_idx == sep_idx else sep_idx
 
             self._sat_info = vis_info_masked.iloc[mask].to_frame(0).T
         else:
@@ -305,15 +314,26 @@ class ObsTables(object):
 
     def get_satellite_id(self, obj_in):
         """Get satellite id from object name"""
-        # todo: implement new addition of unique ID in sat name
-        self._log.debug("  Identify Satellite name")
+
+        self._log.debug("  Identify Satellite/Object name")
 
         # convert to uppercase
         obj_name = obj_in.upper()
+        # convert _ to -
+        if ' ' in obj_name:
+            obj_name = str(obj_name).replace(' ', '-')
+
+        # identify unique ID if present
+        unique_id = None
+        if '-ID' in obj_name:
+            idx = obj_name.index('-ID')
+            unique_id = obj_name[idx + 1:idx + 8]
+            obj_name = obj_name[:idx]
 
         # remove extensions to name
         if '-N' in obj_name:
-            obj_name = str(obj_name).replace('-N', '')
+            idx = obj_name.index('-N')
+            obj_name = obj_name[:idx - 2]
 
         # remove binning from name
         for i in [1, 2, 4]:
@@ -329,21 +349,31 @@ class ObsTables(object):
             obj_name = str(obj_name).replace('_', '-')
 
         # OneWeb
-        sat_name = 'ONEWEB' if ('OW' in obj_name or 'ONEWEB' in obj_name) else 'N/A'
+        sat_name = 'ONEWEB' if ('OW' in obj_name or 'ONEWEB' in obj_name) else obj_name
 
         # StarLink
         sat_name = 'STARLINK' if 'STARLINK' in obj_name else sat_name
 
         # Bluewalker
-        sat_name = 'BLUEWALKER' if 'BLUEWALKER' in obj_name else sat_name
+        sat_name = 'BLUEWALKER' if ('BW' in obj_name or 'BLUEWALKER' in obj_name) else sat_name
 
         # get the satellite id number and convert to 4 digit string
         nb_str = ''.join(n for n in obj_name if n.isdigit())
-        sat_id = f"{sat_name}-{int(nb_str):d}" if 'BLUEWALKER' in sat_name else f"{sat_name}-{int(nb_str):04d}"
+        sat_id = f"{sat_name}"
+        if nb_str != '':
+            sat_id = f"{sat_name}-{int(nb_str):d}" if 'BLUEWALKER' in sat_name else f"{sat_name}-{int(nb_str):04d}"
 
-        return sat_id
+        return sat_id, unique_id
 
-    def update_obs_table(self, file, kwargs, radec_separator=':'):
+    def _get_position_data(self, kwargs, obsparams, obskey, dkey):
+        key_transl = self._def_key_transl
+        for i in range(len(key_transl[dkey])):
+            key = key_transl[dkey][i]
+            if key in kwargs and key == obsparams[obskey]:
+                val = str(kwargs[key])
+                return key, val
+
+    def update_obs_table(self, file, kwargs, obsparams):
         """Load the observation obs info table.
 
         Load table with observation information.
@@ -354,8 +384,6 @@ class ObsTables(object):
         fname = self._fname_table
 
         # update the columns in case the table was changed
-        # if not self._silent:
-        #     self._log.info('  Updating column names')
         for col in self._def_cols:
             if col not in obs_info:
                 # insert column at the end
@@ -370,10 +398,6 @@ class ObsTables(object):
         # exposure time
         expt = kwargs['EXPTIME']
 
-        # update rows
-        # if not self._silent:
-        #     self._log.info('  Updating table values')
-
         # make a copy
         obs_info_tmp = obs_info.copy()
 
@@ -381,36 +405,43 @@ class ObsTables(object):
         obs_info_tmp['File'] = obs_info['File'].str.upper()
         file_upper = file.upper()
 
-        # check position
+        # check position of data
         mask = obs_info_tmp['File'] == file_upper
         pos = np.flatnonzero(mask)
 
+        ra_key, ra_val = self._get_position_data(kwargs, obsparams, 'ra', 'RA')
+        de_key, de_val = self._get_position_data(kwargs, obsparams, 'dec', 'DEC')
+        inst_key, inst_val = self._get_position_data(kwargs, obsparams, 'instrume', 'Instrument')
+        obj_key, obj_val = self._get_position_data(kwargs, obsparams, 'object', 'Object')
+
         if not list(pos):
-            self._log.debug("  File not found. Adding new entry.")
-            obs_info = self._add_row(obs_info, file, kwargs, self._def_cols, expt)
+            self._log.debug("  File name not found. Adding new entry.")
+            obs_info = self._add_row(obs_info, file, kwargs, self._def_cols,
+                                     expt, obj_key, ra_val, de_val)
         else:
-            self._log.debug("  Possible match with previous entry found. Check RA and DEC.")
+            self._log.debug("  Possible match with previous entry found. "
+                            "Check RA, DEC and instrument.")
 
-            # check pointing in RA and DEC to exclude duplicates
-            ra_file = [kwargs[k] for k in _base_conf.DEF_KEY_TRANSLATIONS['RA'] if k in kwargs][0]
-            dec_file = [kwargs[k] for k in _base_conf.DEF_KEY_TRANSLATIONS['DEC'] if k in kwargs][0]
+            df = obs_info[mask][['RA', 'DEC', 'Instrument', 'Object']].astype(str)
 
-            df = obs_info[mask][['RA', 'DEC']].astype(str)
+            coord_match = df.isin({'RA': [ra_val],
+                                   'DEC': [de_val],
+                                   'Instrument': [inst_val],
+                                   'Object': [obj_val]}).all(axis=1)
 
-            mask = (df.select_dtypes(object)
-                    .apply(lambda x: x.str.contains(radec_separator, case=False))
-                    .any().any())
-
-            if not mask:
-                df = df.astype(float)
-            coord_match = df.isin({'RA': [ra_file], 'DEC': [dec_file]}).all(axis=1)
             if coord_match.any():
-                self._log.debug("  Coordinate/Pointing match found. Updating.")
-                idx = pos[coord_match]
-                obs_info = self._update_row(obs_info, idx, kwargs, self._def_cols, expt)
+                if len(coord_match) == 1:
+                    self._log.debug("  Coordinate/Pointing match found. Updating.")
+                    idx = pos[coord_match]
+                    obs_info = self._update_row(obs_info, idx, kwargs, self._def_cols,
+                                                expt, obj_key, ra_val, de_val)
+                else:
+                    self._log.debug("  Multiple Coordinate/Pointing and instrument matches found."
+                                    " This should not happen. Please check the table.")
             else:
                 self._log.debug("  NO Coordinate/Pointing match found. Adding entry.")
-                obs_info = self._add_row(obs_info, file, kwargs, self._def_cols, expt)
+                obs_info = self._add_row(obs_info, file, kwargs,
+                                         self._def_cols, expt, obj_key, ra_val, de_val)
 
         # check for duplicates
         bool_series = obs_info.duplicated(keep='first')
@@ -424,33 +455,36 @@ class ObsTables(object):
                         header=self._def_cols,
                         index=False)
         self._obs_info = obs_info
-        # if not self._silent:
-        #     self._log.info('  Table updated')
+
         del obs_info, obs_info_tmp
         gc.collect()
 
-    def _update_row(self, obs_info, idx, kwargs, def_cols, expt):
+    def _update_row(self, obs_info, idx, kwargs, def_cols, expt, obj_key, ra, dec):
         """ Update row in result table"""
 
         for i in range(1, len(def_cols)):
             dcol_name = def_cols[i]
             for key, value in kwargs.items():
-                if dcol_name in _base_conf.DEF_KEY_TRANSLATIONS and \
-                        key in _base_conf.DEF_KEY_TRANSLATIONS[dcol_name]:
+                if dcol_name in self._def_key_transl and \
+                        key in self._def_key_transl[dcol_name]:
                     if dcol_name == 'Object':
                         # create uniform satellite id from object name
-                        sat_name = self.get_satellite_id(kwargs['OBJECT'])
+                        sat_name, alt_id = self.get_satellite_id(kwargs[obj_key])
                         obs_info.loc[idx, dcol_name] = value
                         obs_info.loc[idx, 'Sat-Name'] = sat_name
+                        obs_info.loc[idx, 'UniqueID'] = alt_id
                     elif dcol_name == 'Date-Obs':
                         t_short, t_start, t_mid, t_stop = self._update_times(value, expt, kwargs)
-
                         obs_info.loc[idx, dcol_name] = t_short
                         obs_info.loc[idx, 'Obs-Start'] = t_start
                         obs_info.loc[idx, 'Obs-Mid'] = t_mid.strftime('%H:%M:%S.%f')[:-3]
                         obs_info.loc[idx, 'Obs-Stop'] = t_stop.strftime('%H:%M:%S.%f')[:-3]
                     elif dcol_name == 'WCS_cal':
                         obs_info.loc[idx, dcol_name] = 'T' if value else 'F'
+                    elif dcol_name == 'RA':
+                        obs_info.loc[idx, dcol_name] = ra
+                    elif dcol_name == 'DEC':
+                        obs_info.loc[idx, dcol_name] = dec
                     else:
                         obs_info.loc[idx, dcol_name] = value
                 else:
@@ -459,28 +493,32 @@ class ObsTables(object):
 
         return obs_info
 
-    def _add_row(self, obs_info, file, kwargs, def_cols, expt):
+    def _add_row(self, obs_info, file, kwargs, def_cols, expt, obj_key, ra, dec):
         """ Add new row to result table"""
         new_dict = {def_cols[0]: [file]}
         for i in range(len(def_cols)):
             dcol_name = def_cols[i]
             for key, value in kwargs.items():
-                if dcol_name in _base_conf.DEF_KEY_TRANSLATIONS and \
-                        key in _base_conf.DEF_KEY_TRANSLATIONS[dcol_name]:
+                if dcol_name in self._def_key_transl and \
+                        key in self._def_key_transl[dcol_name]:
                     if dcol_name == 'Object':
                         # create uniform satellite id from object name
-                        sat_name = self.get_satellite_id(kwargs['OBJECT'])
+                        sat_name, alt_id = self.get_satellite_id(kwargs[obj_key])
                         new_dict[dcol_name] = value
                         new_dict['Sat-Name'] = sat_name
+                        new_dict['UniqueID'] = alt_id
                     elif dcol_name == 'Date-Obs':
                         t_short, t_start, t_mid, t_stop = self._update_times(value, expt, kwargs)
-
                         new_dict[dcol_name] = t_short
                         new_dict['Obs-Start'] = t_start
                         new_dict['Obs-Mid'] = t_mid.strftime('%H:%M:%S.%f')[:-3]
                         new_dict['Obs-Stop'] = t_stop.strftime('%H:%M:%S.%f')[:-3]
                     elif dcol_name == 'WCS_cal':
                         new_dict[dcol_name] = 'T' if value else 'F'
+                    elif dcol_name == 'RA':
+                        new_dict[dcol_name] = ra
+                    elif dcol_name == 'DEC':
+                        new_dict[dcol_name] = dec
                     else:
                         new_dict[dcol_name] = value
                 else:
@@ -534,7 +572,7 @@ class ObsTables(object):
                 l_row = len(row)
 
                 if two_lines:
-                    # print(two_lines, l_row)
+
                     if l_row in [1, 2]:
                         test_str = row[0] if l_row == 1 else '-'.join(row)
                         sat_id, alt_id, unique_id = self._identify_satellite(test_str)

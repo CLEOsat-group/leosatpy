@@ -341,18 +341,21 @@ def fine_transformation(observation, catalog, wcsprm, threshold=10,
 
     if threshold == 20 or threshold == 100:
         observation = observation.nlargest(5, "flux")
-    _, _, obs_x, obs_y, cat_x, cat_y, _, _ = \
+    _, _, obs_xy, cat_xy, _, _, _ = \
         find_matches(observation, catalog, wcsprm, threshold=threshold)
-    if len(obs_x) < 4:
+
+    if len(obs_xy[:, 0]) < 4:
         return wcsprm_original, 0  # not enough matches
 
     # angle
-    angle_offset = -calculate_angles([obs_x], [obs_y]) + calculate_angles([cat_x], [cat_y])
-    log_dist_obs = calculate_log_dist([obs_x], [obs_y])
-    log_dist_cat = calculate_log_dist([cat_x], [cat_y])
-    threshold_min = np.log(20)  # minimum distance to make useful scaling or angle estimation
+    angle_offset = -calculate_angles([obs_xy[:, 0]],
+                                     [obs_xy[:, 1]]) + calculate_angles([cat_xy[:, 0]],
+                                                                        [cat_xy[:, 1]])
+    log_dist_obs = calculate_log_dist([obs_xy[:, 0]], [obs_xy[:, 1]])
+    log_dist_cat = calculate_log_dist([cat_xy[:, 0]], [cat_xy[:, 1]])
+    threshold_min = np.log(10)  # minimum distance to make useful scaling or angle estimation
     if threshold == 10:
-        threshold_min = np.log(200)
+        threshold_min = np.log(100)
 
     mask = (log_dist_obs > threshold_min) & (log_dist_cat > threshold_min)
     scale_offset = -log_dist_obs + log_dist_cat
@@ -363,6 +366,8 @@ def fine_transformation(observation, catalog, wcsprm, threshold=10,
 
     rotation = np.mean(angle_offset)
     scaling = np.e ** (np.mean(scale_offset))
+
+    del angle_offset, scale_offset, mask, log_dist_obs, log_dist_cat
 
     rot = rotation_matrix(rotation)
     if not skip_rot_scale:
@@ -375,23 +380,24 @@ def fine_transformation(observation, catalog, wcsprm, threshold=10,
             return wcsprm_original, 0
 
     # need to recalculate positions
-    _, _, obs_x, obs_y, cat_x, cat_y, _, _ = \
+    _, _, obs_xy, cat_xy, _, _, _ = \
         find_matches(observation, catalog, wcsprm, threshold=threshold)
-    if len(obs_x) < 4:
+
+    if len(obs_xy[:, 0]) < 4:
         return wcsprm_original, 0
 
     # offset:
-    x_shift = np.mean(obs_x - cat_x)
-    y_shift = np.mean(obs_y - cat_y)
+    x_shift = np.mean(obs_xy[:, 0] - cat_xy[:, 0])
+    y_shift = np.mean(obs_xy[:, 1] - cat_xy[:, 1])
 
     current_central_pixel = wcsprm.crpix
     new_central_pixel = [current_central_pixel[0] + x_shift, current_central_pixel[1] + y_shift]
     wcsprm.crpix = new_central_pixel
 
-    _, _, obs_x, obs_y, cat_x, cat_y, dist, _ = \
+    _, _, _, _, _, score, _ = \
         find_matches(observation, catalog, wcsprm, threshold=compare_threshold)
-    rms = np.sqrt(np.mean(np.square(dist)))
-    score = len(obs_x) / (rms + 10)  # the number of matches within 3 pixels over rms+1 (so it's bigger than 0)
+
+    del _, observation, catalog
 
     return wcsprm, score
 
@@ -399,48 +405,51 @@ def fine_transformation(observation, catalog, wcsprm, threshold=10,
 def find_matches(obs, cat, wcsprm=None, threshold=10):
     """Match observation with reference catalog using minimum distance."""
 
+    # check if the input has data
     cat_has_data = cat[["xcentroid", "ycentroid"]].any(axis=0).any()
     obs_has_data = obs[["xcentroid", "ycentroid"]].any(axis=0).any()
 
     if not cat_has_data or not obs_has_data:
-        return None, None, None, None, None, None, None, False
+        return None, None, None, None, None, None, False
 
-    cat_x = np.array([cat["xcentroid"].values])
-    cat_y = np.array([cat["ycentroid"].values])
+    # convert obs to numpy
+    obs_xy = obs[["xcentroid", "ycentroid"]].to_numpy()
+
+    # set up the catalog data; use RA, Dec if used with wcsprm
+    cat_xy = cat[["xcentroid", "ycentroid"]].to_numpy()
     if wcsprm is not None:
-        cat_on_sensor = wcsprm.s2p(cat[["RA", "DEC"]], 1)
-        cat_on_sensor = cat_on_sensor['pixcrd']
-        cat_x = np.array([cat_on_sensor[:, 0]])
-        cat_y = np.array([cat_on_sensor[:, 1]])
+        cat_xy = wcsprm.s2p(cat[["RA", "DEC"]], 1)
+        cat_xy = cat_xy['pixcrd']
 
-    obs_x = np.array([obs["xcentroid"].values])
-    obs_y = np.array([obs["ycentroid"].values])
+    # calculate the distances
+    dist_xy = np.sqrt((obs_xy[:, 0] - cat_xy[:, 0, np.newaxis])**2
+                      + (obs_xy[:, 1] - cat_xy[:, 1, np.newaxis])**2)
 
-    dist_x = (obs_x - cat_x.T)  # .flatten()
-    dist_y = (obs_y - cat_y.T)  # .flatten()
-    obs_x = obs_x[0]
-    obs_y = obs_y[0]
-    cat_x = cat_x[0]
-    cat_y = cat_y[0]
+    idx_arr = np.where(dist_xy == np.min(dist_xy, axis=0))
+    min_dist_xy = dist_xy[idx_arr]
+    del dist_xy
 
-    # find the closest points to each source in observation
-    dist = np.min(dist_x ** 2 + dist_y ** 2, axis=0)
-    matches = np.argmin(dist_x ** 2 + dist_y ** 2, axis=0)
+    mask = min_dist_xy < threshold
+    cat_idx = idx_arr[0][mask]
+    obs_idx = idx_arr[1][mask]
+    min_dist_xy = min_dist_xy[mask]
 
-    # search for all matches within threshold
-    obs_x = obs_x[dist < threshold]
-    obs_y = obs_y[dist < threshold]
-    cat_x = cat_x[matches[dist < threshold]]
-    cat_y = cat_y[matches[dist < threshold]]
+    # print(obs_xy[idx_arr[1][mask], :])
+    obs_matched = obs.iloc[obs_idx]
+    cat_matched = cat.iloc[cat_idx]
 
-    obs_matched = obs.iloc[dist < threshold]
-    cat_matched = cat.iloc[matches[dist < threshold]]
+    del obs, cat
 
-    del matches, obs, cat, wcsprm
+    if len(min_dist_xy) == 0:  # meaning the list is empty
+        best_score = 0
+    else:
+        rms = np.sqrt(np.mean(np.square(min_dist_xy)))
+        best_score = len(obs_xy) / (rms + 10)  # start with the current best score
 
-    dist = dist[dist < threshold]
+    obs_xy = obs_xy[obs_idx, :]
+    cat_xy = cat_xy[cat_idx, :]
 
-    return obs_matched, cat_matched, obs_x, obs_y, cat_x, cat_y, dist, True
+    return obs_matched, cat_matched, obs_xy, cat_xy, min_dist_xy, best_score, True
 
 
 def cross_corr_to_fourier_space(a):
@@ -494,13 +503,12 @@ def peak_with_cross_correlation(log_distance_obs: np.ndarray, angle_obs: np.ndar
     # so there is a higher chance to find the correct one
     # minimum_distance = min([min(log_distance_cat), min(log_distance_obs)])
     # maximum_distance = max([max(log_distance_cat), max(log_distance_obs)])
-    # print(minimum_distance, maximum_distance, scale_guessed)
     bins_dist, binwidth_dist = np.linspace(minimum_distance, maximum_distance,
                                            _base_conf.NUM_BINS_DIST, retstep=True)
 
     minimum_ang = min([min(angle_cat), min(angle_obs)])
     maximum_ang = max([max(angle_cat), max(angle_obs)])
-    # print(minimum_ang, maximum_ang)
+
     bins_ang, binwidth_ang = np.linspace(minimum_ang, maximum_ang,
                                          360 * _base_conf.BINS_ANG_FAC, retstep=True)
 
@@ -526,13 +534,11 @@ def peak_with_cross_correlation(log_distance_obs: np.ndarray, angle_obs: np.ndar
     frequ = np.fft.fftfreq(ff_obs.size, d=step).reshape(ff_obs.shape)
     max_frequ = np.max(frequ)  # frequencies are symmetric - to +
     threshold = _base_conf.FREQU_THRESHOLD * max_frequ
-    # print(max_frequ, threshold)
 
     cross_corr[(frequ < threshold) & (frequ > -threshold)] = 0  # how to choose the frequency cut off?
 
     cross_corr = np.real(np.fft.ifft2(cross_corr))
     cross_corr = np.fft.fftshift(cross_corr)  # the zero shift is at (0,0), this moves it to the middle
-    # print(cross_corr.shape)
 
     # take first peak
     peak = np.argwhere(cross_corr == np.max(cross_corr))[0]
@@ -564,7 +570,6 @@ def peak_with_cross_correlation(log_distance_obs: np.ndarray, angle_obs: np.ndar
     scaling = np.e ** (-x_shift)
     rotation = y_shift  # / 2 / np.pi * 360 maybe easier in rad
 
-    # print(scaling, rotation, signal, [x_shift, y_shift])
     return scaling, rotation, signal, [x_shift, y_shift]
 
 

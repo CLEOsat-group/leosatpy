@@ -148,7 +148,7 @@ def get_optimum_aper_rad(image: np.ndarray,
 
     # select only the 25 brightest sources
     n_sel = 5 if len(std_cat) <= 20 else int(round(len(std_cat) * 0.25))
-    n_sel = 20 if n_sel >= 20 else n_sel
+    n_sel = n_sel // 2 if n_sel >= 20 else n_sel
     std_cat = std_cat[:n_sel]
 
     # get positions
@@ -181,7 +181,7 @@ def get_optimum_aper_rad(image: np.ndarray,
     max_snr_aprad = rapers[max_snr_idx]
     optimum_aprad = max_snr_aprad * 1.5
     qlf_aprad = True
-    if optimum_aprad > 3.:
+    if optimum_aprad >= 3.:
         log.warning('Optimum radius seems high [%.1f x FWHM] '
                     '- setting to %.1f x FWHM' % (optimum_aprad, aper_rad))
         optimum_aprad = aper_rad
@@ -281,7 +281,6 @@ def get_aper_photometry(image: np.ndarray,
 
     phot_table['aperture_sum_bkgsub'] = phot_bkgsub
     phot_table.loc[phot_table['aperture_sum_bkgsub'] <= 0] = 0
-    # print(phot_table)
 
     flux_var = phot_table['aperture_sum_bkgsub'].values
     if error is not None:

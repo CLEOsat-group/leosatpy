@@ -97,7 +97,7 @@ class DataSet(object):
         self._calib_data_sorted = []
         self._fits_images = []
         self._obsparams = []
-        self._instruments = []
+        self._instruments = {}
         self._input_args = input_args
         self._config = collections.OrderedDict()
         self._log = log
@@ -153,6 +153,10 @@ class DataSet(object):
         return self._instruments
 
     @property
+    def instruments_list(self):
+        return self._instruments_list
+
+    @property
     def telescopes(self):
         return self._telescopes
 
@@ -189,7 +193,7 @@ class DataSet(object):
         obs_data_sorted = []
         for subset in self._datasets:
             path_arr = []
-            # print(subset)
+
             for f in subset:
                 levels_up = 1
                 f_path = Path(f)
@@ -202,8 +206,7 @@ class DataSet(object):
                         root_path = r
                         img_sel = i
                         continue
-                # print(f, f_path.stem, f_path.suffix,
-                #       one_up, root_path)
+
                 path_arr.append([f, f_path.stem, f_path.suffix,
                                  one_up, root_path, img_sel])
             path_arr = np.array(path_arr)
@@ -220,7 +223,7 @@ class DataSet(object):
 
         self._calib_data_sorted = obs_data_sorted
 
-    def get_valid_sci_observations(self, prog_typ: str = "reduceSatObs"):
+    def get_valid_sci_observations(self, inst, prog_typ: str = "reduceSatObs"):
         """Search the input argument for valid data"""
 
         folder_lvl1 = 'reduced'
@@ -231,32 +234,28 @@ class DataSet(object):
 
         # exclude files in raw folder in absolute file name and
         # get folder according to assumed folder structure
-        obs_data_sorted = []
-        for subset in self._datasets:
-            path_arr = []
-            for f in subset:
-                if folder_lvl1 in f:
-                    continue
-                levels_up = 1
-                f_path = Path(f)
-                one_up = str(f_path.parents[levels_up - 1])
-                if folder_lvl2 in one_up:
-                    levels_up = 2
-                path_arr.append([f, f_path.stem, f_path.suffix,
-                                 one_up, str(f_path.parents[levels_up - 1])])
-            path_arr = np.array(path_arr)
+        path_arr = []
+        for f in self._instruments[inst]['dataset']:
+            if folder_lvl1 in f:
+                continue
+            levels_up = 1
+            f_path = Path(f)
+            one_up = str(f_path.parents[levels_up - 1])
+            if folder_lvl2 in one_up:
+                levels_up = 2
+            path_arr.append([f, f_path.stem, f_path.suffix,
+                             one_up, str(f_path.parents[levels_up - 1])])
+        path_arr = np.array(path_arr)
 
-            # make dataframe with [in_path, fname, suffix, parent folder, science_folder]
-            obs_df = pd.DataFrame(data=path_arr,
-                                  columns=['input', 'file_name', 'suffix',
-                                           'file_loc', 'root_path'])
+        # make dataframe with [in_path, fname, suffix, parent folder, science_folder]
+        obs_df = pd.DataFrame(data=path_arr,
+                              columns=['input', 'file_name', 'suffix',
+                                       'file_loc', 'root_path'])
 
-            # group results by science root path
-            grouped_by_root_path = obs_df.groupby('root_path')
+        # group results by science root path
+        grouped_by_root_path = obs_df.groupby('root_path')
 
-            obs_data_sorted.append(grouped_by_root_path)
-
-        self._obs_data_sorted = obs_data_sorted
+        self._obs_data_sorted = grouped_by_root_path
 
     def _check_input_for_fits(self):
         """ Check the given input and identify fits files. """
@@ -306,14 +305,14 @@ class DataSet(object):
                     _prefix = ''
                 regex = re.compile('^' + _prefix + '.*(fits|FITS|fit|FIT|Fits|fts|FTS)$')
                 path = os.walk(p.parent)
-                # print(path, regex)
+
                 for root, dirs, files in path:
-                    # print(root)
+
                     if self._mode == 'reduceCalibObs':
                         if p.name not in root:
                             continue
                     f = sorted([s for s in files if re.search(regex, s)])
-                    # print(f)
+
                     if len(f) > 0:
                         for s in f:
                             if ('master' not in str(s) or 'combined' not in str(s)) \
@@ -350,6 +349,7 @@ class DataSet(object):
             Filtered dataset(s).
             Folder and files suitable for reduction.
         """
+
         mode = self._mode
         log = self._log
         filenames = self._fits_images
@@ -362,24 +362,29 @@ class DataSet(object):
         data = ImageFileCollection(filenames=filenames)
 
         # check if instruments in found fits files are supported
-        instruments_list = self._get_tel_and_inst(filenames)
+        instruments_list = self._get_instruments(filenames)
+        instruments_list = sorted(instruments_list)
+        inst_dict = collections.OrderedDict({k: {} for k in instruments_list})
 
-        telescope_list = []
-        obsparams_list = []
         dataset_list = []
         for i in range(len(instruments_list)):
             inst = instruments_list[i]
             tel_id = _base_conf.INSTRUMENT_IDENTIFIERS[inst]
             obsparams = _base_conf.TELESCOPE_PARAMETERS[tel_id]
             telescope = obsparams['telescope_keyword']
-            telescope_list.append(telescope)
-            obsparams_list.append(obsparams)
 
+            inst_dict[inst]['telescope'] = telescope
+            inst_dict[inst]['obsparams'] = obsparams
             # filter fits files by science image type
-            # todo: implement here a possibility to only use flats, bias or dark keywords maybe?
+            # todo: implement here a possibility to only use flats,
+            #  bias or dark keywords maybe?
             add_filters = {"telescop": telescope}
             if telescope == 'CBNUO-JC':
                 add_filters = {'observat': telescope}
+            if telescope == 'CTIO 0.9 meter telescope':
+                add_filters = {'observat': 'CTIO'}
+
+            add_filters[obsparams['instrume'].lower()] = inst
 
             if mode == 'reduceCalibObs':
                 combos = _base_conf.IMAGETYP_COMBOS
@@ -387,7 +392,11 @@ class DataSet(object):
                 imagetyp = '|'.join(image_typs)
             else:
                 imagetyp = _base_conf.IMAGETYP_COMBOS['light']
-            add_filters["imagetyp"] = imagetyp
+
+            if telescope == 'DDOTI 28-cm f/2.2':
+                add_filters['exptype'] = imagetyp
+            else:
+                add_filters["imagetyp"] = imagetyp
 
             _files = data.filter(regex_match=True, **add_filters)
 
@@ -416,19 +425,19 @@ class DataSet(object):
                 sys.exit()
             if not self._silent:
                 log.info(f'  ==> Found a total of {len(_files.summary)} valid FITS-file(s) '
-                         f'for telescope: {telescope}')
+                         f'for instrument: {inst} @ telescope: {telescope}')
 
             if mode != 'satPhotometry':
                 dataset_list.append(_files.summary['file'].data)
+                inst_dict[inst]['dataset'] = _files.summary['file'].data
             else:
-                dataset_list.append(self._grouped_by_pointing(_files))
+                dataset_list.append(self._grouped_by_pointing(_files, inst))
+                inst_dict[inst]['dataset'] = self._grouped_by_pointing(_files, inst)
 
-        self._instruments = instruments_list
-        self._telescopes = telescope_list
-        self._obsparams = obsparams_list
-        self._datasets = dataset_list
+        self._instruments = inst_dict
+        self._instruments_list = instruments_list
 
-    def _get_tel_and_inst(self, filenames: list):
+    def _get_instruments(self, filenames: list):
         """ Identify the instrument and crosscheck with supported instruments.
 
         """
@@ -468,9 +477,12 @@ class DataSet(object):
         return list(set(instruments))
 
     @staticmethod
-    def _grouped_by_pointing(data: ccdproc.ImageFileCollection):
+    def _grouped_by_pointing(data: ccdproc.ImageFileCollection, inst):
         """Group files by telescope pointing"""
         df = data.summary.to_pandas()
+
+        # use only the current instrument
+        df = df[df['instrume'] == inst]
 
         # sort filenames
         df.sort_values(by='file', inplace=True)
@@ -499,7 +511,6 @@ class DataSet(object):
             removed += 1
             with os.scandir(folder) as ls:
                 for f in ls:
-                    # print(f.path, in_folder, f.name, imagetyp_sel)
                     if f.name == imagetyp_sel and f.path in in_folder:
                         return Path(f.path).parent
             parent_folder = os.path.normpath(os.path.join(folder, os.pardir))

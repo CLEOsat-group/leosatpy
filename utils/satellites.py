@@ -549,6 +549,7 @@ def create_hough_space_vectorized(image: np.ndarray,
 
     # calculate matrix product
     rho_values = np.matmul(edge_points, np.array([sin_thetas, cos_thetas]))
+    del image, cos_thetas, sin_thetas, edge_points
 
     # get the hough space
     bins = [len(thetas), len(rhos)]
@@ -560,7 +561,7 @@ def create_hough_space_vectorized(image: np.ndarray,
     # rhos in rows and thetas in columns (rho, theta)
     accumulator = np.transpose(accumulator)
 
-    del image, cos_thetas, sin_thetas, edge_points, rho_values, vals, ranges, bins
+    del rho_values, vals, ranges, bins
     gc.collect()
 
     return accumulator, rhos, thetas, drho, dtheta
@@ -607,6 +608,7 @@ def detect_sat_trails(image: np.ndarray,
                       alpha: float = 10.,
                       sigma_blurr: float = 3.,
                       borderLen: int = 3,
+                      mask: np.ndarray = None,
                       silent: bool = False):
     """ Find satellite trails in image and extract region properties.
 
@@ -646,6 +648,10 @@ def detect_sat_trails(image: np.ndarray,
         image[0:len_x, 0:borderLen] = 0
         image[0:len_x, len_y - borderLen:len_y] = 0
 
+    if mask is not None:
+        m = np.where(mask, 0, 1)
+        image *= m
+
     blurred_f = nd.gaussian_filter(image, 2.)
     filter_blurred_f = nd.gaussian_filter(blurred_f, sigma_blurr)
     sharpened = blurred_f + alpha * (blurred_f - filter_blurred_f)
@@ -654,38 +660,50 @@ def detect_sat_trails(image: np.ndarray,
     sharpened -= mean
 
     threshold = detect_threshold(sharpened, 1., mean, std)
-    sources = detect_sources(sharpened, threshold=threshold, npixels=9, connectivity=8)
+    sources = detect_sources(sharpened, threshold=threshold,
+                             npixels=9, connectivity=8, mask=mask)
     segm = SegmentationImage(sources.data)
     segm_init = segm.copy()
 
     # create regions
     regs = regionprops_table(segm.data, properties=properties)
-    df = pd.DataFrame(regs)
-    df['orientation_deg'] = df['orientation'] * 180. / np.pi
+    df_init = pd.DataFrame(regs)
+    df_init['orientation_deg'] = df_init['orientation'] * 180. / np.pi
+
+    # fig = plt.figure(figsize=(10, 6))
+    # gs = gridspec.GridSpec(2, 2)
+    # ax1 = fig.add_subplot(gs[0, 0])
+    # ax2 = fig.add_subplot(gs[0, 1])
+    # ax3 = fig.add_subplot(gs[1, 0])
+    #
+    # ax1.hist(df_init['eccentricity'], density=False, bins='auto')
+    # ax2.hist(df_init['orientation_deg'], density=False, bins='auto')
+    # ax3.hist(df_init['axis_major_length'], density=False, bins='auto')
+    # plt.show()
 
     # first filter roundish objects
-    labels = df.query(" eccentricity >= 0.985 and area > @min_trail_length")['label']
+    labels = df_init.query("eccentricity >= 0.985 and area > @min_trail_length")['label']
     if labels.size == 0:
         if not silent:
             log.info("  ==> NO satellite trails detected.")
         del image, blurred_f, filter_blurred_f, sharpened, \
             threshold, sources, segm, segm_init, \
-            regs, df
+            regs, df_init
         gc.collect()
         return None, False
 
     segm.keep_labels(labels=labels, relabel=False)
+
     regs = regionprops_table(segm.data, properties=properties)
     df = pd.DataFrame(regs)
     df['orientation_deg'] = df['orientation'] * 180. / np.pi
 
     if df.shape[0] == 1:
-        # print(df1['eccentricity'])
         if df['eccentricity'].values[0] >= 0.999 and \
                 df['axis_major_length'].values[0] > min_trail_length:
             if not silent:
                 log.info("  ==> 1 satellite trails detected.")
-            reg_dict = get_trail_properties(segm, df, silent=True)
+            reg_dict = get_trail_properties(segm, df, config, silent=True)
             reg_dict['detection_imgs'].update({'img_sharp': sharpened,
                                                'segm_map': segm_init})
 
@@ -726,7 +744,7 @@ def detect_sat_trails(image: np.ndarray,
         df2 = grouped.get_group(ind)
 
         segm.keep_labels(labels=df['label'], relabel=False)
-        reg_dict = get_trail_properties(segm, df2, silent=True)
+        reg_dict = get_trail_properties(segm, df2, config, silent=True)
 
         reg_dict['detection_imgs'].update({'img_sharp': sharpened,
                                            'segm_map': segm_init})
@@ -752,7 +770,7 @@ def get_distance(loc1, loc2):
     return distance.distance(loc1, loc2, ellipsoid='WGS-84').km
 
 
-def get_trail_properties(segm_map, df,
+def get_trail_properties(segm_map, df, config,
                          silent: bool = False):
     """"""
 
@@ -762,17 +780,20 @@ def get_trail_properties(segm_map, df,
 
     # apply dilation
     footprint = np.ones((1, 1))
-    dilated = nd.binary_dilation(binary_img, structure=footprint, iterations=5)
+    dilated = nd.binary_dilation(binary_img, structure=footprint, iterations=3)
 
     # create hough space and get peaks
     hspace_smooth, peaks, dist, theta = get_hough_transform(dilated, silent=silent)
-
+    # print(peaks)
+    # plt.figure()
+    # plt.imshow(hspace_smooth)
+    # plt.show()
     if len(peaks) > 1:
         edge_height, edge_width = dilated.shape[:2]
         edge_height_half, edge_width_half = edge_height // 2, edge_width // 2
         del hspace_smooth
-        sel_dict = {i: [] for i in range(len(peaks))}
 
+        sel_dict = {i: [] for i in range(len(peaks))}
         for i in range(len(peaks)):
             angle = peaks[i][1]
             dist = peaks[i][2]
@@ -781,21 +802,32 @@ def get_trail_properties(segm_map, df,
             b = np.sin(np.deg2rad(angle))
             x0 = (a * dist) + edge_width_half
             y0 = (b * dist) + edge_height_half
-            x1 = int(x0 + abs(edge_width - 5. - x0) * (-b))
-            y1 = int(y0 + abs(edge_height - 5. - y0) * a)
-            x2 = int(x0 - abs(edge_width - 5. - x0) * (-b))
-            y2 = int(y0 - abs(edge_height - 5. - y0) * a)
+            x1 = int(x0 + edge_width * (-b))
+            y1 = int(y0 + edge_height * a)
+            x2 = int(x0 - edge_width * (-b))
+            y2 = int(y0 - edge_height * a)
 
             rr, cc = line(y1, x1, y2, x2)
 
+            # check that columns are within image boundaries
+            idx = (cc > 0) & (cc < dilated.shape[1])
+            rr = rr[idx]
+            cc = cc[idx]
+
+            # check that rows are within image boundaries
+            idx = (rr > 0) & (rr < dilated.shape[0])
+            rr = rr[idx]
+            cc = cc[idx]
+
+            # find the unique labels that make up the particular trail
             label_list = np.unique(segm_map.data[rr, cc])
             [sel_dict[i].append(row.Index) for row in df.itertuples(name='label') if row.label in label_list]
 
         # select only the label that belong to the first peak
         # this can be extended later to let the user choose which to pick
         # set 0 for first entry
-        df.reset_index()
-        _df = df.loc[sel_dict[0]]
+        sel_idx = config['PARALLEL_TRAIL_SELECT']
+        _df = df.iloc[sel_dict[sel_idx]] if len(df) > 1 else df.loc[sel_dict[sel_idx]]
         binary_img = np.zeros(segm_map.shape)
         for row in _df.itertuples(name='label'):
             binary_img[segm_map.data == row.label] = 1
@@ -839,7 +871,7 @@ def get_trail_properties(segm_map, df,
     return reg_dict
 
 
-def get_hough_transform(image: np.ndarray,
+def get_hough_transform(image: np.ndarray, sigma: float = 2.,
                         silent: bool = False):
     """ Perform a Hough transform on the selected region and fit parameter """
 
@@ -849,7 +881,7 @@ def get_hough_transform(image: np.ndarray,
                                         num_rhos=None, silent=silent)
     hspace, dist, theta, _, _ = res
     # apply gaussian filter to smooth the image
-    hspace_smooth = nd.gaussian_filter(hspace, 2.)
+    hspace_smooth = nd.gaussian_filter(hspace, sigma)
 
     del image, res, hspace, _
 
