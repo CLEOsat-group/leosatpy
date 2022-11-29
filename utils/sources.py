@@ -253,7 +253,7 @@ def build_auto_kernel(imgarr, fwhm=4.0, threshold=None, source_box=7,
     kernel_psf = False
 
     # find peaks 3 times above the threshold
-    peaks = find_peaks(kern_img, threshold=3. * threshold,
+    peaks = find_peaks(kern_img, threshold=2. * threshold,
                        box_size=isolation_size, border_width=25)
 
     if peaks is None or (peaks is not None and len(peaks) == 0):
@@ -650,7 +650,7 @@ def compute_2d_background(imgarr, box_size, win_size,
 
     # write results to fits
     hdu1 = fits.PrimaryHDU(data=bkg_background)
-    hdu1.header.set('BEGRIMED', bkg_median)
+    hdu1.header.set('BKGMED', bkg_median)
     hdu1.header.set('RMSMED', bkg_rms_median)
     hdu2 = fits.ImageHDU(data=bkg_rms)
     new_hdul = fits.HDUList([hdu1, hdu2])
@@ -869,7 +869,7 @@ def extract_source_catalog(imgarr, config, vignette=-1,
                                                              fwhm=kernel_fwhm,
                                                              source_box=source_box,
                                                              # centering_mode=None,
-                                                             nlargest=None,
+                                                             nlargest=_base_conf.NUM_SOURCES_MAX,
                                                              MAX_AREA_LIMIT=_base_conf.MAX_AREA_LIMIT,
                                                              silent=silent)
     if not state:
