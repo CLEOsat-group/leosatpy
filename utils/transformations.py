@@ -357,7 +357,7 @@ def fine_transformation(observation, catalog, wcsprm, threshold=10,
     threshold_min = np.log(20)  # minimum distance to make useful scaling or angle estimation
     if threshold == 10:
         threshold_min = np.log(200)
-    print(threshold_min)
+
     mask = (log_dist_obs > threshold_min) & (log_dist_cat > threshold_min)
     scale_offset = -log_dist_obs + log_dist_cat
 
@@ -367,7 +367,7 @@ def fine_transformation(observation, catalog, wcsprm, threshold=10,
 
     rotation = np.mean(angle_offset)
     scaling = np.e ** (np.mean(scale_offset))
-    print(rotation, scaling)
+
     del angle_offset, scale_offset, mask, log_dist_obs, log_dist_cat
 
     rot = rotation_matrix(rotation)
@@ -435,7 +435,6 @@ def find_matches(obs, cat, wcsprm=None, threshold=10):
     obs_idx = idx_arr[1][mask]
     min_dist_xy = min_dist_xy[mask]
 
-    # print(obs_xy[idx_arr[1][mask], :])
     obs_matched = obs.iloc[obs_idx]
     cat_matched = cat.iloc[cat_idx]
 
