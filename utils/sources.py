@@ -1206,7 +1206,7 @@ def find_fwhm(psf: np.ndarray, default_fwhm: float) -> float | None:
                                                       psf_model=gaussian_prf,
                                                       fitter=fitter,
                                                       fitshape=(11, 11),
-                                                      niters=None)
+                                                      niters=5)
     phot_results = itr_phot_obj(psf)
 
     # Insure none of the fluxes determined by photutils is np.nan
