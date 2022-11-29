@@ -161,6 +161,8 @@ Possible formats are, e.g., 20221110, 2022-11-20, tel_20221011_satxy, 2022-11-26
 .. note::
 
     The program can detect and handle if the name of the folder does not corresponds to the observation date.
+    However, the difference in date should not exceed 7 days. For example, data observed on 2022-11-11 UTC
+    might be located in a folder named 2022-11-10. <-- This is detected.
 
 It is also recommended to separate the raw calibration files from the science observation files
 and place them into separate folder.
