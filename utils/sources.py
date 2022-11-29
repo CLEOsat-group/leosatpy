@@ -1299,15 +1299,6 @@ def get_reference_catalog(ra, dec, sr=0.5, epoch=None, num_sources=None, catalog
 
         j = Gaia.launch_job_async(query)
         ref_table = j.get_results()
-    # if 'GSC' in catalog:
-    #     if not silent:
-    #         log.info("> Get photometric reference catalog via astroquery")
-    #     catname = _base_conf.DEF_ASTROQUERY_CATALOGS[catalog.upper()]
-    #     v = Vizier(columns=["**"], catalog=catname)
-    #     v.ROW_LIMIT = -1  # Ensure the default row limit.
-    #     ref_table = v.query_region(coord,
-    #                                radius=radius)
-    #     ref_table = ref_table[0]
 
     # Add catalog name as metadata
     ref_table.meta['catalog'] = catalog
