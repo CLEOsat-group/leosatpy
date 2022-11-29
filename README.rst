@@ -40,9 +40,9 @@ The important files for the process in this directory:
 Program                      Function
 ===========================  ==========================================================================
 ``reduceSatObs.py``          Perform reduction of satellite observations.
-``calibrateSatObs.py``       Perform astrometric calibration using GAIA eDR3 positions.
+``calibrateSatObs.py``       Perform astrometric calibration using GAIA DR3 positions.
 ``analyseSatObs.py``         Detect satellite trail(s) and perform aperture photometry using
-                             comparison stars from the GSC 2.4 catalog.
+                             comparison stars from the GSC 2.4.3 catalog.
 ===========================  ==========================================================================
 
 ^^^^^^^^^^^^^^^^^^^^
@@ -51,16 +51,24 @@ Supported Telescopes
 
 Observations from the following telescopes are currently supported:
 
-* Danish 1.54-metre telescope at La Silla, Chile.
+* 1.54-metre Danish telescope at La Silla, Chile.
 * 0.6-metre telescope of the Chungbuk National University Observatory in Jincheon, South Korea
-* Chakana 0.6-metre telescope at the Ckoirama observatory, Antofagasta, Chile.
+* 0.6-metre Chakana telescope at the Ckoirama Observatory, Antofagasta, Chile.
 * 1.23-metre telescope at Calar Alto, Spain
+* 0.9-metre Small and Moderate Aperture Research Telescope System (SMARTS) Telescope
+  at Cerro Tololo Inter-american Observatory (CTIO)
+* 28-cm DDOTI telescopes at the Observatorio Astronómico Nacional (OAN) in
+  Sierra San Pedro Martír (SPM), Baja California, México
+* 0.5-metre MOSS telescope at the Oukaïmeden Observatory in Morocco
 
 .. put links to telescopes
 
+The positions of reference stars for astrometric calibration where obtained from the GAIA DR3 catalog via
+`astroquery <https://astroquery.readthedocs.io/en/latest/#>`_
+
 The positions and magnitudes of the comparison stars are collected using the
 `WebServices for Catalog Access <https://outerspace.stsci.edu/display/GC/WebServices+for+Catalog+Access>`_
-to the Guide Star Catalog(s).
+to the Guide Star Catalog(s) v2.4.3.
 
 .. `Link <Feedback, comments, questions?_>`_
 
@@ -134,7 +142,7 @@ it is recommended to follow the folder layout given below:
 
     .
     └── Telescope-Identifier <- free naming
-        ├── YYYY-MM-DD <- mandatory format
+        ├── YYYY-MM-DD <- recommended format
         │   ├── bias
         │   ├── flats
         │   ├── darks
@@ -143,9 +151,16 @@ it is recommended to follow the folder layout given below:
         ├── YYYY-MM-DD
         └── YYYY-MM-DD
 
-The only mandatory requirement is the naming of the main folder
-containing the observations of a single night.
-This folder should only contain the date of observation using the following format: ``YYYY-MM-DD``.
+The only requirement with regard to the name of the main folder is
+that the folder name should contain the date of observation either in the format: ``YYYY-MM-DD``, or ``YYYYMMDD``.
+
+The program will select the search path for the calibration data based on the obs date from the science data header
+and the names of folder in the given path.
+Possible formats are, e.g., 20221110, 2022-11-20, tel_20221011_satxy, 2022-11-26_satxy_obs1, etc.
+
+.. note::
+
+    The program can detect and handle if the name of the folder does not corresponds to the observation date.
 
 It is also recommended to separate the raw calibration files from the science observation files
 and place them into separate folder.
