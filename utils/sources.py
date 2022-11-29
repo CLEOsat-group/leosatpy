@@ -1206,7 +1206,7 @@ def find_fwhm(psf: np.ndarray, default_fwhm: float) -> float | None:
                                                       psf_model=gaussian_prf,
                                                       fitter=fitter,
                                                       fitshape=(11, 11),
-                                                      niters=5)
+                                                      niters=3)
     phot_results = itr_phot_obj(psf)
 
     # Insure none of the fluxes determined by photutils is np.nan
@@ -1292,7 +1292,7 @@ def get_reference_catalog(ra, dec, sr=0.5, epoch=None, num_sources=None, catalog
             WHERE 1 = CONTAINS(
                POINT({coord.ra.value}, {coord.dec.value}),
                CIRCLE(ra, dec, {radius.value}))
-            AND phot_g_mean_mag < 16
+            AND phot_g_mean_mag < 20
             AND parallax IS NOT NULL
             ORDER BY phot_g_mean_mag ASC
         """

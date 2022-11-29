@@ -125,11 +125,11 @@ dk154_params = {
     # source extractor settings
     'average_fwhm': 2.75,
     'saturation_limit': 65535,
-    'nsigma': 1.25,
+    'nsigma': 2.5,
     'source_box': 9,
     'isolation_size': 11,
-    'box_size': 11,
-    'win_size': 7,
+    'box_size': 27,
+    'win_size': 11,
 
 }
 
