@@ -54,6 +54,8 @@ dk154_params = {
     # detector keywords
     'extent': ('NAXIS1', 'NAXIS2'),  # N_pixels in x/y
     'n_amps': 1,  # the number of amplifiers on the chip
+    'namps_yx': {'1x1': None},
+    'amplist': {'1x1': None},  # amplifier list keyword
     'secpix': ('SECPPIX', 'SECPPIX'),  # unbinned pixel size (arcsec)
     'binning': ('BINX', 'BINY'),  # binning in x/y
     'image_size_1x1': (2148, 2048),
@@ -62,12 +64,14 @@ dk154_params = {
 
     # telescope pointing keywords
     'ra': 'OBJRA',  # telescope pointing, RA
-    'dec': 'OBJDEC',  # telescope pointin, Dec
+    'dec': 'OBJDEC',  # telescope pointing, Dec
     'radec_separator': ':',  # RA/Dec hms separator, use 'XXX' if already in degrees
+    'equinox': 'EQUINOX',
 
     # observation keywords
     'date_keyword': 'DATE-OBS',  # obs date/time
 
+    'imagetyp': 'IMAGETYP',
     'object': 'OBJECT',  # object name keyword
     'filter': 'FILTB',  # filter keyword
 
@@ -80,8 +84,21 @@ dk154_params = {
 
     # reduction keywords
     # trim section for trimming of unwanted areas
-    'trimsec': {'1x1': '[67:2096, 1:2060]', '2x2': '[50:1049, 11:1020]', '4x4': '[16:525, 1:512]'},
-    'oscan_cor': None,
+    'ampsec': {'1x1': None,
+               '2x2': None,
+               '4x4': None},
+    'oscansec': {'1x1': None,
+                 # '1x1': {'11': [6, 22, 0, 6144]},
+                 '2x2': None,
+                 '4x4': None},
+    'trimsec': {'1x1': {'11': [0, 2060, 66, 2096]},
+                '2x2': {'11': [10, 1020, 49, 1049]},
+                '4x4': {'11': [0, 512, 15, 525]}},
+
+    # ccd mask for regions to exclude from all processes
+    'ccd_mask': {'1x1': None,
+                 '2x2': None,
+                 '4x4': None},
 
     # telescope specific image types
     'imagetyp_light': 'light',
@@ -107,7 +124,7 @@ dk154_params = {
 
     # source extractor settings
     'average_fwhm': 2.75,
-    'saturation_limit': 6.0e5,
+    'saturation_limit': 65535,
     'nsigma': 1.25,
     'source_box': 9,
     'isolation_size': 11,
@@ -139,6 +156,8 @@ cbnuo_params = {
     # detector keywords
     'extent': ('NAXIS1', 'NAXIS2'),  # N_pixels in x/y
     'n_amps': 1,  # number of chips on detector
+    'namps_yx': {'1x1': None},
+    'amplist': {'1x1': None},  # amplifier list keyword
     'secpix': (1.05, 1.05),  # pixel size (arcsec)
     'binning': ('BINX', 'BINY'),  # binning
     'image_size_1x1': (4096, 4096),
@@ -149,10 +168,12 @@ cbnuo_params = {
     'ra': 'RA',  # telescope pointing, RA
     'dec': 'DEC',  # telescope pointing, Dec
     'radec_separator': ':',  # RA/Dec hms separator, use 'XXX' if already in degrees
+    'equinox': None,
 
     # observation keywords
     'date_keyword': 'DATE-OBS',  # obs date/time
 
+    'imagetyp': 'IMAGETYP',
     'object': 'OBJECT',  # object name keyword
     'filter': 'FILTER',  # filter keyword
     'filter_translations': {'V': 'V', 'R': 'R',
@@ -163,9 +184,21 @@ cbnuo_params = {
 
     # reduction keywords
     # trim section for trimming of unwanted areas
-    'trimsec': None,
-    # 'trimsec': {'1x1': '[67:2096, 1:2060]', '2x2': '[50:1049, 11:1020]', '4x4': '[16:525, 1:512]'},
-    'oscan_cor': None,  # correct overscan
+    'ampsec': {'1x1': None,
+               '2x2': None,
+               '4x4': None},
+    'oscansec': {'1x1': None,
+                 # '1x1': {'11': [6, 22, 0, 6144]},
+                 '2x2': None,
+                 '4x4': None},
+    'trimsec': {'1x1': None,
+                '2x2': None,
+                '4x4': None},
+
+    # ccd mask for regions to exclude from all processes
+    'ccd_mask': {'1x1': None,
+                 '2x2': None,
+                 '4x4': None},
 
     # telescope specific image types
     'imagetyp_light': 'object',
@@ -221,6 +254,8 @@ ca123dlrmkiii_param = {
     # detector keywords
     'extent': ('NAXIS1', 'NAXIS2'),  # N_pixels in x/y
     'n_amps': 1,  # number of chips on detector
+    'namps_yx': {'1x1': None},
+    'amplist': {'1x1': None},  # amplifier list keyword
     'secpix': ('SCALE', 'SCALE'),  # unbinned pixel size (arcsec)
     'binning': ('CCDBINX', 'CCDBINY'),  # binning keyword
     'image_size_1x1': (4096, 4112),
@@ -231,10 +266,12 @@ ca123dlrmkiii_param = {
     'ra': 'RA',  # telescope pointing, RA
     'dec': 'DEC',  # telescope pointing, Dec
     'radec_separator': 'XXX',  # RA/Dec hms separator, use 'XXX' if already in degrees
+    'equinox': 'EQUINOX',
 
     # observation keywords
     'date_keyword': 'DATE-OBS',  # obs date/time
 
+    'imagetyp': 'IMAGETYP',
     'object': 'OBJECT',  # object name keyword
     'filter': 'FILTER',  # filter keyword
     # filtername translation dictionary
@@ -246,8 +283,21 @@ ca123dlrmkiii_param = {
 
     # reduction keywords
     # trim section for trimming of unwanted areas
-    'trimsec': None,
-    'oscan_cor': None,
+    'ampsec': {'1x1': None,
+               '2x2': None,
+               '4x4': None},
+    'oscansec': {'1x1': None,
+                 # '1x1': {'11': [6, 22, 0, 6144]},
+                 '2x2': None,
+                 '4x4': None},
+    'trimsec': {'1x1': None,
+                '2x2': None,
+                '4x4': None},
+
+    # ccd mask for regions to exclude from all processes
+    'ccd_mask': {'1x1': None,
+                 '2x2': None,
+                 '4x4': None},
 
     # telescope specific image types
     'imagetyp_light': 'science',
@@ -301,7 +351,9 @@ ckoir_param = {
 
     'extent': ('NAXIS1', 'NAXIS2'),  # N_pixels in x/y
     'n_amps': 1,  # number of chips on detector
-    'secpix': (0.47, 0.47),  # pixel size (arcsec)
+    'namps_yx': {'1x1': None},
+    'amplist': {'1x1': None},  # amplifier list keyword
+    'secpix': (0.475, 0.475),  # pixel size (arcsec)
     'binning': ('XBINNING', 'YBINNING'),  # binning in x/y
     'image_size_1x1': (4096, 4096),
     # gain and readout noise taken from https://people.bsu.edu/rberring/observing-facilities/
@@ -313,10 +365,12 @@ ckoir_param = {
     'ra': 'OBJCTRA',  # telescope pointing, RA
     'dec': 'OBJCTDEC',  # telescope pointing, Dec
     'radec_separator': ' ',  # RA/Dec hms separator, use 'XXX' if already in degrees
+    'equinox': 'EQUINOX',
 
     # keyword; use 'date|time' if separate
     'date_keyword': 'DATE-OBS',  # obs date/time
 
+    'imagetyp': 'IMAGETYP',
     'object': 'OBJECT',  # object name keyword
     'filter': 'FILTER',  # filter keyword
 
@@ -330,8 +384,21 @@ ckoir_param = {
 
     # reduction keywords
     # trim section for trimming of unwanted areas
-    'trimsec': None,
-    'oscan_cor': None,
+    'ampsec': {'1x1': None,
+               '2x2': None,
+               '4x4': None},
+    'oscansec': {'1x1': None,
+                 # '1x1': {'11': [6, 22, 0, 6144]},
+                 '2x2': None,
+                 '4x4': None},
+    'trimsec': {'1x1': None,
+                '2x2': None,
+                '4x4': None},
+
+    # ccd mask for regions to exclude from all processes
+    'ccd_mask': {'1x1': None,
+                 '2x2': None,
+                 '4x4': None},
 
     # 'imagetyp_light': 'Light Frame',
     # 'imagetyp_bias': 'Bias Frame',
@@ -367,19 +434,315 @@ ckoir_param = {
     'box_size': 27,
     'win_size': 11}
 
+# CTIO 0.9 m telescope
+ctio_params = {
+
+    # telescope location information
+    "name": "Cerro Tololo Interamerican Observatory",
+    "longitude": -70.815,
+    "latitude": -30.16527778,
+    "altitude": 2215.0,
+    "tz": -4,
+
+    # telescope keywords
+    'telescope_instrument': 'CTIO',  # telescope/instrument name
+    'telescope_keyword': 'CTIO 0.9 meter telescope',  # telescope/instrument keyword
+    'observatory_code': '807',  # MPC observatory code
+
+    # instrument-specific FITS header keywords
+    'telescop': 'TELESCOP',  # telescope keyword
+    'instrume': 'INSTRUME',  # instrument keyword
+
+    'extent': ('NAXIS1', 'NAXIS2'),  # N_pixels in x/y
+    'n_amps': 4,  # number of chips/amplifier on detector
+    'namps_yx': {'1x1': {4: [2, 2]}},
+    'amplist': {'1x1': ['11', '12', '21', '22']},  # amplifier list keyword
+    'secpix': (0.401, 0.401),  # pixel size (arcsec)
+    'binning': ('BINX', 'BINY'),  # binning
+    'image_size_1x1': (2168, 2048),
+
+    'gain': 3.,  # CD gain in el/DN
+    'readnoise': 12.,  # CCD Read Out Noise (e-)
+
+    # telescope pointing keywords
+    'ra': 'RA',  # telescope pointing, RA
+    'dec': 'DEC',  # telescope pointing, Dec
+    'radec_separator': ':',  # RA/Dec hms separator, use 'XXX' if already in degrees
+    'equinox': 'EQUINOX',
+
+    # keyword; use 'date|time' if separate
+    'date_keyword': 'DATE-OBS',  # obs date/time
+
+    'imagetyp': 'IMAGETYP',
+    'object': 'OBJECT',  # object name keyword
+    'filter': 'FILTER2',  # filter keyword
+
+    # filtername translation dictionary
+    'filter_translations': {'u': 'U', 'b': 'B',
+                            'nv': 'V', 'i': 'I',
+                            'r': 'R'},
+
+    'exptime': 'EXPTIME',  # exposure time keyword (s)
+    'airmass': 'AIRMASS',  # airmass keyword
+
+    # reduction keywords
+    # trim section for trimming of unwanted areas
+    # 'trimsec': None,
+    'ampsec': {'1x1': {'11': [0, 1023, 0, 1084],
+                       '12': [0, 1023, 1084, 2168],
+                       '21': [1025, 2048, 0, 1084],
+                       '22': [1025, 2048, 1084, 2168]},
+               '2x2': None,
+               '4x4': None},
+    'oscansec': {'1x1': {'11': [0, 1023, 1044, 1084],
+                         '12': [0, 1023, 0, 40],
+                         '21': [0, 1023, 1044, 1084],
+                         '22': [0, 1023, 0, 40]},
+                 '2x2': None,
+                 '4x4': None},
+    'trimsec': {'1x1': {'11': [0, 1023, 10, 1034],
+                        '12': [0, 1023, 50, 1074],
+                        '21': [0, 1023, 10, 1034],
+                        '22': [0, 1023, 50, 1074]},
+                '2x2': None,
+                '4x4': None},
+
+    # ccd mask for regions to exclude from all processes
+    'ccd_mask': {'1x1': [[0, 2046, 1957, 1959],
+                         # [1405, 1791, 1920, 1957],
+                         [316, 1023, 100, 101],
+                         [1010, 1023, 437, 438],
+                         [1023, 1061, 482, 483],
+                         [1023, 1145, 535, 536],
+                         [1023, 1166, 547, 546],
+                         [1023, 1347, 818, 819],
+                         ],
+                 '2x2': None,
+                 '4x4': None},
+
+    # telescope specific image types
+    'imagetyp_light': 'object',
+    'imagetyp_bias': 'zero',
+    'imagetyp_dark': 'dark',
+    'imagetyp_flat': 'dflat',
+    'add_imagetyp_keys': True,
+    'add_imagetyp': {'flat': {'imagetyp': 'sflat'}},
+
+    # keywords to exclude from the header update while preparing the file
+    'keys_to_exclude': None,
+
+    # keywords for info_dict
+    'obs_keywords': ['telescop', 'instrume', 'object', 'date-obs', 'filter', 'exptime',
+                     'ra', 'dec', 'airmass', 'binning'],
+
+    # source extractor settings
+    'average_fwhm': 3,
+    'saturation_limit': 6e5,
+    'nsigma': 1.5,
+    'source_box': 15,
+    'isolation_size': 5,
+    'box_size': 27,
+    'win_size': 11
+
+}
+
+spm_params = {
+
+    # telescope location information
+    "name": "Observatorio Astronomico Nacional, San Pedro Martir",
+    "longitude": -115.48694444,
+    "latitude": 31.02916667,
+    "altitude": 2830.0,
+    "tz": -7,
+
+    # telescope keywords
+    'telescope_instrument': 'OAN/SPM',  # telescope/instrument name
+    'telescope_keyword': 'DDOTI 28-cm f/2.2',  # telescope/instrument keyword
+    'observatory_code': '679',  # MPC observatory code
+
+    # instrument-specific FITS header keywords
+    'telescop': 'TELESCOP',  # telescope keyword
+    'instrume': 'INSTRUME',  # instrument keyword
+
+    'extent': ('NAXIS1', 'NAXIS2'),  # N_pixels in x/y
+    'n_amps': 1,  # number of chips/amplifier on detector
+    'namps_yx': {'1x1': None},
+    'amplist': {'1x1': None},  # amplifier list keyword
+    'secpix': (2., 2.),  # pixel size (arcsec)
+    'binning': ('BINNING', 'BINNING'),  # binning
+    'image_size_1x1': (6144, 6220),
+
+    'gain': 'SOFTGAIN',  # CD gain in el/DN
+    'readnoise': 12,  # CCD Read Out Noise (e-)
+
+    # telescope pointing keywords
+    'ra': 'STRRQRA',  # telescope pointing, RA
+    'dec': 'STRRQDE',  # telescope pointing, Dec
+    'radec_separator': 'XXX',  # RA/Dec hms separator, use 'XXX' if already in degrees
+    'equinox': 'STRRQEQ',
+
+    # keyword; use 'date|time' if separate
+    'date_keyword': 'DATE-OBS',  # obs date/time
+
+    'object': 'BLKNM',  # object name keyword
+    'filter': 'FILTER',  # filter keyword
+    'imagetyp': 'EXPTYPE',
+
+    # filtername translation dictionary
+    'filter_translations': {'w': 'w'},
+
+    'exptime': 'EXPTIME',  # exposure time keyword (s)
+    'airmass': 'STROBAM',  # airmass keyword
+
+    # 'trimsec': None,
+    'ampsec': {'1x1': None,
+               '2x2': None,
+               '4x4': None},
+    'oscansec': {'1x1': None,
+                 # '1x1': {'11': [6, 22, 0, 6144]},
+                 '2x2': None,
+                 '4x4': None},
+    'trimsec': {'1x1': {'11': [54, 6198, 0, 6144]},
+                '2x2': None,
+                '4x4': None},
+
+    # ccd mask for regions to exclude from all processes
+    'ccd_mask': {'1x1': None,
+                 '2x2': None,
+                 '4x4': None},
+
+    # telescope specific image types
+    'imagetyp_light': 'object',
+    'imagetyp_bias': 'bias',
+    'imagetyp_dark': 'dark',
+    'imagetyp_flat': 'flat',
+    'add_imagetyp_keys': False,
+    # 'add_imagetyp': {'flat': {'imagetyp': 'sflat'}},
+
+    # keywords to exclude from the header update while preparing the file
+    'keys_to_exclude': None,
+
+    # keywords for info_dict
+    'obs_keywords': ['telescop', 'instrume', 'blknm', 'date-obs', 'filter', 'exptime',
+                     'strrqra', 'strrqde', 'strobam', 'binning'],
+
+    # source extractor settings
+    'average_fwhm': 3.5,
+    'saturation_limit': 6.5e4,
+    'nsigma': 3.,
+    'source_box': 9,
+    'isolation_size': 11,
+    'box_size': 27,
+    'win_size': 11
+}
+
+ouka_params = {
+    "name": "Oukaimeden observatory",
+    "longitude": -7.866,
+    "latitude": 31.206389,
+    "altitude": 2700.0,
+    "tz": -1,
+
+    # telescope keywords
+    'telescope_instrument': 'ZWO ASI2600MM Pro',  # telescope/instrument name
+    'telescope_keyword': 'Takahashi FSQ 85',  # telescope/instrument keyword
+    'observatory_code': 'J43',  # MPC observatory code
+
+    # instrument-specific FITS header keywords
+    'telescop': 'TELESCOP',  # telescope keyword
+    'instrume': 'INSTRUME',  # instrument keyword
+
+    'extent': ('NAXIS1', 'NAXIS2'),  # N_pixels in x/y
+    'n_amps': 1,  # number of chips/amplifier on detector
+    'namps_yx': {'1x1': None},
+    'amplist': {'1x1': None},  # amplifier list keyword
+    'secpix': (1.205, 1.205),  # pixel size (arcsec)
+    'binning': ('XBINNING', 'YBINNING'),  # binning
+    'image_size_1x1': (6248, 4176),
+
+    'gain': 'EGAIN',  # CD gain in el/DN
+    'readnoise': None,  # CCD Read Out Noise (e-)
+
+    # telescope pointing keywords
+    'ra': 'RA',  # telescope pointing, RA
+    'dec': 'DEC',  # telescope pointing, Dec
+    'radec_separator': 'XXX',  # RA/Dec hms separator, use 'XXX' if already in degrees
+    'equinox': None,
+
+    # keyword; use 'date|time' if separate
+    'date_keyword': 'DATE-OBS',  # obs date/time
+
+    'object': 'OBJECT',  # object name keyword
+    'filter': 'FILTER',  # filter keyword
+    'imagetyp': 'IMAGETYP',
+
+    # filtername translation dictionary
+    'filter_translations': {'L': 'V'},
+
+    'exptime': 'EXPTIME',  # exposure time keyword (s)
+    'airmass': 'AIRMASS',  # airmass keyword
+
+    # 'trimsec': None,
+    'ampsec': {'1x1': None,
+               '2x2': None,
+               '4x4': None},
+    'oscansec': {'1x1': None,
+                 '2x2': None,
+                 '4x4': None},
+    'trimsec': {'1x1': None,
+                '2x2': None,
+                '4x4': None},
+
+    # ccd mask for regions to exclude from all processes
+    'ccd_mask': {'1x1': None,
+                 '2x2': None,
+                 '4x4': None},
+
+    # telescope specific image types
+    'imagetyp_light': 'light',
+    'imagetyp_bias': 'bias',
+    'imagetyp_dark': 'dark',
+    'imagetyp_flat': 'flat',
+    'add_imagetyp_keys': False,
+    # 'add_imagetyp': {'flat': {'imagetyp': 'sflat'}},
+
+    # keywords to exclude from the header update while preparing the file
+    'keys_to_exclude': None,
+
+    # keywords for info_dict
+    'obs_keywords': ['telescop', 'instrume', 'object', 'date-obs', 'filter', 'exptime',
+                     'ra', 'dec', 'airmass', 'binning'],
+
+    # source extractor settings
+    'average_fwhm': 3,
+    'saturation_limit': 6e5,
+    'nsigma': 1.5,
+    'source_box': 15,
+    'isolation_size': 5,
+    'box_size': 27,
+    'win_size': 11
+
+}
+
 # currently available telescopes
-IMPLEMENTED_TELESCOPES = ['CA123DLRMKIII', 'CBNUO-JC', 'CKOIR', 'DFOSC']
+IMPLEMENTED_TELESCOPES = ['CA123DLRMKIII', 'CBNUO-JC', 'CKOIR', 'DK154_DFOSC', 'CTIO09',
+                          'OUKA', 'SPM']
 
 # translate INSTRUME header keyword
-INSTRUMENT_IDENTIFIERS = OrderedDict({'DFOSC_FASU': 'DFOSC',
+INSTRUMENT_IDENTIFIERS = OrderedDict({'DFOSC_FASU': 'DK154_DFOSC',
                                       'DLR-MKIII': 'CA123DLRMKIII',
                                       'FLI': 'CKOIR',
-                                      'SBIG STX-16803 CCD Camera': 'CBNUO-JC'
+                                      'SBIG STX-16803 CCD Camera': 'CBNUO-JC',
+                                      'cfccd': 'CTIO09', 'ZWO ASI2600MM Pro': 'OUKA',
+                                      'C1': 'SPM', 'C2': 'SPM', 'C3': 'SPM', 'C4': 'SPM'
                                       })
 
 # translate telescope keyword into parameter set defined here
 TELESCOPE_PARAMETERS = OrderedDict({'CA123DLRMKIII': ca123dlrmkiii_param,
                                     'CBNUO-JC': cbnuo_params,
                                     'CKOIR': ckoir_param,
-                                    'DFOSC': dk154_params
+                                    'DK154_DFOSC': dk154_params,
+                                    'CTIO09': ctio_params,
+                                    'OUKA': ouka_params,
+                                    'SPM': spm_params
                                     })

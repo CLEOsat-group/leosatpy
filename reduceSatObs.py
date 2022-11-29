@@ -185,26 +185,28 @@ class ReduceSatObs(object):
                      prog_typ='reduceSatObs',
                      prog_sub_typ=['light'],
                      log=self._log, log_level=self._log_level)
-        ds.get_valid_sci_observations(prog_typ="reduceSatObs")
+        # ds.get_valid_sci_observations(prog_typ="reduceSatObs")
 
         # set variables for use
-        inst_list = ds.instruments
-        tel_list = ds.telescopes
-        obspar_list = ds.obsparams
-        obsfile_list = ds.valid_sci_obs
+        inst_list = ds.instruments_list
+        inst_data = ds.instruments
 
-        N_tels = len(tel_list)
-        for i in range(N_tels):
-            self._telescope = tel_list[i]
-            self._instrument = inst_list[i]
-            self._obsparams = obspar_list[i]
-            self._dataset_object = obsfile_list[i]
+        N_inst = len(inst_list)
+        for i in range(N_inst):
+            inst = inst_list[i]
+            self._instrument = inst
+            self._telescope = inst_data[inst]['telescope']
+            self._obsparams = inst_data[inst]['obsparams']
+            ds.get_valid_sci_observations(inst, prog_typ="reduceSatObs")
+            obsfile_list = ds.valid_sci_obs
+            self._dataset_object = obsfile_list
 
             # loop over groups and run reduction for each group
-            for src_path, files in obsfile_list[i]:
+            for src_path, files in obsfile_list:
                 if not silent:
                     self._log.info('====> Science image reduction run <====')
-                    self._log.info(f"> Reduce {len(files)} datasets from {tel_list[i]} "
+                    self._log.info(f"> Reduce {len(files)} datasets from instrument {inst} "
+                                   f"at the {self._telescope} "
                                    "telescope in folder:")
                     self._log.info(f"  {src_path}")
 
@@ -347,15 +349,6 @@ class ReduceSatObs(object):
                     closest_dark_exposure = dark_exposures[idx]
                     has_nearest = True
                     if np.abs(closest_dark_exposure - t) > tolerance:
-                        # has_nearest = False
-                        # if closest_dark_exposure < t:
-                        #     idx = np.where(dark_exposures > t)[0]
-                        #     if list(idx):
-                        #         closest_dark_exposure = dark_exposures[idx]
-                        #     else:
-                        #         continue
-                        # if closest_dark_exposure in expts:
-                        #     continue
                         continue
                     exptimes_list[i].update({t: [closest_dark_exposure, has_nearest]})
                 del ic_exptimes
@@ -393,25 +386,29 @@ class ReduceSatObs(object):
         # reload files in temp folder
         ic_all = ImageFileCollection(location=self._tmp_path)
 
-        # get the number of amplifiers and trim sections
+        # get the number of amplifiers and trim, and overscan sections
         namps = obsparams['n_amps']
-        fits_section = None
-        if obsparams['trimsec'] is not None:
-            fits_section = obsparams['trimsec'][_bin_str]
+        trim_section = None
+        if obsparams['trimsec'][_bin_str] is not None:
+            trim_section = obsparams['trimsec'][_bin_str]['11'] if namps == 1 else obsparams['trimsec'][_bin_str]
+        oscan_section = None
+        if obsparams['oscansec'][_bin_str] is not None and self._config['OVERSCAN_CORRECT']:
+            oscan_section = obsparams['oscansec'][_bin_str]['11'] if namps == 1 else obsparams['oscansec'][_bin_str]
 
         # get science and flat exposure times
         exptimes_list, img_exptimes = self._check_closest_exposure(ic_all=ic_all,
-                                                                   obsparams=obsparams, tolerance=1)
+                                                                   obsparams=obsparams,
+                                                                   tolerance=1)
 
         # process files by filter
         for filt in filters:
             img_count_by_filter = len(ic_all.files_filtered(imagetyp=_base_conf.IMAGETYP_LIGHT,
-                                                            filter=filt))
+                                                            filter=filt[0]))
             if img_count_by_filter == 0:
                 continue
 
             if not self.silent:
-                self._log.info(f"> Process filter {filt}, binning {_bin_str}.")
+                self._log.info(f"> Process filter {filt[0]}, binning {_bin_str}.")
 
             # get gain and readout noise
             gain = None
@@ -433,7 +430,8 @@ class ReduceSatObs(object):
                                                                obsparams=obsparams,
                                                                mbias_fname=master_bias,
                                                                namps=namps,
-                                                               fits_section=fits_section,
+                                                               trim_section=trim_section,
+                                                               oscan_section=oscan_section,
                                                                gain=gain,
                                                                readnoise=readnoise,
                                                                error=self._config['EST_UNCERTAINTY'],
@@ -468,7 +466,9 @@ class ReduceSatObs(object):
                                                                  mdark_fname=master_dark,
                                                                  exptime=dark_exptime,
                                                                  mbias=mbias,
-                                                                 namps=namps, fits_section=fits_section,
+                                                                 namps=namps,
+                                                                 trim_section=trim_section,
+                                                                 oscan_section=oscan_section,
                                                                  gain=gain, readnoise=readnoise,
                                                                  error=self._config['EST_UNCERTAINTY'],
                                                                  method=self._config['COMBINE_METHOD_DARK'])
@@ -494,31 +494,36 @@ class ReduceSatObs(object):
             # create master flat file for each filter. Only executed once per dataset
             ccd_master_flat = {}
             if self._config['FLAT_CORRECT']:
-                master_flat = dflat[filt][0]
-                create_flat = dflat[filt][1]
+                master_flat = dflat[filt[0]][0]
+                create_flat = dflat[filt[0]][1]
                 if create_flat:
-                    ccd_master_flat[filt] = self._create_master_flat(files_list=ic_all, obsparams=obsparams,
-                                                                     flat_filter=filt, mflat_fname=master_flat,
-                                                                     mbias=ccd_master_bias,
-                                                                     mdark=ccd_master_dark['flat_dark'],
-                                                                     namps=namps, fits_section=fits_section,
-                                                                     gain=gain, readnoise=readnoise,
-                                                                     error=self._config['EST_UNCERTAINTY'],
-                                                                     method=self._config['COMBINE_METHOD_FLAT'])
+                    ccd_master_flat[filt[0]] = self._create_master_flat(files_list=ic_all, obsparams=obsparams,
+                                                                        flat_filter=filt[0],
+                                                                        mflat_fname=master_flat,
+                                                                        mbias=ccd_master_bias,
+                                                                        mdark=ccd_master_dark['flat_dark'],
+                                                                        namps=namps,
+                                                                        trim_section=trim_section,
+                                                                        oscan_section=oscan_section,
+                                                                        gain=gain, readnoise=readnoise,
+                                                                        error=self._config['EST_UNCERTAINTY'],
+                                                                        method=self._config['COMBINE_METHOD_FLAT'])
                 else:
                     if not self.silent:
                         self._log.info('> Loading existing master flat file: %s' % os.path.basename(master_flat))
-                    ccd_master_flat[filt] = self._convert_fits_to_ccd(master_flat, single=True)
-            if not ccd_master_flat:
+                    ccd_master_flat[filt[0]] = self._convert_fits_to_ccd(master_flat, single=True)
+            if not ccd_master_flat or not ccd_master_flat[filt[0]]:
                 ccd_master_flat = None
 
             # reduce science images
             self._ccdproc_sci_images(files_list=ic_all, obsparams=obsparams,
-                                     image_filter=filt,
+                                     image_filter=filt[0],
                                      master_bias=ccd_master_bias,
                                      master_dark=ccd_master_dark['sci_dark'],
                                      master_flat=ccd_master_flat,
-                                     namps=namps, fits_section=fits_section,
+                                     namps=namps,
+                                     trim_section=trim_section,
+                                     oscan_section=oscan_section,
                                      gain=gain, readnoise=readnoise,
                                      cosmic=self._config['CORRECT_COSMIC'],
                                      error=self._config['EST_UNCERTAINTY'])
@@ -529,7 +534,8 @@ class ReduceSatObs(object):
     def _ccdproc_sci_images(self, files_list: ImageFileCollection,
                             obsparams: dict, image_filter=None,
                             master_bias: str = None, master_dark: dict = None,
-                            master_flat: str = None, fits_section: dict = None,
+                            master_flat: str = None, trim_section: dict = None,
+                            oscan_section: dict = None,
                             gain: float = None, readnoise: float = None,
                             error: bool = False, cosmic: bool = False,
                             mbox: int = 15, rbox: int = 15, gbox: int = 11,
@@ -550,7 +556,7 @@ class ReduceSatObs(object):
         master_bias:
         master_dark:
         master_flat:
-        fits_section:
+        trim_section:
         gain:
         readnoise:
         error:
@@ -599,10 +605,11 @@ class ReduceSatObs(object):
             ccd_expt = ccd.header['exptime']
 
             # trim image and update header
-            trimmed = True if fits_section is not None else False
+            trimmed = True if trim_section is not None else False
+            oscan_corrected = True if oscan_section is not None else False
             ccd = self._trim_image(img_ccd=ccd, obsparams=obsparams,
-                                   namps=namps, trim=fits_section,
-                                   trimmed=trimmed)
+                                   namps=namps, oscansec=oscan_section, trimsec=trim_section,
+                                   trimmed=trimmed, oscan_corrected=oscan_corrected)
             # create an uncertainty map
             if error:
                 ccd = ccdproc.create_deviation(ccd, gain=gain,
@@ -671,11 +678,25 @@ class ReduceSatObs(object):
             # change to float32 to keep the file size under control
             ccd.data = ccd.data.astype('float32')
 
+            # mask bad pixel
+            if 'ccd_mask' in obsparams and obsparams['ccd_mask'][self._bin_str] is not None:
+                ccd_mask_list = obsparams['ccd_mask'][self._bin_str]
+                for yx in ccd_mask_list:
+                    ccd.data[yx[0]:yx[1], yx[2]:yx[3]] = 0
+
             # remove mask and the uncertainty extension
             ccd.mask = None
             ccd.uncertainty = None
-
+            hdr = ccd.header
             ccd.write(filename, overwrite=True)
+
+            # reformat ra and dec if the values are in degree
+            # to avoid float <-> str conversion errors
+            if obsparams['radec_separator'] == 'XXX':
+                hdr[obsparams['ra']] = round(hdr[obsparams['ra']],
+                                             _base_conf.ROUND_DECIMAL)
+                hdr[obsparams['dec']] = round(hdr[obsparams['dec']],
+                                              _base_conf.ROUND_DECIMAL)
 
             # update result table
             hdr_dict = {}
@@ -685,8 +706,7 @@ class ReduceSatObs(object):
             hdr_dict['dark_cor'] = 'T' if dark_corrected else 'F'
             hdr_dict['flat_cor'] = 'T' if flat_corrected else 'F'
 
-            self._obsTable.update_obs_table(fbase, hdr_dict,
-                                            radec_separator=obsparams['radec_separator'])
+            self._obsTable.update_obs_table(fbase, hdr_dict, obsparams)
 
             del ccd
         del files_list
@@ -735,7 +755,7 @@ class ReduceSatObs(object):
         return ccd
 
     def _create_master_flat(self, files_list, obsparams, flat_filter=None, mflat_fname=None,
-                            fits_section=None, namps=1, mbias=None, mdark=None,
+                            trim_section=None, oscan_section=None, namps=1, mbias=None, mdark=None,
                             gain=None, method='average', readnoise=None, error=False,
                             key_filter='filter', dfilter=None,
                             key_find='find', invert_find=False, sjoin=','):
@@ -747,7 +767,7 @@ class ReduceSatObs(object):
         obsparams: 
         flat_filter: 
         mdark: 
-        fits_section: 
+        trim_section:
         namps: 
         mbias: 
         gain: 
@@ -764,9 +784,6 @@ class ReduceSatObs(object):
         -------
 
         """
-
-        if not self.silent:
-            self._log.info('> Creating master flat file: %s' % os.path.basename(mflat_fname))
 
         # check inputs
         if error and (gain is None or readnoise is None):
@@ -785,9 +802,11 @@ class ReduceSatObs(object):
                                          abspath=False)
 
         if not files_list.size > 0:
-            self._log.error("NO matching raw FLAT files found. "
-                            "Please check the FITS Header if the IMAGE_TYPE, FILTER and BINNING are correct!!!")
-            sys.exit(1)
+            return []
+
+        if not self.silent:
+            self._log.info('> Creating master flat file: %s' % os.path.basename(mflat_fname))
+
         lflat = []
         for filename in files_list:
 
@@ -797,10 +816,11 @@ class ReduceSatObs(object):
             ccd_expt = ccd.header['exptime']
 
             # trim image and update header
-            trimmed = True if fits_section is not None else False
+            trimmed = True if trim_section is not None else False
+            oscan_corrected = True if oscan_section is not None else False
             ccd = self._trim_image(img_ccd=ccd, obsparams=obsparams,
-                                   namps=namps, trim=fits_section,
-                                   trimmed=trimmed)
+                                   namps=namps, oscansec=oscan_section, trimsec=trim_section,
+                                   trimmed=trimmed, oscan_corrected=oscan_corrected)
 
             # create an uncertainty map
             if error:
@@ -844,8 +864,8 @@ class ReduceSatObs(object):
 
             del ccd
 
-        if not self.silent:
-            self._log.info('> Creating bad pixel map')
+        # if not self.silent:
+        #     self._log.info('> Creating bad pixel map')
 
         # todo: fix mask estimation or remove it?
         # median_count = [np.median(data) for data in lflat]
@@ -871,7 +891,9 @@ class ReduceSatObs(object):
         #                   overwrite=True)
 
         # combine flat ccds
-        combine = ccdproc.combine(lflat, method=method, scale=inv_median,
+        combine = ccdproc.combine(lflat, method=method,
+                                  mem_limit=_base_conf.MEM_LIMIT_COMBINE,
+                                  scale=inv_median,
                                   sigma_clip=True, sigma_clip_low_thresh=5,
                                   sigma_clip_high_thresh=5,
                                   sigma_clip_func=np.ma.median, sigma_clip_dev_func=mad_std)
@@ -908,7 +930,7 @@ class ReduceSatObs(object):
 
     def _create_master_dark(self, files_list, obsparams, mdark_fname=None,
                             exptime=None, mbias=None,
-                            fits_section=None, namps=1,
+                            trim_section=None, oscan_section=None, namps=1,
                             gain=None, method='average', readnoise=None, error=False,
                             dfilter=None,
                             key_find='find', invert_find=False, sjoin=','):
@@ -921,7 +943,7 @@ class ReduceSatObs(object):
         obsparams: 
         mdark_fname: 
         exptime: 
-        fits_section: 
+        trim_section:
         namps: 
         gain:
         method: 
@@ -954,11 +976,8 @@ class ReduceSatObs(object):
         files_list = self._get_file_list(files_list, dfilter,
                                          key_find=key_find, invert_find=invert_find,
                                          abspath=False)
-
         if not files_list.size > 0:
-            self._log.error("NO matching raw DARK files found. "
-                            "Please check the FITS Header if the IMAGE_TYPE and BINNING are correct!!!")
-            sys.exit(1)
+            return []
 
         ldark = []
         for filename in files_list:
@@ -968,10 +987,11 @@ class ReduceSatObs(object):
             ccd = CCDData.read(fname, unit=u.Unit("adu"))
 
             # trim image and update header
-            trimmed = True if fits_section is not None else False
+            trimmed = True if trim_section is not None else False
+            oscan_corrected = True if oscan_section is not None else False
             ccd = self._trim_image(img_ccd=ccd, obsparams=obsparams,
-                                   namps=namps, trim=fits_section,
-                                   trimmed=trimmed)
+                                   namps=namps, oscansec=oscan_section, trimsec=trim_section,
+                                   trimmed=trimmed, oscan_corrected=oscan_corrected)
 
             # create an uncertainty map
             if error:
@@ -992,8 +1012,12 @@ class ReduceSatObs(object):
 
         # combine dark ccds
         combine = ccdproc.combine(ldark, method=method,
-                                  sigma_clip=True, sigma_clip_low_thresh=5, sigma_clip_high_thresh=5,
-                                  sigma_clip_func=np.ma.median, sigma_clip_dev_func=mad_std)
+                                  mem_limit=_base_conf.MEM_LIMIT_COMBINE,
+                                  sigma_clip=True,
+                                  sigma_clip_low_thresh=5,
+                                  sigma_clip_high_thresh=5,
+                                  sigma_clip_func=np.ma.median,
+                                  sigma_clip_dev_func=mad_std)
 
         # update fits header
         if gain is not None and 'GAIN' not in combine.header:
@@ -1027,7 +1051,7 @@ class ReduceSatObs(object):
         return combine
 
     def _create_master_bias(self, files_list, obsparams, mbias_fname=None,
-                            fits_section=None, namps=1,
+                            trim_section=None, oscan_section=None, namps=1,
                             gain=None, method='average', readnoise=None, error=False,
                             dfilter=None,
                             key_find='find', invert_find=False, sjoin=','):
@@ -1042,7 +1066,7 @@ class ReduceSatObs(object):
         mbias_fname: str, path, None, optional
             String containing the absolute path and name of the master bias file.
             Ignored if None. Defaults to None.
-        fits_section: str, None, optional
+        trim_section: str, None, optional
             Sections of the fits image that should be trimmed. Ignored if None. Defaults to None.
         namps: int, optional
             Number of amplifier present in the fits image.
@@ -1086,15 +1110,12 @@ class ReduceSatObs(object):
         dfilter = {'imagetyp': _base_conf.IMAGETYP_BIAS} if dfilter is None else dfilter
 
         # get the list with files
-        # print(dfilter)
         files_list = self._get_file_list(files_list, dfilter,
                                          key_find=key_find, invert_find=invert_find,
                                          abspath=False)
-
         if not files_list.size > 0:
-            self._log.error("NO matching raw BIAS files found. "
-                            "Please check the FITS Header if the IMAGE_TYPE and BINNING are correct!!!")
-            sys.exit(1)
+            return []
+
         lbias = []
         for filename in files_list:
 
@@ -1103,10 +1124,11 @@ class ReduceSatObs(object):
             ccd = CCDData.read(fname, unit=u.Unit("adu"))
 
             # trim image and update header
-            trimmed = True if fits_section is not None else False
+            trimmed = True if trim_section is not None else False
+            oscan_corrected = True if oscan_section is not None else False
             ccd = self._trim_image(img_ccd=ccd, obsparams=obsparams,
-                                   namps=namps, trim=fits_section,
-                                   trimmed=trimmed)
+                                   namps=namps, oscansec=oscan_section, trimsec=trim_section,
+                                   trimmed=trimmed, oscan_corrected=oscan_corrected)
 
             # create an uncertainty map
             if error:
@@ -1122,8 +1144,12 @@ class ReduceSatObs(object):
 
         # combine bias ccds
         combine = ccdproc.combine(lbias, method=method,
-                                  sigma_clip=True, sigma_clip_low_thresh=5, sigma_clip_high_thresh=5,
-                                  sigma_clip_func=np.ma.median, sigma_clip_dev_func=mad_std)
+                                  mem_limit=_base_conf.MEM_LIMIT_COMBINE,
+                                  sigma_clip=True,
+                                  sigma_clip_low_thresh=5,
+                                  sigma_clip_high_thresh=5,
+                                  sigma_clip_func=np.ma.median,
+                                  sigma_clip_dev_func=mad_std)
 
         # update fits header
         if gain is not None and 'GAIN' not in combine.header:
@@ -1154,7 +1180,7 @@ class ReduceSatObs(object):
         # return result
         return combine
 
-    def _trim_image(self, img_ccd, obsparams, namps, trim, trimmed):
+    def _trim_image(self, img_ccd, obsparams, namps, oscansec, trimsec, trimmed, oscan_corrected):
         """Trim unwanted areas from image.
 
         Trim the given image ccd object with fits sections given in ´trim´ and
@@ -1170,7 +1196,7 @@ class ReduceSatObs(object):
             Number of amplifiers on the chip.
             If N_amps > 1 trimming is applied to each section and
             the results are then combined to a new single ccd object
-        trim: 
+        trimsec:
             Fits section to be trimmed.
         trimmed: 
             Keyword to be added to the header of the trimmed image.
@@ -1184,31 +1210,76 @@ class ReduceSatObs(object):
         """
         nccd = img_ccd.copy()
         if namps == 1:
-            nccd = ccdproc.trim_image(nccd, fits_section=trim,
-                                      add_keyword={'trimmed': trimmed})
+            if oscansec is not None:
+                oscan_section = oscansec
+                oscan_arr = nccd[oscan_section[0]:oscan_section[1],
+                                 oscan_section[2]:oscan_section[3]]
+                nccd = ccdproc.subtract_overscan(nccd,
+                                                 overscan=oscan_arr,
+                                                 add_keyword={'oscan_cor': oscan_corrected},
+                                                 median=True, overscan_axis=None)
+            if trimsec is not None:
+                trim_section = trimsec
+                nccd = ccdproc.trim_image(nccd[trim_section[0]:trim_section[1],
+                                          trim_section[2]:trim_section[3]],
+                                          add_keyword={'trimmed': trimmed})
+
         else:
             ccd_list = []
             xsize = 0
             ysize = 0
-            for i in range(namps):
-                ampsec_key = obsparams['amplist'][i]
-                fits_section = obsparams['trimsec'][self._bin_str][ampsec_key][nccd.header['filter']]
-                ncc = ccdproc.trim_image(nccd, fits_section=fits_section)
-                xsize = xsize + ncc.shape[1]
-                ysize = ncc.shape[0]
-                ccd_list.append(ncc)
-            # now recombine the processed data
-            ncc = ccd_list[0]
-            data = np.zeros((ysize, xsize))
-            x1 = 0
-            for i in range(namps):
-                x2 = x1 + ccd_list[i].data.shape[1]
-                data[:, x1:x2] = ccd_list[i].data
-                x1 = x2
+            namps_yx = obsparams['namps_yx'][self._bin_str][namps]
 
+            ni = 0
+            for yi in range(namps_yx[0]):
+                for xi in range(namps_yx[1]):
+                    ampsec_key = obsparams['amplist'][self._bin_str][ni]
+                    ampsec = obsparams['ampsec'][self._bin_str][ampsec_key]
+                    oscan_section = oscansec[ampsec_key]
+
+                    amp_ccd = ccdproc.trim_image(nccd[ampsec[0]:ampsec[1],
+                                                 ampsec[2]:ampsec[3]])
+
+                    oscan_arr = amp_ccd[oscan_section[0]:oscan_section[1],
+                                        oscan_section[2]:oscan_section[3]]
+
+                    ncc = ccdproc.subtract_overscan(amp_ccd,
+                                                    overscan=oscan_arr,
+                                                    median=True, overscan_axis=1)
+
+                    trim_section = trimsec[ampsec_key]
+                    ncc = ccdproc.trim_image(ncc[trim_section[0]:trim_section[1],
+                                             trim_section[2]:trim_section[3]])
+
+                    xc = np.array([0, ncc.shape[1]], int)
+                    yc = np.array([0, ncc.shape[0]], int)
+                    if yi == 0:
+                        xsize = xsize + ncc.shape[1]
+                    else:
+                        yc = yc + ncc.shape[0]
+                    if xi == 0:
+                        ysize = ysize + ncc.shape[0]
+                    else:
+                        xc = xc + ncc.shape[1]
+
+                    ccd_list.append([(yc, xc), ncc])
+                    ni += 1
+
+            # put it all back together
+            data = np.zeros((ysize, xsize))
+            for i in range(namps):
+                y1 = ccd_list[i][0][0][0]
+                y2 = ccd_list[i][0][0][1]
+                x1 = ccd_list[i][0][1][0]
+                x2 = ccd_list[i][0][1][1]
+                data[y1:y2, x1:x2] = ccd_list[i][1].data
+
+            # get the unit
+            ncc = ccd_list[0][1]
             nccd = ccdproc.CCDData(data, unit=ncc.unit)
             nccd.header = img_ccd.header
             nccd.header['trimmed'] = trimmed
+            nccd.header['oscan_cor'] = oscan_corrected
 
         return nccd
 
@@ -1275,7 +1346,32 @@ class ReduceSatObs(object):
             lccd = lccd[0]
         return lccd
 
-    def _find_calibrations(self, telescope: str, obsparams: dict, date: datetime.date, filters: list,
+    @staticmethod
+    def _create_dfilter(instrument, obsparams, mode):
+        """ Create a filter for ccdproc"""
+        key = 'imagetyp' if obsparams['imagetyp'] == 'IMAGETYP' else obsparams['imagetyp']
+        def_key = f'imagetyp_{mode}'
+
+        # create data filter for imagetyp and instrument
+        dfilter = {key: obsparams[def_key]}
+        if instrument is not None:
+            dfilter[obsparams['instrume'].lower()] = instrument
+
+        add_filters = {}
+        regexp = False
+        if obsparams['add_imagetyp_keys'] and mode in obsparams['add_imagetyp']:
+            add_filters = {k: v for k, v in obsparams['add_imagetyp'][mode].items() if
+                           k != 'imagetyp'}
+            x = obsparams['add_imagetyp'][mode]
+            if 'imagetyp' in x:
+                dfilter[key] = f"({obsparams[def_key]}|" \
+                               f"{x['imagetyp']})"
+                regexp = True
+
+        return dfilter, add_filters, regexp
+
+    def _find_calibrations(self, telescope: str, obsparams: dict,
+                           date: datetime.date, filters: list,
                            binnings: tuple):
         """Find calibration files and create master calibration file names.
 
@@ -1304,22 +1400,32 @@ class ReduceSatObs(object):
         suffix = self._suffix
         sci_bin_str = f'{binnings[0]}x{binnings[1]}'
 
+        inst = None
+        if self._telescope == 'DDOTI 28-cm f/2.2':
+            inst = self._instrument
+
         # create a range of days before and after the observation night to search for calibrations
         dt_list = list(range(-1 * _base_conf.TIMEDELTA_DAYS, _base_conf.TIMEDELTA_DAYS))
         date_range = np.array([str(date + timedelta(days=i)) for i in dt_list])
 
         # get base folder for search for calib files
-        # todo: this is not working as intended
+        # fixme: this is not working as intended
         #  The idea is to search for calibration files in the sci folder and if no suitable
         #  calib files are found search for other dates
         #
-        match = re.search(str(date), sci_root_path)
+        # search YYYY-MM-DD, and YYYYMMDD
+        dsplit = str(date).replace('-', '')
+        str_comp = re.compile(f'({str(date)}|{dsplit}).?/')
+        match = re.search(str_comp, sci_root_path)
+
         search_base_path = None
         if match is not None:
             search_base_path = Path(sci_root_path[:match.end()])
         else:
             for d in date_range:
-                match = re.search(d, sci_root_path)
+                dsplit = str(d).replace('-', '')
+                str_comp = re.compile(f'({str(d)}|{dsplit}).?/')
+                match = re.search(str_comp, sci_root_path)
                 if match is not None:
                     search_base_path = Path(sci_root_path[:match.end()])
                     break
@@ -1340,7 +1446,6 @@ class ReduceSatObs(object):
         dbias, ddark, dflat, dark_exptimes = self._create_master_fnames(ic_all,
                                                                         obsparams, filters,
                                                                         sci_bin_str)
-        # print(dbias, ddark, dflat, dark_exptimes)
 
         # set variables
         self._master_bias_dict = dbias
@@ -1349,22 +1454,9 @@ class ReduceSatObs(object):
         self._dark_exptimes = dark_exptimes
 
         # filter available files according to their image typ
-        # create_bias = np.any(np.array([v[1] for k, v in dbias.items()]))
         create_bias = dbias[1]
         if create_bias:
-            # create a filter for ccdproc
-            dfilter = {'imagetyp': obsparams['imagetyp_bias']}
-            add_filters = {}
-            regexp = False
-            if obsparams['add_imagetyp_keys'] and 'bias' in obsparams['add_imagetyp']:
-                add_filters = {k: v for k, v in obsparams['add_imagetyp']['bias'].items() if
-                               k != 'imagetyp'}
-                x = obsparams['add_imagetyp']['bias']
-                if 'imagetyp' in x:
-                    dfilter['imagetyp'] = f"({obsparams['imagetyp_bias']}|" \
-                                          f"{x['imagetyp']})"
-                    regexp = True
-
+            dfilter, add_filters, regexp = self._create_dfilter(inst, obsparams, 'bias')
             # filter for bias files
             bias_files = self._filter_calib_files(ic_all, obsparams,
                                                   dfilter, add_filters,
@@ -1392,18 +1484,7 @@ class ReduceSatObs(object):
 
         create_dark = np.any(np.array([v[1] for _, v in ddark.items()])) if ddark else False
         if create_dark:
-            dfilter = {'imagetyp': obsparams['imagetyp_dark']}
-            add_filters = {}
-            regexp = False
-            if obsparams['add_imagetyp_keys'] and 'dark' in obsparams['add_imagetyp']:
-                add_filters = {k: v for k, v in obsparams['add_imagetyp']['dark'].items() if
-                               k != 'imagetyp'}
-                x = obsparams['add_imagetyp']['dark']
-                if 'imagetyp' in x:
-                    dfilter['imagetyp'] = f"({obsparams['imagetyp_dark']}|" \
-                                          f"{x['imagetyp']})"
-                    regexp = True
-
+            dfilter, add_filters, regexp = self._create_dfilter(inst, obsparams, 'dark')
             # filter for dark files
             dark_files = self._filter_calib_files(ic_all, obsparams,
                                                   dfilter, add_filters,
@@ -1431,21 +1512,12 @@ class ReduceSatObs(object):
 
         create_flat = np.any(np.array([v[1] for _, v in dflat.items()]))
         if create_flat:
-            dfilter = {'imagetyp': obsparams['imagetyp_flat']}
-            add_filters = {}
-            regexp = False
-            if obsparams['add_imagetyp_keys'] and 'flat' in obsparams['add_imagetyp']:
-                add_filters = {k: v for k, v in obsparams['add_imagetyp']['flat'].items() if
-                               k != 'imagetyp'}
-                x = obsparams['add_imagetyp']['flat']
-                if 'imagetyp' in x:
-                    dfilter['imagetyp'] = f"({obsparams['imagetyp_flat']}|" \
-                                          f"{x['imagetyp']})"
-                    regexp = True
 
+            dfilter, add_filters, regexp = self._create_dfilter(inst, obsparams, 'flat')
             # filter for flat files based on filter
             for filt in filters:
-                dfilter[obsparams['filter']] = filt
+                dfilter[obsparams['filter'].lower()] = filt[1]
+
                 flat_files = self._filter_calib_files(ic_all, obsparams,
                                                       dfilter, add_filters,
                                                       binnings, date, regexp=regexp)
@@ -1465,7 +1537,7 @@ class ReduceSatObs(object):
                     # prepare flat files
                     if not self.silent:
                         self._log.info(f"> Preparing {len(new_flat_path)} ``FLAT`` files in"
-                                       f" {filt} band for reduction.")
+                                       f" {filt[0]} band for reduction.")
                     self._prepare_fits_files(new_flat_path, telescope, obsparams, 'flat')
 
                 del flat_files
@@ -1503,7 +1575,7 @@ class ReduceSatObs(object):
         if not files:
             if not add_filters_tmp:
                 add_filters = None
-            files_tmp = self._get_file_list(ic_all, dfilter, key_find='find',
+            files_tmp = self._get_file_list(ic_all, dfilter, key_find='find', regexp=regexp,
                                             invert_find=False, dkeys=add_filters)
             files_tmp = [f for f in files_tmp if '/atmp/' not in str(f)]
 
@@ -1579,7 +1651,8 @@ class ReduceSatObs(object):
         if self._config['BIAS_CORRECT']:
             # Create name master bias
             master_bias = 'master_bias_%s%s' % (binning_ext, suffix)
-
+            if self._telescope == 'DDOTI 28-cm f/2.2':
+                master_bias = 'master_bias_%s_%s%s' % (self._instrument, binning_ext, suffix)
             mbias_path = join_path(master_bias, out_path)
             create_mbias = False if os.path.exists(mbias_path) else True
             dbias = [mbias_path, create_mbias]
@@ -1602,17 +1675,26 @@ class ReduceSatObs(object):
                     master_dark = 'master_dark_%s_%s%s' % (binning_ext,
                                                            str.replace(str(dexpt), '.', 'p'),
                                                            suffix)
+                    if self._telescope == 'DDOTI 28-cm f/2.2':
+                        master_dark = 'master_dark_%s_%s_%s%s' % (self._instrument, binning_ext,
+                                                                  str.replace(str(dexpt), '.', 'p'),
+                                                                  suffix)
                     mdark_path = join_path(master_dark, out_path)
                     create_mdark = False if os.path.exists(mdark_path) else True
                     ddark[dexpt] = [mdark_path, create_mdark]
+            else:
+                self._config['DARK_CORRECT'] = False
 
         for filt in filters:
             # Create master flat names
             if self._config['FLAT_CORRECT']:
-                master_flat = 'master_flat_%s_%s%s' % (filt, binning_ext, suffix)
+                master_flat = 'master_flat_%s_%s%s' % (filt[0], binning_ext, suffix)
+                if self._telescope == 'DDOTI 28-cm f/2.2':
+                    master_flat = 'master_flat_%s_%s_%s%s' % (self._instrument,
+                                                              filt[0], binning_ext, suffix)
                 mflat_path = join_path(master_flat, out_path)
                 create_mflat = False if os.path.exists(mflat_path) else True
-                dflat[filt] = (mflat_path, create_mflat)
+                dflat[filt[0]] = (mflat_path, create_mflat)
 
         del ic_all, obsparams
 
@@ -1630,6 +1712,11 @@ class ReduceSatObs(object):
 
         return file_list
 
+    @staticmethod
+    def truncate(num, n):
+        integer = int(num * 10**n)/(10**n)
+        return float(integer)
+
     def _prepare_fits_files(self, file_names, telescope, obsparams, imagetyp):
         """ Create uniform data structure.
 
@@ -1641,6 +1728,7 @@ class ReduceSatObs(object):
         dates = []
         filters = []
         binnings = []
+
         file_counter = 0
         for file_path in file_names:
             fname = Path(file_path).stem
@@ -1654,17 +1742,11 @@ class ReduceSatObs(object):
             prim_hdr = hdul[0].header
             new_hdr = prim_hdr.copy()
 
-            # print(prim_hdr.keys())
-            # input("Has Header?")
-
             # get observation date from header
             match = re.search(r'\d{4}-\d{2}-\d{2}', prim_hdr[obsparams['date_keyword']])
             date = datetime.strptime(match.group(), '%Y-%m-%d').date()
             if date not in dates:
                 dates.append(date)
-
-            # print(date)
-            # input("Has Date?")
 
             # setup indices for multi-chip data
             nhdus = len(hdul)
@@ -1685,7 +1767,28 @@ class ReduceSatObs(object):
                         continue
                     new_hdr[k] = v
 
-                # new_hdr.update(hdr_subset)
+                # # check ra, dec key in header and set if needed
+                # if 'RA' not in new_hdr or 'DEC' not in new_hdr:
+                #     if obsparams['ra'] not in new_hdr and obsparams['ra'] == 'STRRQRA':
+                #         new_ra = new_hdr['STROBRA']
+                #     else:
+                #         new_ra = new_hdr[obsparams['ra']]
+                #     new_dec = new_hdr[obsparams['dec']]
+                #     if obsparams['radec_separator'] == 'XXX':
+                #         new_hdr['RA'] = round(new_ra, _base_conf.ROUND_DECIMAL)
+                #         new_hdr['DEC'] = round(new_dec, _base_conf.ROUND_DECIMAL)
+                #     else:
+                #         new_hdr['RA'] = new_hdr[obsparams['ra']]
+                #         new_hdr['DEC'] = new_hdr[obsparams['dec']]
+                #
+                # # if 'EQUINOX' not in new_hdr:
+                # #     new_hdr['EQUINOX'] = new_hdr[obsparams['equinox']]
+
+                # check object key in header and set if needed
+                if 'OBJECT' not in new_hdr:
+                    new_hdr['OBJECT'] = new_hdr[obsparams['object']].strip()
+
+                # check imagetyp key in header and set
                 new_hdr['IMAGETYP'] = imagetyp
 
                 # special case GROND NIR obs
@@ -1696,7 +1799,8 @@ class ReduceSatObs(object):
                         filt_hdr = new_hdr.copy()
                         idx = np.where(filt == filt_arr, True, False)
                         for k in filt_arr[~idx]:
-                            [filt_hdr.remove(key) for key, val in filt_hdr.items() if f"{k}_" in key]
+                            [filt_hdr.remove(key) for key, val in filt_hdr.items()
+                             if f"{k}_" in key]
 
                         # update filter keyword
                         filt_key = filt_arr[idx][0]
@@ -1733,25 +1837,26 @@ class ReduceSatObs(object):
 
                 # update filter
                 filt_trnsl = None
+                filt_key = None
                 if obsparams['filter'] in new_hdr:
                     filt_key = new_hdr[obsparams['filter']].strip()
                     filt_trnsl = obsparams['filter_translations'][filt_key]
                 if filt_trnsl is None:
                     filt_trnsl = 'clear'
                 new_hdr['FILTER'] = filt_trnsl
-                if filt_trnsl not in filters:
-                    filters.append(filt_trnsl)
+                if (filt_trnsl, filt_key) not in filters:
+                    filters.append((filt_trnsl, filt_key))
 
                 # update binning
                 new_hdr = update_binning(new_hdr, obsparams, binnings)
-                # print(new_hdr.keys())
-                # input("Has New Header?")
+
                 if i > 0:
                     # update gain and readout noise
                     new_hdr, file_counter = update_gain_readnoise(data_subset, new_hdr,
                                                                   obsparams, file_counter)
                     # remove extension name
                     new_hdr.remove('EXTNAME')
+
                     # save result to separate fits file
                     new_fname = f"{fname}_{new_hdr['FILTER']}{fname_suffix}"
                     new_hdu = fits.PrimaryHDU(data=data_subset, header=new_hdr)
@@ -1767,15 +1872,13 @@ class ReduceSatObs(object):
                     if telescope != 'GROND_OIMG':
                         new_hdr, file_counter = update_gain_readnoise(data_subset, new_hdr,
                                                                       obsparams, file_counter)
-                    # print(data_subset.shape)
-                    # input("Has New Header?")
+
                     # save result to separate fits file
                     new_hdu = fits.PrimaryHDU(data=data_subset, header=new_hdr)
-                    # print(new_hdu)
-                    # print(file_path)
+
                     # os.system(f"ls -la1 {self._tmp_path}")
                     new_hdu.writeto(file_path, output_verify='ignore', overwrite=True)
-                    # print("Never reaches this point")
+
                     hdul.close()
 
         return dates[0], filters, binnings
@@ -2052,7 +2155,7 @@ def get_binning(header, obsparams):
     param_bin_y = obsparams['binning'][1]
 
     if not (param_bin_x in header and param_bin_y in header):
-        if obsparams['telescope_keyword'] == 'CBNUO-JC':
+        if obsparams['telescope_keyword'] in ['CBNUO-JC', 'CTIO 0.9 meter telescope']:
             binning_x = obsparams['image_size_1x1'][0] // header['NAXIS1']
             binning_y = obsparams['image_size_1x1'][1] // header['NAXIS2']
     else:
