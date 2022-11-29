@@ -82,8 +82,8 @@ class BCOLORS:
 
 # potential FITS header keywords for looking up the instrument
 # any unique header keyword works as a potential identifier
-INSTRUMENT_KEYS = ['PPINSTRU', 'LCAMMOD', 'FPA', 'CAM_NAME', 'INSTRUME',
-                   'TELESCOP', 'FLI']
+INSTRUMENT_KEYS = ['PPINSTRU', 'LCAMMOD', 'INSTRUME',
+                   'TELESCOP', 'FLI', 'FPA', 'CAM_NAME']
 
 # default timeout for selection
 DEF_TIMEOUT = 3  # in seconds
@@ -91,6 +91,8 @@ DEF_TIMEOUT = 3  # in seconds
 # time delta in days for folder search in reduction of calibration files
 TIMEDELTA_DAYS = 7  # +-days
 FRMT = "%Y-%m-%dT%H:%M:%S.%f"
+
+ROUND_DECIMAL = 5
 
 # # keywords relevant for reduction
 # CORRECT_GAIN = False
@@ -108,16 +110,15 @@ BINNING_DKEYS = ('BINX', 'BINY')
 IMAGETYP_REDUCE_ORDER = np.array(['bias', 'darks', 'flats'])
 IMAGETYP_COMBOS = {'bias': "zero|bias|bias frame",
                    'darks': "dark|dark frame",
-                   'flats': "flat|flat frame",
+                   'flats': "flat|flat frame|dflat|sflat",
                    'light': "science|light|object|light frame"}
 
+# Memory limit for ccdproc.combine in byte
+MEM_LIMIT_COMBINE = 6e9
 
 # Default result table column names.
-# This CAN be modified, by adding, removing, or renaming keywords.
-# !!!
-# Caution: Keywords extracted from header values have to be specified in the DEF_KEY_TRANSLATIONS and
-# the telescope configuration
 DEF_RES_TBL_COL_NAMES = ['File', 'Object', 'Sat-Name', 'AltID', 'UniqueID',
+                         'Instrument',
                          'Telescope', 'RA', 'DEC', 'Date-Obs', 'Filter', 'ExpTime',
                          'Airmass', 'Binning',
                          'Obs-Start', 'Obs-Mid', 'Obs-Stop',
@@ -139,6 +140,7 @@ DEF_RES_TBL_COL_NAMES = ['File', 'Object', 'Sat-Name', 'AltID', 'UniqueID',
                          'CalRA', 'CalDEC', 'CentX', 'CentY', 'PixScale', 'DetRotAng',
                          'bias_cor', 'dark_cor', 'flat_cor', 'WCS_cal', 'mag_conv', 'QlfAperRad']
 
+# To be implemented
 DEF_RES_TBL_COL_UNITS = ['', '', '', '',
                          '', '', '', '(J2000)', '', '(s)',
                          '', '',
@@ -168,19 +170,20 @@ DEF_VIS_TBL_COL_NAMES = ['ID', 'AltID', 'UniqueID', 'UT Date', 'UT time',
 
 # Translations between table and fits header keywords
 DEF_KEY_TRANSLATIONS = {
-    'Object': ['OBJECT'],
+    'Object': ['OBJECT', 'BLKNM'],
+    'Instrument': ['INSTRUME'],
     'Telescope': ['TELESCOP', 'OBSERVAT'],
     'Filter': ['FILTER'],
     'ExpTime': ['EXPTIME'],
-    'RA': ['RA', 'OBSRA', 'OBJRA', 'OBJCTRA'],
-    'DEC': ['DEC', 'OBSDEC', 'OBJDEC', 'OBJCTDEC'],
+    'RA': ['RA', 'OBSRA', 'OBJRA', 'OBJCTRA', 'STRRQRA'],
+    'DEC': ['DEC', 'OBSDEC', 'OBJDEC', 'OBJCTDEC', 'STRRQDE'],
     'CalRA': ['CRVAL1'],
     'CalDEC': ['CRVAL2'],
     'CentX': ['CRPIX1'],
     'CentY': ['CRPIX2'],
     'PixScale': ['PIXSCALE'],
     'DetRotAng': ['DETROTANG'],
-    'Airmass': ['AIRMASS'],
+    'Airmass': ['AIRMASS', 'STROBAM'],
     'Date-Obs': ['DATE-OBS'],
     'Binning': ['BINNING'],
     'bias_cor': ['BIAS_COR'],
@@ -197,22 +200,27 @@ ALLCATALOGS = ['GAIADR1', 'GAIADR2', 'GAIADR3', 'GAIAEDR3',
 
 DEF_PHOTOMETRY_CATALOG = 'GSC242'
 
+DEF_ASTROQUERY_CATALOGS = {
+    'GAIADR3': 'gaiadr3.gaia_source',
+    'GSC242': 'I/353/gsc242'
+}
+
 # Dictionary of supported astrometric catalogs with column name translations
 # These are the minimum columns necessary for alignment to work properly while
 # taking into account all available information from the catalogs.
 # Blank column names indicate the catalog does not have that column,
 # and will set to None in the output table.
 SUPPORTED_CATALOGS = {
-    'GAIAEDR3': {'RA': 'ra', 'RA_error': 'ra_error',
-                 'DEC': 'dec', 'DEC_error': 'dec_error',
-                 'pmra': 'pmra', 'pmra_error': 'pmra_error',
-                 'pmdec': 'pmdec', 'pmdec_error': 'pmdec_error',
-                 'mag': 'mag', 'objID': 'objID', 'epoch': 'epoch'},
     'GAIADR3': {'RA': 'ra', 'RA_error': 'ra_error',
                 'DEC': 'dec', 'DEC_error': 'dec_error',
                 'pmra': 'pmra', 'pmra_error': 'pmra_error',
                 'pmdec': 'pmdec', 'pmdec_error': 'pmdec_error',
-                'mag': 'mag', 'objID': 'objID', 'epoch': 'epoch'},
+                'mag': 'phot_g_mean_mag', 'objID': 'source_id', 'epoch': 'ref_epoch'},
+    'GAIAEDR3': {'RA': 'ra', 'RA_error': 'ra_error',
+                 'DEC': 'dec', 'DEC_error': 'dec_error',
+                 'pmra': 'pmra', 'pmra_error': 'pmra_error',
+                 'pmdec': 'pmdec', 'pmdec_error': 'pmdec_error',
+                 'mag': 'mag', 'objID': 'source_id', 'epoch': 'epoch'},
     'GAIADR2': {'RA': 'ra', 'RA_error': 'ra_error',
                 'DEC': 'dec', 'DEC_error': 'dec_error',
                 'pmra': 'pmra', 'pmra_error': 'pmra_error',
@@ -257,9 +265,11 @@ SUPPORTED_CATALOGS = {
 
 # Dictionary of supported filter bands available in the supported catalogs
 SUPPORTED_BANDS = {
-    "U": "GSC242", "B": "GSC242", "V": "GSC242", "R": "GSC242", "I": "GSC242",
-    "J": "2MASS", "H": "2MASS", "K": "2MASS", "Ks": "2MASS",
-    "g": "GSC242", "r": "GSC242", "i": "GSC242", "z": "GSC242", "y": "GSC242"
+    "U": ["GSC243", "GSC242"], "B": ["GSC243", "GSC242"],
+    "V": ["GSC243", "GSC242"], "R": ["GSC243", "GSC242"], "I": ["GSC243", "GSC242"],
+    "J": ["2MASS"], "H": ["2MASS"], "K": ["2MASS"], "Ks": ["2MASS"],
+    "g": ["GSC243", "GSC242"], "r": ["GSC243", "GSC242"], "i": ["GSC243", "GSC242"],
+    "w": ["GSC243", "GSC242"], "y": ["GSC243", "GSC242"], "z": ["GSC243", "GSC242"]
 }
 
 # Dictionary of translations for the filter in the supported catalogs
@@ -268,37 +278,62 @@ CATALOG_FILTER_EXT = {
     'GAIADR3': None,
     'GAIADR2': None,
     'GAIADR1': None,
-    '2MASS': {"J": {'Prim': ['j_m', 'j_cmsig'], 'Alt': None},
-              "H": {'Prim': ['h_m', 'h_cmsig'], 'Alt': None},
-              "K": {'Prim': ['k_m', 'k_cmsig'], 'Alt': None},
-              "Ks": {'Prim': ['k_m', 'k_cmsig'], 'Alt': None}},
-    'PS1DR2': {"g": {'Prim': ['SDSSgMag', 'SDSSgMagErr'], 'Alt': None},
-               "r": {'Prim': ['SDSSrMag', 'SDSSrMagErr'], 'Alt': None},
-               "i": {'Prim': ['SDSSiMag', 'SDSSiMagErr'], 'Alt': None},
-               "z": {'Prim': ['SDSSzMag', 'SDSSzMagErr'], 'Alt': None},
-               "y": {'Prim': ['PS1yMag', 'PS1ymagErr'], 'Alt': None}},
+    '2MASS': {"J": {'Prim': [['j_m', 'j_cmsig']], 'Alt': None},
+              "H": {'Prim': [['h_m', 'h_cmsig']], 'Alt': None},
+              "K": {'Prim': [['k_m', 'k_cmsig']], 'Alt': None},
+              "Ks": {'Prim': [['k_m', 'k_cmsig']], 'Alt': None}},
+    'PS1DR2': {"g": {'Prim': [['SDSSgMag', 'SDSSgMagErr']], 'Alt': None},
+               "r": {'Prim': [['SDSSrMag', 'SDSSrMagErr']], 'Alt': None},
+               "i": {'Prim': [['SDSSiMag', 'SDSSiMagErr']], 'Alt': None},
+               "z": {'Prim': [['SDSSzMag', 'SDSSzMagErr']], 'Alt': None},
+               "y": {'Prim': [['PS1yMag', 'PS1ymagErr']], 'Alt': None}},
     'PS1DR1': None,
-    'GSC242': {"U": {'Prim': ['UMag', 'UMagErr'], 'Alt': None},
-               "B": {'Prim': ['BMag', 'BMagErr'],
+    'GSC243': {"U": {'Prim': [['UMag', 'UMagErr']], 'Alt': None},
+               "B": {'Prim': [['BMag', 'BMagErr']],
                      'Alt': [['SDSSuMag', 'SDSSuMagErr'],
                              ['SDSSgMag', 'SDSSgMagErr'],
                              ['SDSSrMag', 'SDSSrMagErr']]},
-               "V": {'Prim': ['VMag', 'VMagErr'],
+               "V": {'Prim': [['VMag', 'VMagErr']],
                      'Alt': [['SDSSuMag', 'SDSSuMagErr'],
                              ['SDSSgMag', 'SDSSgMagErr'],
                              ['SDSSrMag', 'SDSSrMagErr']]},
-               "R": {'Prim': ['RMag', 'RMagErr'],
+               "R": {'Prim': [['RMag', 'RMagErr']],
                      'Alt': [['SDSSgMag', 'SDSSgMagErr'],
                              ['SDSSrMag', 'SDSSrMagErr'],
                              ['SDSSiMag', 'SDSSiMagErr']]},
-               "I": {'Prim': ['IMag', 'IMagErr'],
+               "I": {'Prim': [['IMag', 'IMagErr']],
                      'Alt': [['SDSSrMag', 'SDSSrMagErr'],
                              ['SDSSiMag', 'SDSSiMagErr'],
                              ['SDSSzMag', 'SDSSzMagErr']]},
-               "g": {'Prim': ['SDSSgMag', 'SDSSgMagErr'], 'Alt': None},
-               "r": {'Prim': ['SDSSrMag', 'SDSSrMagErr'], 'Alt': None},
-               "i": {'Prim': ['SDSSiMag', 'SDSSiMagErr'], 'Alt': None},
-               "z": {'Prim': ['SDSSzMag', 'SDSSzMagErr'], 'Alt': None}},
+               "g": {'Prim': [['SDSSgMag', 'SDSSgMagErr']], 'Alt': None},
+               "r": {'Prim': [['SDSSrMag', 'SDSSrMagErr']], 'Alt': None},
+               "i": {'Prim': [['SDSSiMag', 'SDSSiMagErr']], 'Alt': None},
+               "w": {'Prim': [['SDSSgMag', 'SDSSgMagErr'],
+                              ['SDSSrMag', 'SDSSrMagErr']], 'Alt': None},
+               "z": {'Prim': [['SDSSzMag', 'SDSSzMagErr']], 'Alt': None}},
+    'GSC242': {"U": {'Prim': [['UMag', 'UMagErr']], 'Alt': None},
+               "B": {'Prim': [['BMag', 'BMagErr']],
+                     'Alt': [['SDSSuMag', 'SDSSuMagErr'],
+                             ['SDSSgMag', 'SDSSgMagErr'],
+                             ['SDSSrMag', 'SDSSrMagErr']]},
+               "V": {'Prim': [['VMag', 'VMagErr']],
+                     'Alt': [['SDSSuMag', 'SDSSuMagErr'],
+                             ['SDSSgMag', 'SDSSgMagErr'],
+                             ['SDSSrMag', 'SDSSrMagErr']]},
+               "R": {'Prim': [['RMag', 'RMagErr']],
+                     'Alt': [['SDSSgMag', 'SDSSgMagErr'],
+                             ['SDSSrMag', 'SDSSrMagErr'],
+                             ['SDSSiMag', 'SDSSiMagErr']]},
+               "I": {'Prim': [['IMag', 'IMagErr']],
+                     'Alt': [['SDSSrMag', 'SDSSrMagErr'],
+                             ['SDSSiMag', 'SDSSiMagErr'],
+                             ['SDSSzMag', 'SDSSzMagErr']]},
+               "g": {'Prim': [['SDSSgMag', 'SDSSgMagErr']], 'Alt': None},
+               "r": {'Prim': [['SDSSrMag', 'SDSSrMagErr']], 'Alt': None},
+               "i": {'Prim': [['SDSSiMag', 'SDSSiMagErr']], 'Alt': None},
+               "w": {'Prim': [['SDSSgMag', 'SDSSgMagErr'],
+                              ['SDSSrMag', 'SDSSrMagErr']], 'Alt': None},
+               "z": {'Prim': [['SDSSzMag', 'SDSSzMagErr']], 'Alt': None}},
     'GSC241': None
 }
 
@@ -320,27 +355,27 @@ CONV_SSDS_BVRI = {'BMag': [[-0.8116, 0.1313, 0.0095],
 NUM_BINS_DIST = 7500  # number of distance bins
 BINS_ANG_FAC = 10  # multiplier for rotation resolution
 
-MAX_AREA_LIMIT = 512  # area in pixel above which the source is considered to be saturated
+MAX_AREA_LIMIT = 1964  # area in pixel above which the source is considered to be saturated
 
 # frequency cut off threshold
 FREQU_THRESHOLD = 0.02
 
 # source detection
-NUM_SOURCES_MAX = 500  # maximum number of sources to consider
-USE_N_SOURCES = 150  # number of sources to be used in fast mode
+NUM_SOURCES_MAX = 1500  # maximum number of sources to consider
+USE_N_SOURCES = 1000  # number of sources to be used in fast mode
 OFFSET_BINWIDTH = 1  # width in pixel for the offset determination
 
 # maximum number of trails expected in the observation
 N_TRAILS_MAX = 1
 
 # number of angles to use in hough transform
-NUM_THETAS = 7500
+NUM_THETAS = 10000
 
 # Hough space sub-window size
 SUB_WIN_SIZE_HOUGH = (50, 50)
 
 # standard star and trail photometry
-NUM_STD = 100  # maximum number of standard stars sources to consider
+NUM_STD = 1000  # maximum number of standard stars sources to consider
 NUM_STD_MIN = 3  # minimum number of standard stars sources in a given band
 
 # start, stop and step size for optimal aperture estimation from S/N in multiple of fwhm
