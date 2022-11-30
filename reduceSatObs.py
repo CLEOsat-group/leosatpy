@@ -896,7 +896,9 @@ class ReduceSatObs(object):
                                   scale=inv_median,
                                   sigma_clip=True, sigma_clip_low_thresh=5,
                                   sigma_clip_high_thresh=5,
-                                  sigma_clip_func=np.ma.median, sigma_clip_dev_func=mad_std)
+                                  sigma_clip_func=np.ma.median,
+                                  sigma_clip_dev_func=mad_std,
+                                  dtype='float32')
 
         # update fits header
         if gain is not None and 'GAIN' not in combine.header:
@@ -1017,7 +1019,8 @@ class ReduceSatObs(object):
                                   sigma_clip_low_thresh=5,
                                   sigma_clip_high_thresh=5,
                                   sigma_clip_func=np.ma.median,
-                                  sigma_clip_dev_func=mad_std)
+                                  sigma_clip_dev_func=mad_std,
+                                  dtype='float32')
 
         # update fits header
         if gain is not None and 'GAIN' not in combine.header:
@@ -1149,7 +1152,8 @@ class ReduceSatObs(object):
                                   sigma_clip_low_thresh=5,
                                   sigma_clip_high_thresh=5,
                                   sigma_clip_func=np.ma.median,
-                                  sigma_clip_dev_func=mad_std)
+                                  sigma_clip_dev_func=mad_std,
+                                  dtype='float32')
 
         # update fits header
         if gain is not None and 'GAIN' not in combine.header:
