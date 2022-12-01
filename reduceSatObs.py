@@ -39,6 +39,7 @@ import argparse
 
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 # THIRD PARTY
 import numpy as np
 import pandas as pd
@@ -141,6 +142,7 @@ class ReduceSatObs(object):
         self._make_mdark = False
         self._make_mflat = False
         self._make_light = False
+        self._ccd_mask_fname = None
         self._instrument = None
         self._telescope = None
         self._obsparams = None
@@ -514,6 +516,7 @@ class ReduceSatObs(object):
                     ccd_master_flat[filt[0]] = self._convert_fits_to_ccd(master_flat, single=True)
             if not ccd_master_flat or not ccd_master_flat[filt[0]]:
                 ccd_master_flat = None
+                self._ccd_mask_fname = None
 
             # reduce science images
             self._ccdproc_sci_images(files_list=ic_all, obsparams=obsparams,
@@ -594,7 +597,11 @@ class ReduceSatObs(object):
                                          key_find=key_find, invert_find=invert_find,
                                          abspath=False)
 
-        # dccd = {}
+        ccd_mask_fname = os.path.join(self._master_calib_path,
+                                      'mask_from_ccdmask_%s.fits' % image_filter)
+        if os.path.isfile(ccd_mask_fname):
+            self._ccd_mask_fname = ccd_mask_fname
+
         for filename in files_list:
             if not self.silent:
                 self._log.info(f">>> ccdproc is working for: {filename}")
@@ -683,9 +690,14 @@ class ReduceSatObs(object):
                 ccd_mask_list = obsparams['ccd_mask'][self._bin_str]
                 for yx in ccd_mask_list:
                     ccd.data[yx[0]:yx[1], yx[2]:yx[3]] = 0
+            if self._ccd_mask_fname is not None:
+                mask_ccdmask = CCDData.read(self._ccd_mask_fname,
+                                            unit=u.dimensionless_unscaled)
+                ccd.mask = mask_ccdmask.data.astype('bool')
+            else:
+                # remove mask and the uncertainty extension
+                ccd.mask = None
 
-            # remove mask and the uncertainty extension
-            ccd.mask = None
             ccd.uncertainty = None
             hdr = ccd.header
             ccd.write(filename, overwrite=True)
@@ -864,31 +876,16 @@ class ReduceSatObs(object):
 
             del ccd
 
-        # if not self.silent:
-        #     self._log.info('> Creating bad pixel map')
+        if not self.silent:
+            self._log.info('> Creating bad pixel map')
 
-        # todo: fix mask estimation or remove it?
-        # median_count = [np.median(data) for data in lflat]
-        # mean_count = [np.mean(data) for data in lflat]
-
-        # print(median_count)
-        # first = lflat[np.argmax(median_count)]
-        # last = lflat[np.argmin(median_count)]
-        # # first = lflat[0]
-        # # last = lflat[-1]
-        # ratio = last.divide(first)
-        # ratio_mean = ratio.data.mean()
-        # print(ratio_mean)
-        # if ratio_mean < 0.98:
-        #     ccd_mask = ccdproc.ccdmask(ratio)
-        # else:
-        #     ccd_mask = ccdproc.ccdmask(lflat[0])
-        #
-        # mask_as_ccd = CCDData(data=ccd_mask.astype('uint8'), unit=u.Unit("electron"))
-        # mask_as_ccd.header['imagetyp'] = 'flat mask'
-        # mask_as_ccd.write(os.path.join(self._master_calib_path,
-        #                                'mask_from_ccdmask_%s.fits' % flat_filter),
-        #                   overwrite=True)
+        ccd_mask = ccdproc.ccdmask(lflat[0])
+        mask_as_ccd = CCDData(data=ccd_mask.astype('uint8'), unit=u.dimensionless_unscaled)
+        mask_as_ccd.header['imagetyp'] = 'flat mask'
+        ccd_mask_fname = os.path.join(self._master_calib_path,
+                                      'mask_from_ccdmask_%s.fits' % flat_filter)
+        mask_as_ccd.write(ccd_mask_fname, overwrite=True)
+        self._ccd_mask_fname = ccd_mask_fname
 
         # combine flat ccds
         combine = ccdproc.combine(lflat, method=method,

@@ -191,7 +191,7 @@ class SourceMask:
         return self.mask
 
 
-def build_auto_kernel(imgarr, fwhm=4.0, threshold=None, source_box=7,
+def build_auto_kernel(imgarr, fwhm=4.0, threshold=None, mask=None, source_box=7,
                       good_fwhm=None, num_fwhm=100,
                       isolation_size=11, saturation_limit=50000., silent=False):
     """Build kernel for use in source detection based on image PSF.
@@ -244,12 +244,13 @@ def build_auto_kernel(imgarr, fwhm=4.0, threshold=None, source_box=7,
     # Try to use PSF derived from the image as detection kernel
     # The kernel must be derived from well-isolated sources not near the edge of the image
     kern_img = imgarr.copy()
+    # kern_img = convolve(imgarr, Gaussian2DKernel(3))
     kernel_fwhm = None
     kernel_psf = False
 
     # find peaks 3 times above the threshold
     peaks = find_peaks(kern_img, threshold=threshold, npeaks=num_fwhm,
-                       box_size=isolation_size, border_width=25)
+                       box_size=isolation_size, border_width=25, mask=mask)
 
     if peaks is None or (peaks is not None and len(peaks) == 0):
         tmean = threshold.mean() if isinstance(threshold, np.ndarray) else threshold
@@ -258,7 +259,7 @@ def build_auto_kernel(imgarr, fwhm=4.0, threshold=None, source_box=7,
             threshold = kern_stats[2]
         peaks = find_peaks(kern_img, threshold=threshold, npeaks=num_fwhm,
                            box_size=isolation_size,
-                           border_width=25)
+                           border_width=25, mask=mask)
 
     del kern_img
 
@@ -289,7 +290,6 @@ def build_auto_kernel(imgarr, fwhm=4.0, threshold=None, source_box=7,
                     kernel /= kernel.sum()  # Normalize the new kernel to a total flux of 1.0
                     kernel_fwhm = find_fwhm(kernel, fwhm)
                     if kernel_fwhm is not None and (good_fwhm[1] > kernel_fwhm > good_fwhm[0]):
-
                         kernel_fwhm_list.append(kernel_fwhm)
                         kernel_list.append(kernel)
                         fwhm_attempts += 1
@@ -301,7 +301,7 @@ def build_auto_kernel(imgarr, fwhm=4.0, threshold=None, source_box=7,
         kernel_arr = kernel_arr[idx_sorted]
 
         # find index of minimum between two modes
-        h, xedges, patches = plt.hist(fwhm_arr, bins=100, density=True)
+        h, xedges, patches = plt.hist(fwhm_arr, bins=50, density=True)
         xcenters = (xedges[:-1] + xedges[1:]) / 2
 
         ind_max = argrelmax(h)
@@ -523,7 +523,7 @@ def clean_catalog_distance_old(in_cat: pandas.DataFrame,
     return in_cat_cln
 
 
-def compute_2d_background(imgarr, box_size, win_size,
+def compute_2d_background(imgarr, mask, box_size, win_size,
                           bkg_estimator=SExtractorBackground,
                           rms_estimator=MADStdBackgroundRMS,
                           estimate_bkg=True, bkg_fname=Optional[list], silent=False):
@@ -536,6 +536,7 @@ def compute_2d_background(imgarr, box_size, win_size,
     ----------
     imgarr: ndarray
         NDarray of science data for which the background needs to be computed
+    mask:
     box_size: integer
         The box_size along each axis for Background2D to use.
     win_size: integer
@@ -602,8 +603,10 @@ def compute_2d_background(imgarr, box_size, win_size,
             log.info(f"    Percentile in use: {percentile}")
         # estimate the background
         try:
-
-            bkg = my_background(imgarr, box_size=(box_size, box_size),
+            plt.figure()
+            plt.imshow(mask)
+            print(type(mask))
+            bkg = my_background(imgarr, mask=mask, box_size=(box_size, box_size),
                                 filter_size=(win_size, win_size),
                                 exclude_percentile=percentile, bkg_estimator=bkg_estimator,
                                 bkgrms_estimator=rms_estimator, edge_method="pad")
@@ -611,10 +614,18 @@ def compute_2d_background(imgarr, box_size, win_size,
             # make a deeper source mask
             if not silent:
                 log.info("    Create a deeper source mask")
-            sm = SourceMask(imgarr - bkg.background, nsigma=1.5)
-            mask = sm.multiple(filter_fwhm=[2, 3, 5],
-                               tophat_size=[4, 2, 1])
 
+            sm = SourceMask(imgarr - bkg.background, nsigma=1.5)
+            final_mask = sm.multiple(filter_fwhm=[2, 3, 5],
+                                     tophat_size=[4, 2, 1])
+            plt.figure()
+            plt.imshow(final_mask)
+            print(final_mask)
+            if mask is not None:
+                final_mask |= mask
+            plt.figure()
+            plt.imshow(final_mask)
+            plt.show()
             del bkg
 
             if not silent:
@@ -839,8 +850,10 @@ def extract_source_catalog(imgarr, config, vignette=-1,
     nsigma = config['nsigma']
     estimate_bkg = config['estimate_bkg']
     bkg_fname = config['bkg_fname']
+    img_mask = config['image_mask']
 
     bkg_data = compute_2d_background(imgarr,
+                                     mask=img_mask,
                                      box_size=box_size,
                                      win_size=win_size,
                                      estimate_bkg=estimate_bkg,
@@ -880,7 +893,9 @@ def extract_source_catalog(imgarr, config, vignette=-1,
     # Build source catalog for entire image
     if not silent:
         log.info("> Build source catalog for entire image")
-    source_cat, segmap, segmap_thld, state = extract_sources(imgarr_bkg_subtracted, kernel=kernel,
+    source_cat, segmap, segmap_thld, state = extract_sources(imgarr_bkg_subtracted,
+                                                             kernel=kernel,
+                                                             mask=img_mask,
                                                              segment_threshold=threshold,
                                                              dao_threshold=dao_threshold,
                                                              fwhm=kernel_fwhm,
@@ -903,7 +918,7 @@ def extract_source_catalog(imgarr, config, vignette=-1,
     return source_cat, segmap, segmap_thld, kernel, kernel_fwhm, True
 
 
-def extract_sources(img, fwhm=3.0, kernel=None,
+def extract_sources(img, fwhm=3.0, kernel=None, mask=None,
                     segment_threshold=None, dao_threshold=None,
                     dao_nsigma=3.0, source_box=5,
                     classify=True, centering_mode="starfind", nlargest=None,
@@ -966,7 +981,7 @@ def extract_sources(img, fwhm=3.0, kernel=None,
 
     img_convolved = convolve(imgarr, kernel)
     segm = detect_sources(img_convolved, segment_threshold, npixels=source_box,
-                          connectivity=8)
+                          connectivity=8, mask=mask)
 
     # photutils >= 0.7: segm=None; photutils < 0.7: segm.nlabels=0
     if segm is None or segm.nlabels == 0:
@@ -986,7 +1001,7 @@ def extract_sources(img, fwhm=3.0, kernel=None,
         kernel_area = ((source_box // 2) ** 2) * np.pi
         log.debug("   based on a default kernel.")
 
-    num_brightest = 20 if len(segm.areas) > 20 else len(segm.areas)
+    num_brightest = 10 if len(segm.areas) > 10 else len(segm.areas)
     # print(segm)
     # plt.imshow(segm.data)
     # plt.show()
@@ -1010,7 +1025,8 @@ def extract_sources(img, fwhm=3.0, kernel=None,
                         kcenter - koffset: kcenter + koffset + 1].copy()
         kernel /= kernel.sum()  # normalize to total sum == 1
         log.debug(f"Looking for crowded sources using smaller kernel with shape: {kernel.shape}")
-        segm = detect_sources(imgarr, segment_threshold, npixels=source_box, kernel=kernel)
+        segm = detect_sources(imgarr, segment_threshold, mask=mask,
+                              npixels=source_box, kernel=kernel)
 
     if deblend:
         img_convolved = convolve(imgarr, kernel)
@@ -1074,6 +1090,9 @@ def extract_sources(img, fwhm=3.0, kernel=None,
 
             # Define raw data from this slice
             detection_img = img[seg_slice]
+            detection_mask = None
+            if mask is not None:
+                detection_mask = mask[seg_slice]
 
             # zero out any pixels which do not have this segment label
             detection_img[segm.data[seg_slice] == 0] = 0
@@ -1100,11 +1119,11 @@ def extract_sources(img, fwhm=3.0, kernel=None,
                     # Revert to segmentation photometry for sat. source positions
                     if OLD_PHOTUTILS:
                         segment_properties = SourceCatalog(detection_img, segment.data,
-                                                           kernel=kernel)
+                                                           kernel=kernel, mask=detection_mask)
                     else:
                         seg_img = SegmentationImage(segment.data)
                         segment_properties = SourceCatalog(detection_img, seg_img,
-                                                           kernel=kernel)
+                                                           kernel=kernel, mask=detection_mask)
                         del seg_img
 
                     sat_table = segment_properties.to_table()
@@ -1140,7 +1159,7 @@ def extract_sources(img, fwhm=3.0, kernel=None,
                 break
     else:
         log.debug("Determining source properties as src_table...")
-        cat = SourceCatalog(data=img, segment_img=segm, kernel=kernel)
+        cat = SourceCatalog(data=img, segment_img=segm, kernel=kernel, mask=mask)
         src_table = cat.to_table()
         del cat
         # Make column names consistent with IRAFStarFinder column names
@@ -1210,7 +1229,7 @@ def find_fwhm(psf: np.ndarray, default_fwhm: float) -> float | None:
     # Initialize logging for this user-callable function
     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
 
-    daogroup = DAOGroup(crit_separation=3. * default_fwhm)
+    daogroup = DAOGroup(crit_separation=10)
     mmm_bkg = MMMBackground()
     iraffind = DAOStarFinder(threshold=2.5 * mmm_bkg(psf),
                              sigma_radius=2.5, exclude_border=True,
@@ -1224,7 +1243,7 @@ def find_fwhm(psf: np.ndarray, default_fwhm: float) -> float | None:
                                                       bkg_estimator=mmm_bkg,
                                                       psf_model=gaussian_prf,
                                                       fitter=fitter,
-                                                      fitshape=(9, 9),
+                                                      fitshape=(11, 11),
                                                       niters=3)
     phot_results = itr_phot_obj(psf)
 
@@ -1299,7 +1318,6 @@ def get_reference_catalog(ra, dec, sr=0.5, epoch=None, num_sources=None, catalog
 
     ref_table = None
     if 'GAIA' in catalog:
-        # Gaia.MAIN_GAIA_TABLE = _base_conf.DEF_ASTROQUERY_CATALOGS[catalog.upper()]  # Select early Data Release 3
         Gaia.ROW_LIMIT = -1  # Ensure the default row limit.
 
         if not silent:
@@ -1311,7 +1329,7 @@ def get_reference_catalog(ra, dec, sr=0.5, epoch=None, num_sources=None, catalog
             WHERE 1 = CONTAINS(
                POINT({coord.ra.value}, {coord.dec.value}),
                CIRCLE(ra, dec, {radius.value}))
-            AND phot_g_mean_mag < 20.5
+            AND phot_g_mean_mag < 18
             AND parallax IS NOT NULL
             ORDER BY phot_g_mean_mag ASC
         """
@@ -1984,7 +2002,7 @@ def select_std_stars(ref_cat: pd.DataFrame,
             return None, filter_keys, has_mag_conv
 
         alt_mags = x2[:, 0] + 0.23 * (x1[:, 0] - x2[:, 0])
-        alt_mags_err = np.sqrt((0.23 * x1[:, 1])**2 + (0.77 * x2[:, 1])**2)
+        alt_mags_err = np.sqrt((0.23 * x1[:, 1]) ** 2 + (0.77 * x2[:, 1]) ** 2)
 
         filter_keys = ['WMag', 'WMagErr']
         new_df = pd.DataFrame({filter_keys[0]: alt_mags,
