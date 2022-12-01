@@ -256,7 +256,7 @@ def build_auto_kernel(imgarr, fwhm=4.0, threshold=None, source_box=7,
         if tmean > kern_img.mean():
             kern_stats = sigma_clipped_stats(kern_img)
             threshold = kern_stats[2]
-        peaks = find_peaks(kern_img, threshold=threshold,
+        peaks = find_peaks(kern_img, threshold=threshold, npeaks=num_fwhm,
                            box_size=isolation_size,
                            border_width=25)
 
