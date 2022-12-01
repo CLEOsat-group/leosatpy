@@ -93,6 +93,7 @@ from photutils.aperture import CircularAperture
 
 from skimage.draw import disk
 import scipy.spatial as spsp
+from scipy.signal import argrelextrema, argrelmax
 
 try:
     import matplotlib
@@ -191,7 +192,7 @@ class SourceMask:
 
 
 def build_auto_kernel(imgarr, fwhm=4.0, threshold=None, source_box=7,
-                      good_fwhm=None, num_fwhm=150,
+                      good_fwhm=None, num_fwhm=100,
                       isolation_size=11, saturation_limit=50000., silent=False):
     """Build kernel for use in source detection based on image PSF.
 
@@ -243,17 +244,11 @@ def build_auto_kernel(imgarr, fwhm=4.0, threshold=None, source_box=7,
     # Try to use PSF derived from the image as detection kernel
     # The kernel must be derived from well-isolated sources not near the edge of the image
     kern_img = imgarr.copy()
-    kernel = None
     kernel_fwhm = None
-    edge = source_box * 2
-    kern_img[:edge, :] = 0.0
-    kern_img[-edge:, :] = 0.0
-    kern_img[:, :edge] = 0.0
-    kern_img[:, -edge:] = 0.0
     kernel_psf = False
 
     # find peaks 3 times above the threshold
-    peaks = find_peaks(kern_img, threshold=threshold, npeaks=250,
+    peaks = find_peaks(kern_img, threshold=threshold, npeaks=num_fwhm,
                        box_size=isolation_size, border_width=25)
 
     if peaks is None or (peaks is not None and len(peaks) == 0):
@@ -261,21 +256,28 @@ def build_auto_kernel(imgarr, fwhm=4.0, threshold=None, source_box=7,
         if tmean > kern_img.mean():
             kern_stats = sigma_clipped_stats(kern_img)
             threshold = kern_stats[2]
-        peaks = find_peaks(kern_img, threshold=threshold, box_size=isolation_size)
+        peaks = find_peaks(kern_img, threshold=threshold,
+                           box_size=isolation_size,
+                           border_width=25)
 
     del kern_img
 
     if peaks is not None:
+        kernel_list = []
+        kernel_fwhm_list = []
+
         # Sort based on peak_value to identify the brightest sources for use as a kernel
         peaks.sort('peak_value', reverse=True)
+
         if saturation_limit:
             sat_peaks = np.where(peaks['peak_value'] > saturation_limit)[0]
             sat_index = sat_peaks[-1] + 1 if len(sat_peaks) > 0 else 0
             peaks['peak_value'][:sat_index] = 0.
 
         fwhm_attempts = 0
+        n_peaks = len(peaks)
         # Identify position of brightest, non-saturated peak (in numpy index order)
-        for peak_ctr in range(len(peaks)):
+        for peak_ctr in range(n_peaks):
             kernel_pos = [peaks['y_peak'][peak_ctr], peaks['x_peak'][peak_ctr]]
 
             kernel = imgarr[kernel_pos[0] - source_box:kernel_pos[0] + source_box + 1,
@@ -286,26 +288,38 @@ def build_auto_kernel(imgarr, fwhm=4.0, threshold=None, source_box=7,
                 if kernel.sum() > 0.0:
                     kernel /= kernel.sum()  # Normalize the new kernel to a total flux of 1.0
                     kernel_fwhm = find_fwhm(kernel, fwhm)
-                    fwhm_attempts += 1
-                    if kernel_fwhm is None:
-                        kernel = None
-                    else:
-                        log.debug("Determined FWHM from sample PSF of {:.2f}".format(kernel_fwhm))
-                        log.debug("  based on good range of FWHM:  {:.1f} to {:.1f}".format(good_fwhm[0], good_fwhm[1]))
+                    if kernel_fwhm is not None and (good_fwhm[1] > kernel_fwhm > good_fwhm[0]):
 
-                        # This makes it hard to work with sub-sampled data (WFPC2?)
-                        if good_fwhm[1] > kernel_fwhm > good_fwhm[0]:
-                            fwhm = kernel_fwhm
-                            kernel_psf = True
-                            break
-                        else:
-                            kernel = None
-                if fwhm_attempts == num_fwhm:
-                    break
+                        kernel_fwhm_list.append(kernel_fwhm)
+                        kernel_list.append(kernel)
+                        fwhm_attempts += 1
+
+        fwhm_arr = np.array(kernel_fwhm_list)
+        kernel_arr = np.array(kernel_list)
+        idx_sorted = np.argsort(fwhm_arr)
+        fwhm_arr = fwhm_arr[idx_sorted]
+        kernel_arr = kernel_arr[idx_sorted]
+
+        # find index of minimum between two modes
+        h, xedges, patches = plt.hist(fwhm_arr, bins=100, density=True)
+        xcenters = (xedges[:-1] + xedges[1:]) / 2
+
+        ind_max = argrelmax(h)
+        x_max = xcenters[ind_max]
+        y_max = h[ind_max]
+        # print(x_max, y_max)
+
+        # find firs max values in y_max
+        index_first_max = np.argmax(y_max)
+        x_at_max = x_max[index_first_max]
+        min_idx = np.argmin((fwhm_arr - x_at_max) ** 2)
+
+        kernel = kernel_arr[min_idx]
+        kernel_fwhm = x_at_max
+        kernel_psf = True
     else:
         kernel = None
 
-    # kernel = None
     if kernel is None:
         num_peaks = len(peaks) if peaks else 0
         if not silent:
@@ -323,6 +337,10 @@ def build_auto_kernel(imgarr, fwhm=4.0, threshold=None, source_box=7,
 
     del imgarr
     gc.collect()
+
+    # plt.figure()
+    # plt.imshow(kernel)
+    # plt.show()
 
     return (kernel, kernel_psf), kernel_fwhm
 
@@ -606,8 +624,8 @@ def compute_2d_background(imgarr, box_size, win_size,
             bkg = my_background(imgarr,
                                 # box_size=(0.6 * box_size, 0.6 * box_size),
                                 # filter_size=(0.5 * win_size, 0.5 * win_size),
-                                box_size=(9, 9),
-                                filter_size=(7,7),
+                                box_size=(7, 7),
+                                filter_size=(5, 5),
                                 mask=mask,
                                 # interp=interpolator,
                                 exclude_percentile=percentile,
@@ -968,20 +986,21 @@ def extract_sources(img, fwhm=3.0, kernel=None,
         kernel_area = ((source_box // 2) ** 2) * np.pi
         log.debug("   based on a default kernel.")
 
-    num_brightest = 10 if len(segm.areas) > 10 else len(segm.areas)
+    num_brightest = 20 if len(segm.areas) > 20 else len(segm.areas)
     # print(segm)
     # plt.imshow(segm.data)
     # plt.show()
     # print(5*np.mean(segm.areas))
 
-    mean_area = np.mean(segm.areas)
-    max_area = np.sort(segm.areas)[-1 * num_brightest:].mean()
+    mean_area = np.median(segm.areas)
+    max_area = np.median(np.sort(segm.areas)[-1 * num_brightest:])
 
     # This section looks for crowded fields where segments run into each other
     # By reducing the size of the kernel used for segment detection,
     # This can be minimized in crowded fields.
     # Also, the mean area is used to try to avoid this logic for fields with
     # several large extended sources in an otherwise empty field.
+    # print(max_area, MAX_AREA_LIMIT, mean_area, (kernel_area / 2))
     if max_area > MAX_AREA_LIMIT and mean_area > (kernel_area / 2):  # largest > 25-pix radius source
 
         # reset kernel to only use the central 1/4 area and redefine the segment map
@@ -1191,7 +1210,7 @@ def find_fwhm(psf: np.ndarray, default_fwhm: float) -> float | None:
     # Initialize logging for this user-callable function
     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
 
-    daogroup = DAOGroup(crit_separation=11.)
+    daogroup = DAOGroup(crit_separation=3. * default_fwhm)
     mmm_bkg = MMMBackground()
     iraffind = DAOStarFinder(threshold=2.5 * mmm_bkg(psf),
                              sigma_radius=2.5, exclude_border=True,
@@ -1205,7 +1224,7 @@ def find_fwhm(psf: np.ndarray, default_fwhm: float) -> float | None:
                                                       bkg_estimator=mmm_bkg,
                                                       psf_model=gaussian_prf,
                                                       fitter=fitter,
-                                                      fitshape=(11, 11),
+                                                      fitshape=(9, 9),
                                                       niters=3)
     phot_results = itr_phot_obj(psf)
 
@@ -1292,7 +1311,7 @@ def get_reference_catalog(ra, dec, sr=0.5, epoch=None, num_sources=None, catalog
             WHERE 1 = CONTAINS(
                POINT({coord.ra.value}, {coord.dec.value}),
                CIRCLE(ra, dec, {radius.value}))
-            AND phot_g_mean_mag < 20
+            AND phot_g_mean_mag < 20.5
             AND parallax IS NOT NULL
             ORDER BY phot_g_mean_mag ASC
         """

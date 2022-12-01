@@ -420,7 +420,7 @@ class ObsTables(object):
                                      expt, obj_key, ra_val, de_val)
         else:
             self._log.debug("  Possible match with previous entry found. "
-                            "Check RA, DEC and instrument.")
+                            "Check RA, DEC, object and instrument.")
 
             df = obs_info[mask][['RA', 'DEC', 'Instrument', 'Object']].astype(str)
 
@@ -430,16 +430,14 @@ class ObsTables(object):
                                    'Object': [obj_val]}).all(axis=1)
 
             if coord_match.any():
-                if len(coord_match) == 1:
-                    self._log.debug("  Coordinate/Pointing match found. Updating.")
-                    idx = pos[coord_match]
-                    obs_info = self._update_row(obs_info, idx, kwargs, self._def_cols,
-                                                expt, obj_key, ra_val, de_val)
-                else:
-                    self._log.debug("  Multiple Coordinate/Pointing and instrument matches found."
-                                    " This should not happen. Please check the table.")
+
+                self._log.debug("  Coordinate/Pointing, object and instrument match found. Updating.")
+                idx = pos[np.where(coord_match)[0]]
+                obs_info = self._update_row(obs_info, idx, kwargs, self._def_cols,
+                                            expt, obj_key, ra_val, de_val)
+
             else:
-                self._log.debug("  NO Coordinate/Pointing match found. Adding entry.")
+                self._log.debug("  NO Coordinate/Pointing, object and instrument match found. Adding entry.")
                 obs_info = self._add_row(obs_info, file, kwargs,
                                          self._def_cols, expt, obj_key, ra_val, de_val)
 

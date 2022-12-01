@@ -612,7 +612,7 @@ class CalibrateObsWCS(object):
         if self._fine_transformation:
             if not self._silent:
                 self._log.info("  > Refine scale and rotation")
-            lis = [2, 3, 5, 8, 10, 6, 4, 20, 2, 1, 0.5, 0.25]
+            lis = [2, 3, 5, 8, 10, 6, 4, 20, 2, 1, 0.5, 0.25, 0.2]
             if self._high_res:
                 lis = [200, 300, 100, 150, 80, 40, 70, 20, 100, 30, 9, 5]
             skip_rot_scale = True
@@ -677,7 +677,7 @@ class CalibrateObsWCS(object):
         # get pixel scale
         px_scale = wcsprm.cdelt[0] * 3600.  # in arcsec
 
-        radii_list = imtrans.frange(0.1, 10., 0.1)
+        radii_list = imtrans.frange(0.1, 5., 0.1)
         dic_rms = {"radius_px": None, "matches": None, "rms": None}
         for r in radii_list:
             matches = imtrans.find_matches(observation,
@@ -698,7 +698,7 @@ class CalibrateObsWCS(object):
                             "{}px and at least 0.2 * minimum ( observed sources, catalog sources in fov) "
                             "matches with the same radius".format(len_obs_x))
 
-            if len_obs_x > 3 and len_obs_x > 0.2 * N:
+            if len_obs_x > 3 and len_obs_x > 0.5 * N:
                 converged = True
                 dic_rms = {"radius_px": r, "matches": len_obs_x, "rms": rms}
                 if not self._silent:
@@ -845,8 +845,8 @@ class CalibrateObsWCS(object):
                     or wcs_pixscale[1] / pixscale_y < 0.1 or wcs_pixscale[1] / pixscale_y > 10:
                 # check if there is a huge difference in the scales
                 # if yes, then replace the wcs scale with the pixel scale info
-                wcsprm.pc = [[1, 0], [0, -1]]
-                wcsprm.cdelt = [-pixscale_x, pixscale_y]
+                wcsprm.pc = [[1, 0], [0, 1]]
+                wcsprm.cdelt = [pixscale_x, pixscale_y]
 
                 if self._telescope == 'DK-1.54':
                     wcsprm.pc = [[-1, 0], [0, -1]]
@@ -974,6 +974,7 @@ class CalibrateObsWCS(object):
                                                  _base_conf.ROUND_DECIMAL)
             fits_header[obsparams['dec']] = round(fits_header[obsparams['dec']],
                                                   _base_conf.ROUND_DECIMAL)
+
         self._obsTable.update_obs_table(filename_base, fits_header, obsparams)
 
     def _plot_comparison(self, imgarr, src_pos, ref_pos_before, ref_pos_after,

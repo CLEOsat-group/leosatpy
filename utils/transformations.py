@@ -23,6 +23,7 @@
 """ Modules """
 import gc
 import os
+import sys
 from copy import copy
 import inspect
 import logging
@@ -86,9 +87,11 @@ def get_scale_and_rotation(observation, catalog, wcsprm, scale_guessed, silent=F
 
     catalog_on_sensor = wcsprm.s2p(catalog[["RA", "DEC"]], 1)
     catalog_on_sensor = catalog_on_sensor['pixcrd']
+
     obs_x = [observation["xcentroid"].values]
-    cat_x = np.array([catalog_on_sensor[:, 0]])
     obs_y = [observation["ycentroid"].values]
+
+    cat_x = np.array([catalog_on_sensor[:, 0]])
     cat_y = np.array([catalog_on_sensor[:, 1]])
 
     log_dist_obs = calculate_log_dist(obs_x, obs_y)
@@ -339,8 +342,10 @@ def fine_transformation(observation, catalog, wcsprm, threshold=10,
     wcsprm_original = wcsprm
     wcsprm = copy(wcsprm)
 
-    if threshold == 20 or threshold == 100:
-        observation = observation.nlargest(10, "flux")
+    # if threshold == 20 or threshold == 100:
+    #     observation = observation.nlargest(20, "flux")
+    #     print(observation)
+
     _, _, obs_xy, cat_xy, _, _, _ = \
         find_matches(observation, catalog, wcsprm, threshold=threshold)
 
@@ -392,7 +397,8 @@ def fine_transformation(observation, catalog, wcsprm, threshold=10,
     y_shift = np.mean(obs_xy[:, 1] - cat_xy[:, 1])
 
     current_central_pixel = wcsprm.crpix
-    new_central_pixel = [current_central_pixel[0] + x_shift, current_central_pixel[1] + y_shift]
+    new_central_pixel = [current_central_pixel[0] + x_shift,
+                         current_central_pixel[1] + y_shift]
     wcsprm.crpix = new_central_pixel
 
     _, _, _, _, _, score, _ = \
@@ -483,6 +489,7 @@ def peak_with_cross_correlation(log_distance_obs: np.ndarray, angle_obs: np.ndar
         first axis to consider of catalog data (log distance)
     angle_cat: array
         first axis to consider of catalog data (angle)
+    scale_guessed:
 
     Returns
     -------
@@ -510,7 +517,7 @@ def peak_with_cross_correlation(log_distance_obs: np.ndarray, angle_obs: np.ndar
     maximum_ang = max([max(angle_cat), max(angle_obs)])
 
     bins_ang, binwidth_ang = np.linspace(minimum_ang, maximum_ang,
-                                         360 * _base_conf.BINS_ANG_FAC, retstep=True)
+                                         int(360 * _base_conf.BINS_ANG_FAC), retstep=True)
 
     # min max of both
     bins = np.array([len(bins_dist), len(bins_ang)])  # .astype('uint64')
@@ -554,8 +561,8 @@ def peak_with_cross_correlation(log_distance_obs: np.ndarray, angle_obs: np.ndar
     signal = np.sum(cross_corr[peak[0] - 1:peak[0] + 2, peak[1] - 1:peak[1] + 2])
 
     # is that correct? yes, I think so, shape is an uneven number and index counting starts at 0
-    middle_x = cross_corr.shape[0] / 2.
-    middle_y = cross_corr.shape[1] / 2.
+    middle_x = cross_corr.shape[0] / 2
+    middle_y = cross_corr.shape[1] / 2
 
     x_shift = (peak[0] + peak_x_subpixel - middle_x) * binwidth_dist
     y_shift = (peak[1] + peak_y_subpixel - middle_y) * binwidth_ang
@@ -631,10 +638,10 @@ def calculate_angles(data_x, data_y):
     angles = np.arctan2(vec_x, vec_y)
 
     # make sure angles are between 0 and 2 Pi
-    angles = angles % (2 * np.pi)
+    angles = angles % (2. * np.pi)
 
     # shift to -pi to pi
-    angles[np.where(angles > np.pi)] = -1 * (2 * np.pi - angles[np.where(angles > np.pi)])
+    angles[np.where(angles > np.pi)] = -1 * (2. * np.pi - angles[np.where(angles > np.pi)])
 
     del data_x, data_y, vec_x, vec_y
     gc.collect()
@@ -735,7 +742,7 @@ def shift_translation(src_image, target_image):
 
     # Locate maximum in order to calcul the shift between two numpy array
     maxima = np.unravel_index(np.argmax(np.abs(cross_correlation)), cross_correlation.shape)
-    midpoints = np.array([np.fix(axis_size / 2.) for axis_size in shape])
+    midpoints = np.array([np.fix(axis_size / 2) for axis_size in shape])
 
     shift = np.array(maxima, dtype=np.float64)
     shift[shift > midpoints] -= np.array(shape)[shift > midpoints]
