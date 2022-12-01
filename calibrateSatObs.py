@@ -329,10 +329,14 @@ class CalibrateObsWCS(object):
             estimate_bkg = False
 
         # load fits file
+        img_mask = None
         with fits.open(abs_file_path) as hdul:
             hdul.verify('fix')
             hdr = hdul[hdu_idx].header
-            imgarr = hdul[hdu_idx].data.astype(float)
+            imgarr = hdul[hdu_idx].data.astype('float32')
+
+            if 'mask' in hdul:
+                img_mask = hdul['MASK'].data.astype(bool)
 
         sat_id, _ = self._obsTable.get_satellite_id(hdr[obsparams['object']])
         plt_path_final = plt_path / sat_id
@@ -359,6 +363,7 @@ class CalibrateObsWCS(object):
                              _src_cat_fname=self._src_cat_fname,
                              _ref_cat_fname=self._ref_cat_fname,
                              _photo_ref_cat_fname=None,
+                             image_mask=img_mask,
                              estimate_bkg=estimate_bkg,
                              bkg_fname=(bkg_fname, bkg_fname_short),
                              _force_extract=self._force_extract,
@@ -698,7 +703,7 @@ class CalibrateObsWCS(object):
                             "{}px and at least 0.2 * minimum ( observed sources, catalog sources in fov) "
                             "matches with the same radius".format(len_obs_x))
 
-            if len_obs_x > 3 and len_obs_x > 0.5 * N:
+            if len_obs_x > 3 and len_obs_x > 0.25 * N:
                 converged = True
                 dic_rms = {"radius_px": r, "matches": len_obs_x, "rms": rms}
                 if not self._silent:
