@@ -603,9 +603,7 @@ def compute_2d_background(imgarr, mask, box_size, win_size,
             log.info(f"    Percentile in use: {percentile}")
         # estimate the background
         try:
-            plt.figure()
-            plt.imshow(mask)
-            print(type(mask))
+
             bkg = my_background(imgarr, mask=mask, box_size=(box_size, box_size),
                                 filter_size=(win_size, win_size),
                                 exclude_percentile=percentile, bkg_estimator=bkg_estimator,
@@ -618,14 +616,10 @@ def compute_2d_background(imgarr, mask, box_size, win_size,
             sm = SourceMask(imgarr - bkg.background, nsigma=1.5)
             final_mask = sm.multiple(filter_fwhm=[2, 3, 5],
                                      tophat_size=[4, 2, 1])
-            plt.figure()
-            plt.imshow(final_mask)
-            print(final_mask)
+
             if mask is not None:
                 final_mask |= mask
-            plt.figure()
-            plt.imshow(final_mask)
-            plt.show()
+
             del bkg
 
             if not silent:
