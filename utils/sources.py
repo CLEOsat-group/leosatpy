@@ -1305,7 +1305,7 @@ def get_reference_catalog(ra, dec, sr=0.5, epoch=None, num_sources=None, catalog
             WHERE 1 = CONTAINS(
                POINT({coord.ra.value}, {coord.dec.value}),
                CIRCLE(ra, dec, {radius.value}))
-            AND phot_g_mean_mag < 18
+            AND phot_g_mean_mag < 19.5
             AND parallax IS NOT NULL
             ORDER BY phot_g_mean_mag ASC
         """
