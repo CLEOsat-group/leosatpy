@@ -347,9 +347,6 @@ CONV_SSDS_BVRI = {'BMag': [[-0.8116, 0.1313, 0.0095],
                   'IMag': [[-1.2444, -0.3820, 0.0078],
                            [-0.3780, -0.3974, 0.0063]]}
 
-# background estimation
-# RING_RADIUS_IN = 15  # ring filter radius
-# RING_WIDTH = 7  # ring filter width
 
 # resolution of scale and rotation estimation.
 NUM_BINS_DIST = 7500  # number of distance bins

@@ -703,7 +703,7 @@ class CalibrateObsWCS(object):
                             "{}px and at least 0.2 * minimum ( observed sources, catalog sources in fov) "
                             "matches with the same radius".format(len_obs_x))
 
-            if len_obs_x > 3 and len_obs_x > 0.25 * N:
+            if len_obs_x >= 3 and len_obs_x >= 0.25 * N:
                 converged = True
                 dic_rms = {"radius_px": r, "matches": len_obs_x, "rms": rms}
                 if not self._silent:
