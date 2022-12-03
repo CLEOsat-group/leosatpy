@@ -123,9 +123,9 @@ dk154_params = {
                      'objra', 'objdec', 'airmass', 'binning'],
 
     # source extractor settings
-    'average_fwhm': 3.,
+    'average_fwhm': 2.5,
     'saturation_limit': 6e5,
-    'nsigma': 2.,
+    'nsigma': 1.5,
     'source_box': 11,
     'isolation_size': 11,
     'box_size': 27,

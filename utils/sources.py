@@ -239,30 +239,29 @@ def build_auto_kernel(imgarr, fwhm=4.0, threshold=None, mask=None, source_box=7,
     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
 
     if good_fwhm is None:
-        good_fwhm = [1.0, 10.0]
+        good_fwhm = [1.0, 6.0]
 
     # Try to use PSF derived from the image as detection kernel
     # The kernel must be derived from well-isolated sources not near the edge of the image
-    kern_img = imgarr.copy()
-    # kern_img = convolve(imgarr, Gaussian2DKernel(3))
-    kernel_fwhm = None
     kernel_psf = False
 
     # find peaks 3 times above the threshold
-    peaks = find_peaks(kern_img, threshold=threshold, npeaks=num_fwhm,
+    peaks = find_peaks(imgarr, threshold=threshold, npeaks=num_fwhm,
                        box_size=isolation_size, border_width=25, mask=mask)
 
     if peaks is None or (peaks is not None and len(peaks) == 0):
-        tmean = threshold.mean() if isinstance(threshold, np.ndarray) else threshold
-        if tmean > kern_img.mean():
-            kern_stats = sigma_clipped_stats(kern_img)
+        threshold_mean = threshold.mean() if isinstance(threshold, np.ndarray) else threshold
+        if threshold_mean > imgarr.mean():
+            kern_stats = sigma_clipped_stats(imgarr)
             threshold = kern_stats[2]
-        peaks = find_peaks(kern_img, threshold=threshold, npeaks=num_fwhm,
+        peaks = find_peaks(imgarr, threshold=threshold, npeaks=num_fwhm,
                            box_size=isolation_size,
                            border_width=25, mask=mask)
 
-    del kern_img
-
+    best_sigma_unc = 1.
+    best_flux_unc = 1.
+    best_kernel = None
+    best_fwhm = fwhm
     if peaks is not None:
         kernel_list = []
         kernel_fwhm_list = []
@@ -272,15 +271,13 @@ def build_auto_kernel(imgarr, fwhm=4.0, threshold=None, mask=None, source_box=7,
 
         if saturation_limit:
             sat_peaks = np.where(peaks['peak_value'] > saturation_limit)[0]
-            sat_index = sat_peaks[-1] + 1 if len(sat_peaks) > 0 else 0
-            peaks['peak_value'][:sat_index] = 0.
+            peaks.remove_rows(sat_peaks)
 
         fwhm_attempts = 0
         n_peaks = len(peaks)
         # Identify position of brightest, non-saturated peak (in numpy index order)
         for peak_ctr in range(n_peaks):
             kernel_pos = [peaks['y_peak'][peak_ctr], peaks['x_peak'][peak_ctr]]
-
             kernel = imgarr[kernel_pos[0] - source_box:kernel_pos[0] + source_box + 1,
                             kernel_pos[1] - source_box:kernel_pos[1] + source_box + 1].copy()
 
@@ -288,61 +285,44 @@ def build_auto_kernel(imgarr, fwhm=4.0, threshold=None, mask=None, source_box=7,
                 kernel = np.clip(kernel, 0, None)  # insure background subtracted kernel has no negative pixels
                 if kernel.sum() > 0.0:
                     kernel /= kernel.sum()  # Normalize the new kernel to a total flux of 1.0
-                    kernel_fwhm = find_fwhm(kernel, fwhm)
-                    if kernel_fwhm is not None and (good_fwhm[1] > kernel_fwhm > good_fwhm[0]):
-                        kernel_fwhm_list.append(kernel_fwhm)
-                        kernel_list.append(kernel)
-                        fwhm_attempts += 1
+                    fwhm_table = find_fwhm(kernel, fwhm)
+                    if fwhm_table is not None:
+                        fit_fwhm = fwhm_table['fwhm'][0]
+                        if good_fwhm[1] > fit_fwhm > good_fwhm[0]:
+                            found_sigma_unc = fwhm_table['sigma_unc'][0]
+                            found_flux_unc = fwhm_table['flux_unc'][0]
+                            if found_flux_unc < best_flux_unc \
+                                    and found_sigma_unc < best_sigma_unc:
+                                best_flux_unc = found_flux_unc
+                                best_sigma_unc = found_sigma_unc
+                                best_fwhm = fit_fwhm
+                                best_kernel = kernel
 
-        fwhm_arr = np.array(kernel_fwhm_list)
-        kernel_arr = np.array(kernel_list)
-        idx_sorted = np.argsort(fwhm_arr)
-        fwhm_arr = fwhm_arr[idx_sorted]
-        kernel_arr = kernel_arr[idx_sorted]
+                            kernel_fwhm_list.append(fit_fwhm)
+                            kernel_list.append(kernel)
+                            fwhm_attempts += 1
 
-        # find index of minimum between two modes
-        h, xedges, patches = plt.hist(fwhm_arr, bins=50, density=True)
-        xcenters = (xedges[:-1] + xedges[1:]) / 2
+        if best_fwhm is not None:
+            kernel_psf = True
 
-        ind_max = argrelmax(h)
-        x_max = xcenters[ind_max]
-        y_max = h[ind_max]
-        # print(x_max, y_max)
-
-        # find firs max values in y_max
-        index_first_max = np.argmax(y_max)
-        x_at_max = x_max[index_first_max]
-        min_idx = np.argmin((fwhm_arr - x_at_max) ** 2)
-
-        kernel = kernel_arr[min_idx]
-        kernel_fwhm = x_at_max
-        kernel_psf = True
-    else:
-        kernel = None
-
-    if kernel is None:
+    if best_kernel is None:
         num_peaks = len(peaks) if peaks else 0
         if not silent:
             log.warning(f"   Did not find a suitable PSF out of {num_peaks} possible sources...")
             log.warning("   Using a Gaussian 2D Kernel for source detection.")
 
         # Generate a default kernel using a simple 2D Gaussian
-        kernel_fwhm = fwhm
         sigma = fwhm * gaussian_fwhm_to_sigma
         k = Gaussian2DKernel(sigma,
                              x_size=source_box,
                              y_size=source_box)
         k.normalize()
-        kernel = k.array
+        best_kernel = k.array
 
     del imgarr
     gc.collect()
 
-    # plt.figure()
-    # plt.imshow(kernel)
-    # plt.show()
-
-    return (kernel, kernel_psf), kernel_fwhm
+    return (best_kernel, kernel_psf), best_fwhm
 
 
 def classify_sources(catalog, fwhm, sources=None):
@@ -1201,7 +1181,7 @@ def extract_sources(img, fwhm=3.0, kernel=None, mask=None,
     return tbl.to_pandas(), segm, segment_threshold, True
 
 
-def find_fwhm(psf: np.ndarray, default_fwhm: float) -> float | None:
+def find_fwhm(psf: np.ndarray, default_fwhm: float) -> Table | None:
     """ Determine FWHM for auto-kernel PSF.
 
     This function iteratively fits a Gaussian model to the extracted PSF
@@ -1223,7 +1203,7 @@ def find_fwhm(psf: np.ndarray, default_fwhm: float) -> float | None:
     # Initialize logging for this user-callable function
     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
 
-    daogroup = DAOGroup(crit_separation=10)
+    daogroup = DAOGroup(crit_separation=2. * default_fwhm)
     mmm_bkg = MMMBackground()
     iraffind = DAOStarFinder(threshold=2.5 * mmm_bkg(psf),
                              sigma_radius=2.5, exclude_border=True,
@@ -1232,30 +1212,32 @@ def find_fwhm(psf: np.ndarray, default_fwhm: float) -> float | None:
     sigma_psf = gaussian_fwhm_to_sigma * default_fwhm
     gaussian_prf = IntegratedGaussianPRF(sigma=sigma_psf)
     gaussian_prf.sigma.fixed = False
+    gaussian_prf.x_0.fixed = True
+    gaussian_prf.y_0.fixed = True
     itr_phot_obj = IterativelySubtractedPSFPhotometry(finder=iraffind,
                                                       group_maker=daogroup,
                                                       bkg_estimator=mmm_bkg,
                                                       psf_model=gaussian_prf,
                                                       fitter=fitter,
-                                                      fitshape=(11, 11),
-                                                      niters=3)
-    phot_results = itr_phot_obj(psf)
+                                                      fitshape=(15, 15),
+                                                      niters=1)
 
-    # Insure none of the fluxes determined by photutils is np.nan
-    phot_results['flux_fit'] = np.nan_to_num(phot_results['flux_fit'].data, nan=0)
-
-    if len(phot_results['flux_fit']) == 0:
+    phot_results = itr_phot_obj(image=psf)
+    if 'sigma_unc' not in phot_results.keys():
         return None
-    psf_row = np.where(phot_results['flux_fit'] == phot_results['flux_fit'].max())[0][0]
-    sigma_fit = phot_results['sigma_fit'][psf_row]
+
+    psf_row = np.where(phot_results['sigma_unc'] == phot_results['sigma_unc'].min())[0][0]
+    phot_results = Table(phot_results[psf_row])
+    sigma_fit = phot_results['sigma_fit']
     fwhm = gaussian_sigma_to_fwhm * sigma_fit
+    phot_results.add_column(col=fwhm, name='fwhm')
 
     log.debug(f"Found FWHM: {fwhm}")
 
-    del psf, daogroup, mmm_bkg, iraffind, itr_phot_obj, phot_results, psf_row, fitter
+    del psf, daogroup, mmm_bkg, iraffind, itr_phot_obj, psf_row, fitter
     gc.collect()
 
-    return fwhm
+    return phot_results
 
 
 def find_worst_residual_near_center(resid: np.ndarray):
