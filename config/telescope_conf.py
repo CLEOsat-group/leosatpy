@@ -328,7 +328,8 @@ ca123dlrmkiii_param = {
     'source_box': 15,
     'isolation_size': 5,
     'box_size': 27,
-    'win_size': 11
+    'win_size': 11,
+    'apply_mask': True
 }
 
 # Chakana 0.6m telescope ckoirama
@@ -427,13 +428,15 @@ ckoir_param = {
                      'objctra', 'objctdec', 'airmass', 'binning'],
 
     # source extractor settings
-    'average_fwhm': 3,
-    'saturation_limit': 6e5,
-    'nsigma': 1.5,
-    'source_box': 15,
-    'isolation_size': 5,
+    'average_fwhm': 2.5,
+    'saturation_limit': 6.5e4,
+    'nsigma': 1.25,
+    'source_box': 11,
+    'isolation_size': 11,
     'box_size': 27,
-    'win_size': 11}
+    'win_size': 11,
+    'apply_mask': True
+}
 
 # CTIO 0.9 m telescope
 ctio_params = {
@@ -458,7 +461,7 @@ ctio_params = {
     'n_amps': 4,  # number of chips/amplifier on detector
     'namps_yx': {'1x1': {4: [2, 2]}},
     'amplist': {'1x1': ['11', '12', '21', '22']},  # amplifier list keyword
-    'secpix': (0.401, 0.401),  # pixel size (arcsec)
+    'secpix': (0.40, 0.40),  # pixel size (arcsec)
     'binning': ('BINX', 'BINY'),  # binning
     'image_size_1x1': (2168, 2048),
 
@@ -537,13 +540,14 @@ ctio_params = {
                      'ra', 'dec', 'airmass', 'binning'],
 
     # source extractor settings
-    'average_fwhm': 3,
-    'saturation_limit': 6e5,
-    'nsigma': 1.5,
-    'source_box': 15,
-    'isolation_size': 5,
+    'average_fwhm': 2.,
+    'saturation_limit': 6.5e4,
+    'nsigma': 1.125,
+    'source_box': 7,
+    'isolation_size': 9,
     'box_size': 27,
-    'win_size': 11
+    'win_size': 11,
+    'apply_mask': True
 
 }
 
@@ -628,13 +632,14 @@ spm_params = {
                      'strrqra', 'strrqde', 'strobam', 'binning'],
 
     # source extractor settings
-    'average_fwhm': 3.5,
+    'average_fwhm': 2.,
     'saturation_limit': 6.5e4,
     'nsigma': 3.,
-    'source_box': 9,
-    'isolation_size': 11,
+    'source_box': 7,
+    'isolation_size': 9,
     'box_size': 27,
-    'win_size': 11
+    'win_size': 11,
+    'apply_mask': True
 }
 
 ouka_params = {
@@ -715,13 +720,14 @@ ouka_params = {
                      'ra', 'dec', 'airmass', 'binning'],
 
     # source extractor settings
-    'average_fwhm': 3,
-    'saturation_limit': 6e5,
-    'nsigma': 1.5,
-    'source_box': 15,
-    'isolation_size': 5,
+    'average_fwhm': 2.,
+    'saturation_limit': 6.5e4,
+    'nsigma': 3.,
+    'source_box': 7,
+    'isolation_size': 9,
     'box_size': 27,
-    'win_size': 11
+    'win_size': 11,
+    'apply_mask': True
 
 }
 

@@ -1923,6 +1923,7 @@ def select_std_stars(ref_cat: pd.DataFrame,
     filter_keys = _base_conf.CATALOG_FILTER_EXT[catalog][band]['Prim']
 
     if band != 'w':
+        filter_keys = sum(filter_keys, [])
         # remove nan and err=0 values
         df = cat_srt.dropna(subset=filter_keys)
         df = df[df[filter_keys[1]] != 0.]

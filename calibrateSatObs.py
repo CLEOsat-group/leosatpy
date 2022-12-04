@@ -335,7 +335,7 @@ class CalibrateObsWCS(object):
             hdr = hdul[hdu_idx].header
             imgarr = hdul[hdu_idx].data.astype('float32')
 
-            if 'mask' in hdul:
+            if 'mask' in hdul and obsparams['apply_mask']:
                 img_mask = hdul['MASK'].data.astype(bool)
 
         sat_id, _ = self._obsTable.get_satellite_id(hdr[obsparams['object']])
@@ -365,6 +365,7 @@ class CalibrateObsWCS(object):
                              _photo_ref_cat_fname=None,
                              image_mask=img_mask,
                              estimate_bkg=estimate_bkg,
+                             n_ref_sources=self._config['NUM_SOURCES_MAX'],
                              bkg_fname=(bkg_fname, bkg_fname_short),
                              _force_extract=self._force_extract,
                              _plot_images=self._plot_images)
@@ -439,11 +440,11 @@ class CalibrateObsWCS(object):
         report["scale_y"] = abs(wcs_pixscale[0]) * 3600.
         report["det_rotang"] = rotation_angle
 
-        # match results
+        # match results within 1 pixel radius for plot
         matches = imtrans.find_matches(src_tbl,
                                        ref_tbl,
                                        wcsprm,
-                                       threshold=7)
+                                       threshold=1)
         _, _, _, ref_positions_after, _, _, _ = matches
         # update file header and save
         if converged:
@@ -754,7 +755,7 @@ class CalibrateObsWCS(object):
             bin_x = int(obsparams['binning'][0])
             bin_y = int(obsparams['binning'][1])
 
-        if self._telescope == 'DK-1.54':
+        if self._telescope in ['DK-1.54']:
             wcs_rebinned = WCS(wcsprm.to_header()).slice((np.s_[::bin_x], np.s_[::bin_y]))
             wcsprm = wcs_rebinned.wcs
 
@@ -825,11 +826,16 @@ class CalibrateObsWCS(object):
         if test_wcs1:
             if not self._silent:
                 log.info("  Pixelscale is unrealistic. Will guess")
-                wcsprm.pc = [[1, 0], [0, 1]]
+                # wcsprm.pc = [[1, 0], [0, 1]]
+                wcsprm.pc = [[0, 1], [-1, 0]]
                 guess = pixscale_x / 3600.
                 wcsprm.cdelt = [-guess, guess]
-                if self._telescope == 'DDOTI 28-cm f/2.2':
+                if self._telescope in ['DDOTI 28-cm f/2.2']:
+                    # wcsprm.pc = [[-1, 0], [0, 1]]
                     wcsprm.cdelt = [guess, guess]
+                elif self._telescope == 'PlaneWave CDK24':
+                    wcsprm.pc = [[0, 1], [1, 0]]
+                    wcsprm.cdelt = [-guess, guess]
                 PIXSCALE_UNCLEAR = True
 
         if ignore_header_rot:
@@ -850,8 +856,8 @@ class CalibrateObsWCS(object):
                     or wcs_pixscale[1] / pixscale_y < 0.1 or wcs_pixscale[1] / pixscale_y > 10:
                 # check if there is a huge difference in the scales
                 # if yes, then replace the wcs scale with the pixel scale info
-                wcsprm.pc = [[1, 0], [0, 1]]
-                wcsprm.cdelt = [pixscale_x, pixscale_y]
+                wcsprm.pc = [[0, 1], [-1, 0]]
+                wcsprm.cdelt = [-pixscale_x, pixscale_y]
 
                 if self._telescope == 'DK-1.54':
                     wcsprm.pc = [[-1, 0], [0, -1]]

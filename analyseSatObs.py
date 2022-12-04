@@ -1312,6 +1312,8 @@ class AnalyseSatObs(object):
                 hdul.verify('fix')
                 hdr = hdul[hdu_idx].header
                 imgarr = hdul[hdu_idx].data.astype('float32')
+                if 'mask' in hdul and obspar['apply_mask']:
+                    img_mask = hdul['MASK'].data.astype(bool)
 
             # check the used filter band
             filter_val = hdr['FILTER']
@@ -1359,7 +1361,7 @@ class AnalyseSatObs(object):
                                                   bkg_fname=(bkg_fname,
                                                              bkg_fname_short),
                                                   box_size=box_size,
-                                                  win_size=win_size)
+                                                  win_size=win_size, mask=img_mask)
 
             bkg, bkg_med, bkg_rms, bkg_rms_med = bkg_data
 

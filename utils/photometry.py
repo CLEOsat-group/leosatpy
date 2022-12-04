@@ -181,7 +181,7 @@ def get_optimum_aper_rad(image: np.ndarray,
     max_snr_aprad = rapers[max_snr_idx]
     optimum_aprad = max_snr_aprad * 1.5
     qlf_aprad = True
-    if optimum_aprad >= 3.:
+    if optimum_aprad > 3.5:
         log.warning('Optimum radius seems high [%.1f x FWHM] '
                     '- setting to %.1f x FWHM' % (optimum_aprad, aper_rad))
         optimum_aprad = aper_rad
