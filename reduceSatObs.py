@@ -599,6 +599,10 @@ class ReduceSatObs(object):
 
         ccd_mask_fname = os.path.join(self._master_calib_path,
                                       'mask_from_ccdmask_%s.fits' % image_filter)
+        if self._telescope == 'DDOTI 28-cm f/2.2':
+            ccd_mask_fname = os.path.join(self._master_calib_path,
+                                          'mask_from_ccdmask_%s_%s.fits' % (self._instrument,
+                                                                            image_filter))
         if os.path.isfile(ccd_mask_fname):
             self._ccd_mask_fname = ccd_mask_fname
 
@@ -884,6 +888,10 @@ class ReduceSatObs(object):
         mask_as_ccd.header['imagetyp'] = 'flat mask'
         ccd_mask_fname = os.path.join(self._master_calib_path,
                                       'mask_from_ccdmask_%s.fits' % flat_filter)
+        if self._telescope == 'DDOTI 28-cm f/2.2':
+            ccd_mask_fname = os.path.join(self._master_calib_path,
+                                          'mask_from_ccdmask_%s_%s.fits' % (self._instrument,
+                                                                            flat_filter))
         mask_as_ccd.write(ccd_mask_fname, overwrite=True)
         self._ccd_mask_fname = ccd_mask_fname
 
@@ -1214,7 +1222,7 @@ class ReduceSatObs(object):
             if oscansec is not None:
                 oscan_section = oscansec
                 oscan_arr = nccd[oscan_section[0]:oscan_section[1],
-                                 oscan_section[2]:oscan_section[3]]
+                            oscan_section[2]:oscan_section[3]]
                 nccd = ccdproc.subtract_overscan(nccd,
                                                  overscan=oscan_arr,
                                                  add_keyword={'oscan_cor': oscan_corrected},
@@ -1242,7 +1250,7 @@ class ReduceSatObs(object):
                                                  ampsec[2]:ampsec[3]])
 
                     oscan_arr = amp_ccd[oscan_section[0]:oscan_section[1],
-                                        oscan_section[2]:oscan_section[3]]
+                                oscan_section[2]:oscan_section[3]]
 
                     ncc = ccdproc.subtract_overscan(amp_ccd,
                                                     overscan=oscan_arr,
@@ -1715,7 +1723,7 @@ class ReduceSatObs(object):
 
     @staticmethod
     def truncate(num, n):
-        integer = int(num * 10**n)/(10**n)
+        integer = int(num * 10 ** n) / (10 ** n)
         return float(integer)
 
     def _prepare_fits_files(self, file_names, telescope, obsparams, imagetyp):
