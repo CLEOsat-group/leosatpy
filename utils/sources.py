@@ -1565,7 +1565,7 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
         # get reference catalog for precise positions from the web
         ref_tbl_astro, ref_catalog_astro = \
             get_reference_catalog(ra=ra, dec=dec, sr=fov_radius,
-                                  epoch=epoch, num_sources=_base_conf.NUM_SOURCES_MAX,
+                                  epoch=epoch, num_sources=config['n_ref_sources'],
                                   catalog='GAIAdr3',
                                   silent=silent)
         # add positions to table

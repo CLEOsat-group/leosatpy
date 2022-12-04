@@ -358,7 +358,6 @@ MAX_AREA_LIMIT = 1964  # area in pixel above which the source is considered to b
 FREQU_THRESHOLD = 0.02
 
 # source detection
-NUM_SOURCES_MAX = 500  # maximum number of sources to consider
 USE_N_SOURCES = 100  # number of sources to be used in fast mode
 OFFSET_BINWIDTH = 1  # width in pixel for the offset determination
 

@@ -130,7 +130,7 @@ dk154_params = {
     'isolation_size': 11,
     'box_size': 27,
     'win_size': 11,
-
+    'apply_mask': True
 }
 
 # ChungBuk National University Observatory South Korea, CBNUO-JC
@@ -222,13 +222,14 @@ cbnuo_params = {
                      'ra', 'dec', 'airmass', 'binning'],
 
     # source extractor settings
-    'average_fwhm': 2.5,
-    'saturation_limit': 4.5e4,
+    'average_fwhm': 2.,
+    'saturation_limit': 6.5e4,
     'nsigma': 1.1,
-    'source_box': 9,
+    'source_box': 7,
     'isolation_size': 9,
     'box_size': 27,
-    'win_size': 11
+    'win_size': 11,
+    'apply_mask': True
 
 }
 
