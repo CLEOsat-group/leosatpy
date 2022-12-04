@@ -261,7 +261,7 @@ class ObsTables(object):
                 else:
                     self._log.debug("  Multiple Coordinate/Pointing matches found."
                                     " This should not happen.")
-                    idx = pos[coord_match[0]]
+                    idx = pos[np.where(coord_match)[0]]
                     self._obj_info = obs_info.iloc[idx]
             else:
                 self._log.error("  NO Coordinate/Pointing match found."
