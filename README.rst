@@ -179,7 +179,6 @@ Once all programs have been executed, the directory should look like this:
         │   ├── darks
         │   ├── master_calibs
         │   └── science_data
-        │       └── raw
         │       ├── auxiliary
         │       ├── calibrated
         │       ├── catalogs
