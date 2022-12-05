@@ -24,6 +24,7 @@ import gc
 import os
 import inspect
 import logging
+import sys
 
 import astropy.table
 from astropy.stats import sigma_clip
@@ -154,7 +155,7 @@ def get_optimum_aper_rad(image: np.ndarray,
     # get positions
     src_pos = np.array(list(zip(std_cat['xcentroid'], std_cat['ycentroid'])))
 
-    output = np.zeros((len(rapers), len(src_pos), 3))
+    output = np.zeros((len(rapers), len(src_pos), 4))
     output[output == 0] = np.nan
 
     for i in range(len(rapers)):
@@ -169,19 +170,20 @@ def get_optimum_aper_rad(image: np.ndarray,
         aper_bkg = aper_bkg_counts / exp_time
 
         # calculate Signal-to-Noise ratio
-        snr = get_snr(flux_star=aper_flux, flux_bkg=aper_bkg, t_exp=exp_time,
-                      r=r_aper * fwhm,
-                      gain=gain, rdnoise=rdnoise, dc=0.)
+        snr, snr_err = get_snr(flux_star=aper_flux, flux_bkg=aper_bkg, t_exp=exp_time,
+                               r=r_aper * fwhm,
+                               gain=gain, rdnoise=rdnoise, dc=0.)
 
         output[i, :, 0] = aper_flux
         output[i, :, 1] = aper_bkg
         output[i, :, 2] = snr
+        output[i, :, 3] = snr_err
 
     max_snr_idx = np.nanargmax(np.nanmedian(output[:, :, 2], axis=1))
     max_snr_aprad = rapers[max_snr_idx]
-    optimum_aprad = max_snr_aprad * 1.5
+    optimum_aprad = max_snr_aprad * 1.25
     qlf_aprad = True
-    if optimum_aprad > 3.5:
+    if optimum_aprad > 3.:
         log.warning('Optimum radius seems high [%.1f x FWHM] '
                     '- setting to %.1f x FWHM' % (optimum_aprad, aper_rad))
         optimum_aprad = aper_rad
@@ -189,7 +191,7 @@ def get_optimum_aper_rad(image: np.ndarray,
 
     if not silent:
         log.info('    ==> best-fit aperture radius: %3.1f (FWHM)' % max_snr_aprad)
-        log.info('    ==> optimum aperture radius (r x 1.5): %3.1f (FWHM)' % optimum_aprad)
+        log.info('    ==> optimum aperture radius (r x 1.25): %3.1f (FWHM)' % optimum_aprad)
 
     del image, std_cat
     gc.collect()
@@ -207,7 +209,7 @@ def get_snr(flux_star: np.array, flux_bkg: np.array,
     counts_source = flux_star * t_exp
     sky_shot = flux_bkg * t_exp * area
 
-    read_noise = ((rdnoise ** 2) + (gain / 2) ** 2) * area
+    read_noise = ((rdnoise ** 2) + (gain / 2.) ** 2) * area
     dark_noise = dc * t_exp * area
 
     snr = counts_source / np.sqrt(counts_source + sky_shot + read_noise + dark_noise)
@@ -215,7 +217,11 @@ def get_snr(flux_star: np.array, flux_bkg: np.array,
     del flux_star, flux_bkg
     gc.collect()
 
-    return snr
+    SNR_cleaned = [i if i > 0 else 0 for i in snr]
+
+    SNR_err = np.array([2.5 * np.log10(1. + (1. / snr)) if snr > 0 else np.nan for snr in SNR_cleaned])
+
+    return SNR_cleaned, SNR_err
 
 
 def get_aper_photometry(image: np.ndarray,
