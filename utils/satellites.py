@@ -827,7 +827,9 @@ def get_trail_properties(segm_map, df, config,
         # this can be extended later to let the user choose which to pick
         # set 0 for first entry
         sel_idx = config['PARALLEL_TRAIL_SELECT']
-        _df = df.iloc[sel_dict[sel_idx]] if len(df) > 1 else df.loc[sel_dict[sel_idx]]
+        # print(df, sel_dict, sel_idx, sel_dict[sel_idx], df.loc[sel_dict[sel_idx]])
+        # _df = df.iloc[sel_dict[sel_idx]] if len(df) > 1 else df.loc[sel_dict[sel_idx]]
+        _df = df.loc[sel_dict[sel_idx]]
         binary_img = np.zeros(segm_map.shape)
         for row in _df.itertuples(name='label'):
             binary_img[segm_map.data == row.label] = 1
