@@ -774,9 +774,9 @@ class AnalyseSatObs(object):
 
             # todo: if raise error use simple offset to determine shift (mask trail before shift detection)
             T, _ = astroalign.find_transform(imgarr - img_bkg, ref_imgarr - ref_bkg,
-                                             detection_sigma=1.5,
-                                             max_control_points=150,
-                                             min_area=8)
+                                             detection_sigma=3.,
+                                             max_control_points=100,
+                                             min_area=9)
             ref_img_warped, footprint = astroalign.apply_transform(T,
                                                                    ref_imgarr,
                                                                    imgarr,
@@ -2070,7 +2070,7 @@ class AnalyseSatObs(object):
         ax1.axvline(x=opt_aprad, c='b', ls='--')
         ax2.axvline(x=opt_aprad, c='b', ls='--',
                     label='Optimum Radius\n'
-                          + r'$\left(r_{\mathrm{max, S/N}}\times 1.5\right)$')
+                          + r'$\left(r_{\mathrm{max, S/N}}\times 1.25\right)$')
 
         ax2.axhline(y=1., c='k', ls=':', label=r'100 %')
         ax2.axhline(y=0.95, c='k', ls='-.', label=r'95 %')
