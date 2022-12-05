@@ -19,3 +19,4 @@ scipy~=1.9.1
 scikit-learn~=1.1.2
 astroquery~=0.4.6
 fast_histogram~=0.11
+PyQt5~=5.15.7
