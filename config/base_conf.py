@@ -137,7 +137,7 @@ DEF_RES_TBL_COL_NAMES = ['File', 'Object', 'Sat-Name', 'AltID', 'UniqueID',
                          'TrailCX', 'e_TrailCX', 'TrailCY', 'e_TrailCY',
                          'TrailCRA', 'e_TrailCRA', 'TrailCDEC', 'e_TrailCDEC',
                          'TrailANG', 'e_TrailANG', 'OptAperHeight',
-                         'CalRA', 'CalDEC', 'CentX', 'CentY', 'PixScale', 'DetRotAng',
+                         'CalRA', 'CalDEC', 'CentX', 'CentY', 'PixScale', 'DetRotAng', 'FWHM',
                          'bias_cor', 'dark_cor', 'flat_cor', 'WCS_cal', 'mag_conv', 'QlfAperRad']
 
 # To be implemented
@@ -183,6 +183,7 @@ DEF_KEY_TRANSLATIONS = {
     'CentY': ['CRPIX2'],
     'PixScale': ['PIXSCALE'],
     'DetRotAng': ['DETROTANG'],
+    'FWHM': ['FWHM'],
     'Airmass': ['AIRMASS', 'STROBAM'],
     'Date-Obs': ['DATE-OBS'],
     'Binning': ['BINNING'],
