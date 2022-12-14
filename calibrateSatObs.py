@@ -433,8 +433,10 @@ class CalibrateObsWCS(object):
         # update report dict
         report["converged"] = converged
         report["catalog"] = ref_catalog
+        report["fwhm"] = kernel_fwhm
         report["matches"] = dic_rms["matches"]
         report["match_radius"] = dic_rms["radius_px"]
+        report["match_rms"] = dic_rms["rms"]
         report["pix_scale"] = np.mean(abs(wcs_pixscale)) * 3600.
         report["scale_x"] = abs(wcs_pixscale[1]) * 3600.
         report["scale_y"] = abs(wcs_pixscale[0]) * 3600.
@@ -692,7 +694,7 @@ class CalibrateObsWCS(object):
             _, _, obs_xy, _, distances, _, _ = matches
             len_obs_x = len(obs_xy[:, 0])
 
-            rms = np.sqrt(np.mean(np.square(distances)))
+            rms = np.sqrt(np.mean(np.square(distances))) / len_obs_x
             self._log.debug("  Within {} pixel or {:.3g} arcsec {} sources where matched. "
                             "The rms is {:.3g} pixel or "
                             "{:.3g} arcsec".format(r,
@@ -700,8 +702,8 @@ class CalibrateObsWCS(object):
                                                    len_obs_x,
                                                    rms,
                                                    rms * px_scale))
-            self._log.debug("  Conditions for convergence of fit: at least 5 matches within "
-                            "{}px and at least 0.2 * minimum ( observed sources, catalog sources in fov) "
+            self._log.debug("  Conditions for convergence of fit: at least 3 matches within "
+                            "{}px and at least 0.25 * minimum ( observed sources, catalog sources in fov) "
                             "matches with the same radius".format(len_obs_x))
 
             if len_obs_x >= 3 and len_obs_x >= 0.25 * N:
@@ -957,6 +959,7 @@ class CalibrateObsWCS(object):
             hdr_file['SCALEX'] = (report["scale_x"], 'Pixel scale in X [arcsec/pixel]')
             hdr_file['SCALEY'] = (report["scale_y"], 'Pixel scale in Y [arcsec/pixel]')
             hdr_file['DETROTANG'] = (report["det_rotang"], 'Detection rotation angel [deg]')
+            hdr_file['FWHM'] = (report["fwhm"], 'FWHM [pixel]')
             hdr_file['AST_SCR'] = ("Astrometry", 'Astrometric calibration by Christian Adam')
             hdr_file['AST_CAT'] = (report["catalog"], 'Catalog used')
             hdr_file['AST_MAT'] = (report["matches"], 'Number of catalog matches')

@@ -286,7 +286,7 @@ class AnalyseSatObs(object):
                         f"RA={obj_pointing[0]}, DEC={obj_pointing[1]} "
                         f"observed with the {self._telescope} telescope")
 
-                # result, error = self._analyse_sat_trails(files=files, sat_name=sat_name)
+                result, error = self._analyse_sat_trails(files=files, sat_name=sat_name)
                 try:
                     result, error = self._analyse_sat_trails(files=files, sat_name=sat_name)
                 except Exception as e:
@@ -533,11 +533,6 @@ class AnalyseSatObs(object):
                            'TLE file not found',
                            'Check that naming of the tle file']
 
-        start_time = datetime.strptime(f"{date_obs}T{obs_start}",
-                                       "%Y-%m-%dT%H:%M:%S.%f")
-        stop_time = datetime.strptime(f"{date_obs}T{obs_end}",
-                                      "%Y-%m-%dT%H:%M:%S.%f")
-
         # required satellite data
         sat_info.reset_index(drop=True)
 
@@ -559,13 +554,15 @@ class AnalyseSatObs(object):
         if not pd.isnull(sat_info['UniqueID']).any() and 'BLUEWALKER' not in sat_name:
             sat_name = f'{sat_name}-{sat_info["UniqueID"].values[0]}'
 
-        sat_vel = self._get_angular_velocity(sat_name=sat_name,
-                                             tle_location=str(tle_location[1]),
-                                             exposure_start=start_time,
-                                             exposure_stop=stop_time,
-                                             exptime=hdr['exptime'])
+        sat_vel, sat_vel_err = self._get_angular_velocity(sat_name=sat_name,
+                                                          tle_location=str(tle_location[1]),
+                                                          date_obs=date_obs,
+                                                          obs_times=[obs_start, obs_mid, obs_end],
+                                                          exptime=hdr['exptime'],
+                                                          dt=self._config['DT_STEP_SIZE'])
+
         sat_vel = float('%.3f' % sat_vel)
-        sat_vel_err = np.sqrt(sat_vel)
+        sat_vel_err = float('%.3f' % sat_vel_err)
 
         # observation and location data
         geo_lon = obsparams['longitude']
@@ -659,7 +656,7 @@ class AnalyseSatObs(object):
 
             # result table obspar['object']: hdr[obspar['object']],
             #                       obspar['instrume']: hdr[obspar['instrume']],
-            tbl_names = [obsparams['ra'],  obsparams['dec'],
+            tbl_names = [obsparams['ra'], obsparams['dec'],
                          obsparams['instrume'], obsparams['object'],
                          obsparams['exptime'],
                          'SatAngularSpeed',
@@ -1550,8 +1547,68 @@ class AnalyseSatObs(object):
         return data_dict
 
     def _get_angular_velocity(self, sat_name: str, tle_location: str,
-                              exposure_start: datetime, exposure_stop: datetime,
-                              exptime):
+                              date_obs, obs_times,
+                              exptime, dt=None):
+        """ Calculate angular velocity from tle, satellite and observer location """
+
+        # get ephemeris
+        self._set_observer()
+
+        try:
+            satellite = Orbital(sat_name, tle_file=tle_location)
+        except KeyError:
+            sat_name = sat_name.replace('-', ' ')
+            satellite = Orbital(sat_name, tle_file=tle_location)
+
+        pos_times = [datetime.strptime(f"{date_obs}T{i}",
+                                       "%Y-%m-%dT%H:%M:%S.%f") for i in obs_times]
+
+        delta_time = exptime / 2
+        if dt is not None:
+            numseconds = int(exptime / dt)
+            delta_time = dt
+            base = pos_times[0]
+            pos_times = []
+            c = 0
+            while c < numseconds:
+                base = base + timedelta(seconds=dt)
+                pos_times.append(base)
+                c += 1
+
+        positions = np.zeros((len(pos_times), 2))
+        for t in range(len(pos_times)):
+            sat_az, sat_alt = satellite.get_observer_look(pos_times[t],
+                                                          self._obsparams["longitude"],
+                                                          self._obsparams["latitude"],
+                                                          self._obsparams["altitude"] / 1000.0)
+            ra, dec = self._observer.radec_of(np.radians(sat_az), np.radians(sat_alt))
+            positions[t, 0] = ra
+            positions[t, 1] = dec
+
+        velocity_list = []
+        for i in range(1, positions.shape[0]):
+            ra = positions[i, 0]
+            dec = positions[i, 1]
+            prev_ra = positions[i - 1, 0]
+            prev_dec = positions[i - 1, 1]
+
+            dtheta = 2. * np.arcsin(np.sqrt(np.sin(0.5 * (dec - prev_dec)) ** 2.
+                                            + np.cos(dec) * np.cos(prev_dec)
+                                            * np.sin(0.5 * (ra - prev_ra)) ** 2.))
+
+            dtheta *= 206264.806
+
+            velocity_list += [dtheta / delta_time]
+
+        angular_velocity = np.mean(velocity_list)
+        e_angular_velocity = np.std(velocity_list)
+
+        # np.diff(np.percentile(velocity_list, q=[15.9, 50, 84.1]))
+        return angular_velocity, e_angular_velocity
+
+    def _get_angular_velocity_old(self, sat_name: str, tle_location: str,
+                                  exposure_start: datetime, exposure_stop: datetime,
+                                  exptime):
         """ Calculate angular velocity from tle, satellite and observer location """
 
         # get ephemeris
