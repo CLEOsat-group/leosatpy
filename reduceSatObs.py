@@ -1650,19 +1650,21 @@ class ReduceSatObs(object):
 
         """
         # Create names for master calibration files
-        dbias = []
+        # dbias = []
         ddark = {}
         dflat = {}
         dark_exptimes = []
         out_path = self._master_calib_path
         suffix = self._suffix
 
+        # Create name master bias
+        master_bias = 'master_bias_%s%s' % (binning_ext, suffix)
+        if self._telescope == 'DDOTI 28-cm f/2.2':
+            master_bias = 'master_bias_%s_%s%s' % (self._instrument, binning_ext, suffix)
+        mbias_path = join_path(master_bias, out_path)
+
+        dbias = [mbias_path, False]
         if self._config['BIAS_CORRECT']:
-            # Create name master bias
-            master_bias = 'master_bias_%s%s' % (binning_ext, suffix)
-            if self._telescope == 'DDOTI 28-cm f/2.2':
-                master_bias = 'master_bias_%s_%s%s' % (self._instrument, binning_ext, suffix)
-            mbias_path = join_path(master_bias, out_path)
             create_mbias = False if os.path.exists(mbias_path) else True
             dbias = [mbias_path, create_mbias]
 
