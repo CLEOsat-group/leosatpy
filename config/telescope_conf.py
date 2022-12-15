@@ -634,8 +634,8 @@ spm_params = {
     # source extractor settings
     'average_fwhm': 2.,
     'saturation_limit': 6.5e4,
-    'nsigma': 3.,
-    'source_box': 7,
+    'nsigma': 5.,
+    'source_box': 9,
     'isolation_size': 9,
     'box_size': 27,
     'win_size': 11,
