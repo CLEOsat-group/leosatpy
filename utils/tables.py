@@ -142,7 +142,7 @@ class ObsTables(object):
             f = sorted([s for s in files if re.search(regex, s)])
             # f = sorted([s for s in files if f'tle_{sat_type}' in s])
             if len(f) > 0:
-                [tle_filenames.append((s, Path(os.path.join(root, s)))) for s in f]
+                [tle_filenames.append((root, s, Path(os.path.join(root, s)))) for s in f]
 
         if not tle_filenames:
             self._log.warning("NO tle file found!!! "

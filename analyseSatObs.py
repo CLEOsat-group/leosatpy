@@ -49,12 +49,13 @@ import astroalign
 # astropy
 import astropy.table
 from astropy.io import fits
+from astropy import units as u
 from astropy.stats import sigma_clip
 from astropy.utils.exceptions import (AstropyUserWarning, AstropyWarning)
 from astropy.wcs import WCS
 from astropy.visualization import (LinearStretch, LogStretch, SqrtStretch)
 from astropy.visualization.mpl_normalize import ImageNormalize
-from astropy.coordinates import Angle
+from astropy.coordinates import (Angle, SkyCoord, EarthLocation)
 from astropy.stats import sigma_clipped_stats
 from skimage.draw import disk
 from skimage.measure import label
@@ -145,6 +146,8 @@ figsize = (10, 6)
 pass_str = _base_conf.BCOLORS.PASS + "SUCCESSFUL" + _base_conf.BCOLORS.ENDC
 fail_str = _base_conf.BCOLORS.FAIL + "FAILED" + _base_conf.BCOLORS.ENDC
 
+frmt = "%Y-%m-%dT%H:%M:%S.%f"
+
 
 # todo: rethink the config structure!!!
 # -----------------------------------------------------------------------------
@@ -203,6 +206,7 @@ class AnalyseSatObs(object):
         self._hdu_idx = args.hdu_idx
         self._force_extract = args.force_detection
         self._plot_images = plot_images
+        self._work_dir = None
         self._plt_path = None
         self._aux_path = None
         self._cat_path = None
@@ -522,7 +526,8 @@ class AnalyseSatObs(object):
         # get time difference
         dt = dtobj_obs - dtobj_sat
         dt_sec = dt.microseconds / 1.e6
-
+        if not self._silent:
+            self._log.info("  > Find tle file location")
         # get tle file and calculate angular velocity
         tle_location = self._obsTable.find_tle_file(sat_name=sat_name,
                                                     img_filter=hdr['FILTER'],
@@ -553,13 +558,14 @@ class AnalyseSatObs(object):
             sat_name = f'{sat_name} ({sat_info["AltID"].values[0]})'
         if not pd.isnull(sat_info['UniqueID']).any() and 'BLUEWALKER' not in sat_name:
             sat_name = f'{sat_name}-{sat_info["UniqueID"].values[0]}'
-
-        sat_vel, sat_vel_err = self._get_angular_velocity(sat_name=sat_name,
-                                                          tle_location=str(tle_location[1]),
-                                                          date_obs=date_obs,
-                                                          obs_times=[obs_start, obs_mid, obs_end],
-                                                          exptime=hdr['exptime'],
-                                                          dt=self._config['DT_STEP_SIZE'])
+        if not self._silent:
+            self._log.info("  > Calculate angular velocity from tle")
+        sat_vel, sat_vel_err, tle_pos_df = self._get_angular_velocity(hdr=hdr, sat_name=sat_name,
+                                                                      tle_location=str(tle_location[2]),
+                                                                      date_obs=date_obs,
+                                                                      obs_times=[obs_start, obs_mid, obs_end],
+                                                                      exptime=exptime,
+                                                                      dt=self._config['DT_STEP_SIZE'])
 
         sat_vel = float('%.3f' % sat_vel)
         sat_vel_err = float('%.3f' % sat_vel_err)
@@ -701,6 +707,18 @@ class AnalyseSatObs(object):
             file = img_dict['fname']
             self._obsTable.update_obs_table(file=file,
                                             kwargs=result, obsparams=obsparams)
+
+            if not self._silent:
+                self._log.info("  > Plot trail detection result (including tle positions)")
+
+            # final plot
+            self._plot_final_result(img_dict=img_dict,
+                                    reg_data=reg_info,
+                                    obs_date=(date_obs, obs_mid),
+                                    expt=exptime,
+                                    std_pos=std_pos,
+                                    file_base=file_name,
+                                    tle_pos=tle_pos_df)
 
         if not self._silent:
             if dt_sec > exptime / 2.:
@@ -1339,6 +1357,7 @@ class AnalyseSatObs(object):
                 plt_path_final.mkdir(exist_ok=True)
 
             self._sat_id = sat_id
+            self._work_dir = Path(one_up)
             self._aux_path = aux_path
             self._cat_path = cat_path
             self._plt_path = plt_path_final
@@ -1546,51 +1565,83 @@ class AnalyseSatObs(object):
 
         return data_dict
 
-    def _get_angular_velocity(self, sat_name: str, tle_location: str,
+    def _get_angular_velocity(self, hdr, sat_name: str, tle_location: str,
                               date_obs, obs_times,
                               exptime, dt=None):
         """ Calculate angular velocity from tle, satellite and observer location """
+        column_names = ['Obs_Time', 'RA', 'DEC', 'x', 'y']
+        pos_times = [datetime.strptime(f"{date_obs}T{i}",
+                                       frmt) for i in obs_times]
+        tle_pos_path = Path(self._work_dir, 'tle_predictions')
+        if not tle_pos_path.exists():
+            tle_pos_path.mkdir(exist_ok=True)
+
+        fname = f"tle_predicted_positions_{sat_name.upper()}_{pos_times[0].strftime(frmt)[:-3]}.csv"
+        fname = os.path.join(tle_pos_path, fname)
+
+        wcs = WCS(hdr)
 
         # get ephemeris
         self._set_observer()
 
+        obs_lat = self._obsparams["latitude"]
+        obs_lon = self._obsparams["longitude"]
+        obs_ele = self._obsparams["altitude"]  # in meters
+        loc = EarthLocation(lat=obs_lat * u.deg,
+                            lon=obs_lon * u.deg,
+                            height=obs_ele * u.m)
         try:
             satellite = Orbital(sat_name, tle_file=tle_location)
         except KeyError:
             sat_name = sat_name.replace('-', ' ')
             satellite = Orbital(sat_name, tle_file=tle_location)
 
-        pos_times = [datetime.strptime(f"{date_obs}T{i}",
-                                       "%Y-%m-%dT%H:%M:%S.%f") for i in obs_times]
-
         delta_time = exptime / 2
+        pos_times.insert(0, pos_times[0] - timedelta(seconds=delta_time))
         if dt is not None:
             numseconds = int(exptime / dt)
             delta_time = dt
             base = pos_times[0]
-            pos_times = []
+            pos_times = [pos_times[0] - timedelta(seconds=dt), base]
             c = 0
             while c < numseconds:
                 base = base + timedelta(seconds=dt)
                 pos_times.append(base)
                 c += 1
 
-        positions = np.zeros((len(pos_times), 2))
+        positions = np.empty((len(pos_times), 5), object)
         for t in range(len(pos_times)):
-            sat_az, sat_alt = satellite.get_observer_look(pos_times[t],
-                                                          self._obsparams["longitude"],
-                                                          self._obsparams["latitude"],
-                                                          self._obsparams["altitude"] / 1000.0)
-            ra, dec = self._observer.radec_of(np.radians(sat_az), np.radians(sat_alt))
-            positions[t, 0] = ra
-            positions[t, 1] = dec
+            sat_az, sat_alt = satellite.get_observer_look(utc_time=pos_times[t],
+                                                          lon=obs_lon,
+                                                          lat=obs_lat,
+                                                          alt=obs_ele / 1000.0)
 
-        velocity_list = []
+            radec = SkyCoord(alt=sat_alt * u.deg, az=sat_az * u.deg,
+                             obstime=pos_times[t], frame='altaz', location=loc)
+            pix_coords = radec.to_pixel(wcs)
+
+            positions[t, 0] = pos_times[t].strftime(frmt)[:-3]
+            positions[t, 1] = radec.icrs.ra.value
+            positions[t, 2] = radec.icrs.dec.value
+            positions[t, 3] = pix_coords[0]
+            positions[t, 4] = pix_coords[1]
+
+        pos_df = pd.DataFrame(data=positions,
+                              columns=column_names)
+        pos_df['pos_mask'] = pos_df.apply(lambda row: (0 < row['x']) and
+                                                      (hdr['NAXIS1'] > row['x']) and
+                                                      (0 < row['y']) and
+                                                      (hdr['NAXIS2'] > row['y']), axis=1)
+        pos_df['Obs_Time'] = pd.to_datetime(pos_df['Obs_Time'],
+                                            format=frmt,
+                                            utc=False)
+
+        velocity_list = [np.nan]
         for i in range(1, positions.shape[0]):
-            ra = positions[i, 0]
-            dec = positions[i, 1]
-            prev_ra = positions[i - 1, 0]
-            prev_dec = positions[i - 1, 1]
+            ra = np.deg2rad(positions[i, 1])
+            dec = np.deg2rad(positions[i, 2])
+            prev_ra = np.deg2rad(positions[i - 1, 1])
+            prev_dec = np.deg2rad(positions[i - 1, 2])
 
             dtheta = 2. * np.arcsin(np.sqrt(np.sin(0.5 * (dec - prev_dec)) ** 2.
                                             + np.cos(dec) * np.cos(prev_dec)
@@ -1600,11 +1651,16 @@ class AnalyseSatObs(object):
 
             velocity_list += [dtheta / delta_time]
 
-        angular_velocity = np.mean(velocity_list)
-        e_angular_velocity = np.std(velocity_list)
+        pos_df['angular_velocity'] = velocity_list
+
+        angular_velocity = np.nanmean(velocity_list)
+        e_angular_velocity = np.nanstd(velocity_list)
+
+        # save results
+        pos_df[1:].to_csv(fname, index=False)
 
         # np.diff(np.percentile(velocity_list, q=[15.9, 50, 84.1]))
-        return angular_velocity, e_angular_velocity
+        return angular_velocity, e_angular_velocity, pos_df
 
     def _get_angular_velocity_old(self, sat_name: str, tle_location: str,
                                   exposure_start: datetime, exposure_stop: datetime,
@@ -2210,7 +2266,8 @@ class AnalyseSatObs(object):
 
     def _plot_final_result(self, img_dict: dict, reg_data: dict,
                            obs_date: tuple, expt: float, std_pos: np.ndarray,
-                           file_base: str, img_norm: str = 'lin', cmap: str = 'Greys'):
+                           file_base: str, tle_pos: pd.DataFrame = None,
+                           img_norm: str = 'lin', cmap: str = 'Greys'):
         """Plot final result of satellite photometry"""
 
         img = img_dict['imgarr']
@@ -2218,6 +2275,7 @@ class AnalyseSatObs(object):
         bkg = img_dict['bkg_data']['bkg']
         hdr = img_dict['hdr']
         wcsprm = WCS(hdr).wcs
+        obsparams = self._obsparams
 
         # label_img = np.where(mask, 1, np.nan)
         # label_img = SegmentationImage(label(src_mask))
@@ -2293,6 +2351,39 @@ class AnalyseSatObs(object):
         # add apertures
         std_apers.plot(axes=ax, **{'color': 'red', 'lw': 1.25, 'alpha': 0.75})
         sat_aper.plot(axes=ax, **{'color': 'green', 'lw': 1.25, 'alpha': 0.75})
+
+        if tle_pos is not None:
+            pos_data = tle_pos[tle_pos['pos_mask']]
+            if not pos_data.empty:
+                mid_idx = pos_data.shape[0] // 2
+
+                pos_data_cut = pos_data.iloc[[mid_idx - 1, mid_idx, mid_idx + 1]]
+
+                ax.arrow(pos_data_cut['x'].values[0], pos_data_cut['y'].values[0],
+                         pos_data_cut['x'].values[2] - pos_data_cut['x'].values[0],
+                         pos_data_cut['y'].values[2] - pos_data_cut['y'].values[0],
+                         length_includes_head=True,
+                         **{'head_width': 20, 'color': 'blue',
+                            'lw': 1.5,
+                            'alpha': 0.85})
+
+                ax.plot(pos_data['x'], pos_data['y'], **{'color': 'blue',
+                                                         'lw': 1.5, 'ls': '--',
+                                                         'alpha': 0.75})
+        ra = hdr[obsparams['ra']]
+        dec = hdr[obsparams['dec']]
+        unit = (u.hourangle, u.deg)
+        if obsparams['radec_separator'] == 'XXX':
+            unit = (u.deg, u.deg)
+            ra = round(hdr[obsparams['ra']], _base_conf.ROUND_DECIMAL)
+            dec = round(hdr[obsparams['dec']], _base_conf.ROUND_DECIMAL)
+
+        c = SkyCoord(ra=ra, dec=dec, unit=unit,
+                     obstime=hdr[obsparams['date_keyword']])
+
+        xy = c.to_pixel(WCS(hdr))
+        ax.scatter(xy[0], xy[1], **{'color': 'blue', 'marker': '+', 's': 100,
+                                    'linewidths': 1.5, 'alpha': 0.75})
 
         # Add compass
         self._add_compass(ax=ax, x0=x0, y0=y0, larr=larr, theta=theta, color='k')
