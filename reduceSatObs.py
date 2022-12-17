@@ -598,11 +598,11 @@ class ReduceSatObs(object):
                                          abspath=False)
 
         ccd_mask_fname = os.path.join(self._master_calib_path,
-                                      'mask_from_ccdmask_%s.fits' % image_filter)
+                                      'mask_from_ccdmask_%s_%s.fits' % (image_filter, self._bin_str))
         if self._telescope == 'DDOTI 28-cm f/2.2':
             ccd_mask_fname = os.path.join(self._master_calib_path,
-                                          'mask_from_ccdmask_%s_%s.fits' % (self._instrument,
-                                                                            image_filter))
+                                          'mask_from_ccdmask_%s_%s_%s.fits' % (self._instrument,
+                                                                               image_filter, self._bin_str))
         if os.path.isfile(ccd_mask_fname):
             self._ccd_mask_fname = ccd_mask_fname
 
@@ -756,7 +756,8 @@ class ReduceSatObs(object):
             self._log.warning('> Cosmic ray type "%s" NOT available [%s]' % (ctype, ' | '.join(ctypes)))
             return
 
-        ccd_mask_fname = os.path.join(self._master_calib_path, 'mask_from_ccdmask_%s.fits' % image_filter)
+        ccd_mask_fname = os.path.join(self._master_calib_path, 'mask_from_ccdmask_%s_%s.fits' % (image_filter,
+                                                                                                 self._bin_str))
         ccd_mask_fname = ccd_mask_fname if os.path.exists(ccd_mask_fname) else None
         if ccd_mask_fname is not None and isinstance(ccd_mask_fname, str):
             ccd_mask = self._convert_fits_to_ccd(ccd_mask_fname, single=True)
@@ -880,18 +881,20 @@ class ReduceSatObs(object):
 
             del ccd
 
+        ccd_mask_fname = os.path.join(self._master_calib_path,
+                                      'mask_from_ccdmask_%s_%s.fits' % (flat_filter, self._bin_str))
+        if self._telescope == 'DDOTI 28-cm f/2.2':
+            ccd_mask_fname = os.path.join(self._master_calib_path,
+                                          'mask_from_ccdmask_%s_%s_%s.fits' % (self._instrument,
+                                                                               flat_filter, self._bin_str))
+
         if not self.silent:
-            self._log.info('> Creating bad pixel map')
+            self._log.info('> Creating bad pixel map file: %s' % os.path.basename(ccd_mask_fname))
 
         ccd_mask = ccdproc.ccdmask(lflat[0])
         mask_as_ccd = CCDData(data=ccd_mask.astype('uint8'), unit=u.dimensionless_unscaled)
         mask_as_ccd.header['imagetyp'] = 'flat mask'
-        ccd_mask_fname = os.path.join(self._master_calib_path,
-                                      'mask_from_ccdmask_%s.fits' % flat_filter)
-        if self._telescope == 'DDOTI 28-cm f/2.2':
-            ccd_mask_fname = os.path.join(self._master_calib_path,
-                                          'mask_from_ccdmask_%s_%s.fits' % (self._instrument,
-                                                                            flat_filter))
+
         mask_as_ccd.write(ccd_mask_fname, overwrite=True)
         self._ccd_mask_fname = ccd_mask_fname
 
