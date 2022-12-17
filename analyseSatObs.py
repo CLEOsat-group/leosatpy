@@ -595,18 +595,20 @@ class AnalyseSatObs(object):
             time_on_det_err = np.sqrt((obs_trail_len_err / sat_vel) ** 2
                                       + (obs_trail_len * sat_vel_err / sat_vel ** 2) ** 2)
 
-            # eta, distance observer to satellite on the surface of the earth
-            eta = sats.get_distance((geo_lat, geo_lon), (sat_lat, sat_lon))
+            # calculate solar incidence angle theta_1
+            sun_inc_ang = sats.sun_inc_elv_angle(dtobj_sat,
+                                                 (sat_lat, sat_lon))
 
             # range, distance observer satellite
             dist_obs_sat = sats.get_obs_range(sat_elev, sat_alt, geo_alt, geo_lat)
 
-            # angles theta, phi, alpha_sun
-            sun_inc_ang = sats.sun_inc_elv_angle(dtobj_sat,
-                                                 (sat_lat, sat_lon))
+            # calculate observer phase angle theta_2
+            phi = sats.get_observer_angle(sat_lat, geo_lat, sat_alt, geo_alt, dist_obs_sat)
 
-            phi_rad = np.arcsin((eta / sat_alt) * np.sin(np.deg2rad(sat_elev)))
-            phi = np.rad2deg(phi_rad)
+            # eta, distance observer to satellite on the surface of the earth
+            # eta = sats.get_distance((geo_lat, geo_lon), (sat_lat, sat_lon))
+            # phi_rad = np.arcsin((eta / sat_alt) * np.sin(np.deg2rad(sat_elev)))
+            # phi = np.rad2deg(phi_rad)
 
             sun_sat_ang, sun_phase_angle, sun_az, sun_alt = sats.get_solar_phase_angle(sat_az=sat_az,
                                                                                        sat_alt=sat_elev,
@@ -787,16 +789,32 @@ class AnalyseSatObs(object):
             ref_imgarr = data_dict['images'][ref_img_idx]
             ref_bkg = data_dict['bkg_data'][ref_img_idx]['bkg']
 
-            # todo: if raise error use simple offset to determine shift (mask trail before shift detection)
-            T, _ = astroalign.find_transform(imgarr - img_bkg, ref_imgarr - ref_bkg,
-                                             detection_sigma=3.,
-                                             max_control_points=100,
-                                             min_area=9)
+            img_bkg_sub = imgarr - img_bkg
+            img_bkg_sub[img_bkg_sub < 0.] = 0.
+
+            ref_img_bkg_sub = ref_imgarr - ref_bkg
+            ref_img_bkg_sub[ref_img_bkg_sub < 0.] = 0.
+            try:
+                T, _ = astroalign.find_transform(img_bkg_sub, ref_img_bkg_sub,
+                                                 detection_sigma=3.,
+                                                 max_control_points=100,
+                                                 min_area=9)
+            except TypeError:
+                T, _ = astroalign.find_transform(nd.gaussian_filter(img_bkg_sub, 2.),
+                                                 nd.gaussian_filter(ref_img_bkg_sub, 2.),
+                                                 detection_sigma=5.,
+                                                 max_control_points=100,
+                                                 min_area=9)
+
             ref_img_warped, footprint = astroalign.apply_transform(T,
                                                                    ref_imgarr,
                                                                    imgarr,
                                                                    propagate_mask=True)
-            ref_img_warped = ref_img_warped - ref_bkg
+            ref_bkg_warped, footprint = astroalign.apply_transform(T,
+                                                                   ref_bkg,
+                                                                   img_bkg,
+                                                                   propagate_mask=True)
+            ref_img_warped = ref_img_warped - ref_bkg_warped
 
         # loop over each detected trail to get optimum aperture and photometry
         sat_phot_dict = {}
@@ -1569,17 +1587,19 @@ class AnalyseSatObs(object):
                               date_obs, obs_times,
                               exptime, dt=None):
         """ Calculate angular velocity from tle, satellite and observer location """
+
+        wcs = WCS(hdr)
         column_names = ['Obs_Time', 'RA', 'DEC', 'x', 'y']
-        pos_times = [datetime.strptime(f"{date_obs}T{i}",
-                                       frmt) for i in obs_times]
+
         tle_pos_path = Path(self._work_dir, 'tle_predictions')
         if not tle_pos_path.exists():
             tle_pos_path.mkdir(exist_ok=True)
 
+        pos_times = [datetime.strptime(f"{date_obs}T{i}",
+                                       frmt) for i in obs_times]
+
         fname = f"tle_predicted_positions_{sat_name.upper()}_{pos_times[0].strftime(frmt)[:-3]}.csv"
         fname = os.path.join(tle_pos_path, fname)
-
-        wcs = WCS(hdr)
 
         # get ephemeris
         self._set_observer()
@@ -1610,31 +1630,21 @@ class AnalyseSatObs(object):
                 c += 1
 
         positions = np.empty((len(pos_times), 5), object)
-        for t in range(len(pos_times)):
-            sat_az, sat_alt = satellite.get_observer_look(utc_time=pos_times[t],
+        for t, val in enumerate(pos_times):
+            sat_az, sat_alt = satellite.get_observer_look(utc_time=val,
                                                           lon=obs_lon,
                                                           lat=obs_lat,
                                                           alt=obs_ele / 1000.0)
 
             radec = SkyCoord(alt=sat_alt * u.deg, az=sat_az * u.deg,
-                             obstime=pos_times[t], frame='altaz', location=loc)
+                             obstime=val, frame='altaz', location=loc)
             pix_coords = radec.to_pixel(wcs)
 
-            positions[t, 0] = pos_times[t].strftime(frmt)[:-3]
+            positions[t, 0] = val.strftime(frmt)[:-3]
             positions[t, 1] = radec.icrs.ra.value
             positions[t, 2] = radec.icrs.dec.value
             positions[t, 3] = pix_coords[0]
             positions[t, 4] = pix_coords[1]
-
-        pos_df = pd.DataFrame(data=positions,
-                              columns=column_names)
-        pos_df['pos_mask'] = pos_df.apply(lambda row: (0 < row['x']) and
-                                                      (hdr['NAXIS1'] > row['x']) and
-                                                      (0 < row['y']) and
-                                                      (hdr['NAXIS2'] > row['y']), axis=1)
-        pos_df['Obs_Time'] = pd.to_datetime(pos_df['Obs_Time'],
-                                            format=frmt,
-                                            utc=False)
 
         velocity_list = [np.nan]
         for i in range(1, positions.shape[0]):
@@ -1650,6 +1660,16 @@ class AnalyseSatObs(object):
             dtheta *= 206264.806
 
             velocity_list += [dtheta / delta_time]
+
+        pos_df = pd.DataFrame(data=positions,
+                              columns=column_names)
+        pos_df['pos_mask'] = pos_df.apply(lambda row: (0 < row['x']) and
+                                                      (hdr['NAXIS1'] > row['x']) and
+                                                      (0 < row['y']) and
+                                                      (hdr['NAXIS2'] > row['y']), axis=1)
+        pos_df['Obs_Time'] = pd.to_datetime(pos_df['Obs_Time'],
+                                            format=frmt,
+                                            utc=False)
 
         pos_df['angular_velocity'] = velocity_list
 
@@ -2354,9 +2374,8 @@ class AnalyseSatObs(object):
 
         if tle_pos is not None:
             pos_data = tle_pos[tle_pos['pos_mask']]
-            if not pos_data.empty:
+            if not pos_data.empty and pos_data.shape[0] > 3:
                 mid_idx = pos_data.shape[0] // 2
-
                 pos_data_cut = pos_data.iloc[[mid_idx - 1, mid_idx, mid_idx + 1]]
 
                 ax.arrow(pos_data_cut['x'].values[0], pos_data_cut['y'].values[0],

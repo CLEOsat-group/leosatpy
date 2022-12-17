@@ -740,7 +740,7 @@ def shift_translation(src_image, target_image):
     image_product = src_freq * target_freq.conj()
     cross_correlation = np.fft.ifftn(image_product)
 
-    # Locate maximum in order to calcul the shift between two numpy array
+    # Locate maximum in order to calculate the shift between two numpy array
     maxima = np.unravel_index(np.argmax(np.abs(cross_correlation)), cross_correlation.shape)
     midpoints = np.array([np.fix(axis_size / 2) for axis_size in shape])
 

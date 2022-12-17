@@ -282,6 +282,27 @@ def get_solar_phase_angle(sat_az, sat_alt, geo_loc, obs_range, obsDate):
     return sun_sat_ang, phase_angle, sun_az, sun_alt
 
 
+def get_observer_angle(sat_lat, geo_lat, sat_h_orb_km, h_obs_km, sat_range_km):
+    """"""
+    # Initialize logging for this user-callable function
+    log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
+
+    # get radius of Earth for a given observation site latitude
+    Rearth_obs = get_radius_earth(geo_lat)
+    Rearth_h_obs = Rearth_obs + h_obs_km
+
+    # get radius of Earth for a given satellite latitude
+    Rearth_sat = get_radius_earth(sat_lat)
+    Rearth_h_sat = Rearth_sat + sat_h_orb_km
+
+    # use cosine theorem to calc obs phase angle
+    theta_2 = math.acos((sat_range_km**2 + Rearth_h_sat**2 - Rearth_h_obs**2) /
+                        (2. * sat_range_km * Rearth_h_sat))
+    theta_2 = np.rad2deg(theta_2)
+
+    return theta_2
+
+
 def get_obs_range(sat_elev, h_orb, h_obs_km, lat):
     """Get satellite-observer range.
 
