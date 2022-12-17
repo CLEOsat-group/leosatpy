@@ -126,8 +126,8 @@ dk154_params = {
     'average_fwhm': 2.5,
     'saturation_limit': 6e5,
     'nsigma': 1.25,
-    'source_box': 11,
-    'isolation_size': 11,
+    'source_box': 9,
+    'isolation_size': 9,
     'box_size': 27,
     'win_size': 11,
     'apply_mask': True
