@@ -62,9 +62,7 @@ from skimage.measure import label
 
 from photutils.aperture import (RectangularAperture, RectangularAnnulus, CircularAperture)
 from photutils.centroids import (centroid_sources, centroid_2dg)
-from photutils.segmentation import detect_sources
-from photutils import SegmentationImage
-from photutils import detect_threshold
+from photutils.segmentation import (SegmentationImage, detect_sources, detect_threshold)
 
 import ephem
 from pyorbital.orbital import Orbital

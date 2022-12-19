@@ -56,11 +56,11 @@ from ccdproc import ImageFileCollection
 from ccdproc import CCDData
 
 import photutils
-from photutils import (
+from photutils.background import (
     Background2D,
-    SExtractorBackground, StdBackgroundRMS,
-    make_source_mask)
+    SExtractorBackground, StdBackgroundRMS)
 
+from photutils.segmentation import make_source_mask
 # Project modules
 import config.base_conf as _base_conf
 from utils.arguments import ParseArguments
