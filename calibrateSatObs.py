@@ -48,7 +48,7 @@ from astropy.coordinates import (FK5, ICRS, SkyCoord)
 from astropy.time import Time
 from astropy.visualization import (LinearStretch, LogStretch, SqrtStretch)
 from astropy.visualization.mpl_normalize import ImageNormalize
-from photutils import CircularAperture
+from photutils.aperture import CircularAperture
 
 # plotting; optional
 try:
