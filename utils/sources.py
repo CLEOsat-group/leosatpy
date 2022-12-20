@@ -83,13 +83,13 @@ from photutils.psf import (
     IntegratedGaussianPRF, DAOGroup,
     IterativelySubtractedPSFPhotometry)
 
-from photutils import (
+from photutils.background import (
     Background2D,  # For estimating the background
     SExtractorBackground, StdBackgroundRMS, MMMBackground, MADStdBackgroundRMS,
-    BkgZoomInterpolator,  # For interpolating background
-    make_source_mask)
+    BkgZoomInterpolator)
 
 from photutils.aperture import CircularAperture
+from photutils.utils import circular_footprint
 
 from skimage.draw import disk
 import scipy.spatial as spsp
@@ -169,9 +169,15 @@ class SourceMask:
             image = self.img
         else:
             image = self.img * (1 - mask)
-        mask = make_source_mask(image, nsigma=self.nsigma,
-                                npixels=self.npixels,
-                                dilate_size=1, filter_fwhm=filter_fwhm)
+
+        # detect the sources
+        threshold = self.nsigma
+        convolved_data = convolve(image, Gaussian2DKernel(filter_fwhm))
+        segm = detect_sources(convolved_data, threshold, npixels=self.npixels)
+        mask = segm.make_source_mask()
+        # mask = make_source_mask(image, nsigma=self.nsigma,
+        #                         npixels=self.npixels,
+        #                         dilate_size=1, filter_fwhm=filter_fwhm)
         return dilate_mask(mask, tophat_size)
 
     # noinspection PyAugmentAssignment
@@ -184,7 +190,7 @@ class SourceMask:
         if filter_fwhm is None:
             filter_fwhm = [3.]
         if mask is None:
-            self.mask = np.zeros(self.img.shape, dtype=np.bool)
+            self.mask = np.zeros(self.img.shape, dtype=bool)
         for fwhm, tophat in zip(filter_fwhm, tophat_size):
             smask = self.single(filter_fwhm=fwhm, tophat_size=tophat)
             self.mask = self.mask | smask  # Or the masks at each iteration
@@ -581,6 +587,7 @@ def compute_2d_background(imgarr, mask, box_size, win_size,
     for percentile in exclude_percentiles:
         if not silent:
             log.info(f"    Percentile in use: {percentile}")
+
         # estimate the background
         try:
 
@@ -592,16 +599,13 @@ def compute_2d_background(imgarr, mask, box_size, win_size,
             # make a deeper source mask
             if not silent:
                 log.info("    Create a deeper source mask")
-
             sm = SourceMask(imgarr - bkg.background, nsigma=1.5)
             final_mask = sm.multiple(filter_fwhm=[2, 3, 5],
                                      tophat_size=[4, 2, 1])
-
             if mask is not None:
                 final_mask |= mask
 
             del bkg
-
             if not silent:
                 log.info("    Redo the background estimation with the new source mask")
             # redo the background estimation using the new mask
@@ -635,7 +639,13 @@ def compute_2d_background(imgarr, mask, box_size, win_size,
         if not silent:
             log.warning("     Background2D failure detected. "
                         "Using alternative background calculation instead....")
-        mask = make_source_mask(imgarr, nsigma=2, npixels=5, dilate_size=11)
+        # detect the sources
+        threshold = 2
+        convolved_data = convolve(image, Gaussian2DKernel(filter_fwhm))
+        segm = detect_sources(convolved_data, threshold, npixels=5)
+        footprint = circular_footprint(radius=5)
+        mask = segm.make_source_mask(footprint=footprint)
+        # mask = make_source_mask(imgarr, nsigma=2, npixels=5, dilate_size=11)
         sigcl_mean, sigcl_median, sigcl_std = sigma_clipped_stats(imgarr,
                                                                   sigma=3.0,
                                                                   mask=mask,
@@ -660,6 +670,7 @@ def compute_2d_background(imgarr, mask, box_size, win_size,
 
     del imgarr, hdu1, hdu2, new_hdul
     gc.collect()
+    # sys.exit()
     return bkg_background, bkg_median, bkg_rms, bkg_rms_median
 
 

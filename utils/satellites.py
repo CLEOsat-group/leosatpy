@@ -49,10 +49,7 @@ from skimage.transform import hough_line_peaks, hough_line
 
 from astropy.stats import (sigma_clipped_stats, sigma_clip)
 from astropy import constants as const
-from photutils.segmentation import detect_sources
-
-from photutils import SegmentationImage
-from photutils import detect_threshold
+from photutils.segmentation import (SegmentationImage, detect_sources, detect_threshold)
 
 from sklearn.cluster import AgglomerativeClustering
 
