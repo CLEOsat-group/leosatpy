@@ -56,9 +56,8 @@ from ccdproc import ImageFileCollection
 from ccdproc import CCDData
 
 import photutils
-from photutils.background import (
-    Background2D,
-    SExtractorBackground, StdBackgroundRMS)
+from photutils.background import (Background2D,
+                                  SExtractorBackground, StdBackgroundRMS)
 
 from photutils.segmentation import make_source_mask
 # Project modules
