@@ -1339,6 +1339,7 @@ class AnalyseSatObs(object):
             location = os.path.dirname(file_loc)
 
             # load fits file
+            img_mask = None
             with fits.open(file_loc) as hdul:
                 hdul.verify('fix')
                 hdr = hdul[hdu_idx].header
