@@ -288,7 +288,7 @@ class AnalyseSatObs(object):
                         f"RA={obj_pointing[0]}, DEC={obj_pointing[1]} "
                         f"observed with the {self._telescope} telescope")
 
-                # result, error = self._analyse_sat_trails(files=files, sat_name=sat_name)
+                result, error = self._analyse_sat_trails(files=files, sat_name=sat_name)
                 try:
                     result, error = self._analyse_sat_trails(files=files, sat_name=sat_name)
                 except Exception as e:
@@ -1339,6 +1339,7 @@ class AnalyseSatObs(object):
             location = os.path.dirname(file_loc)
 
             # load fits file
+            img_mask = None
             with fits.open(file_loc) as hdul:
                 hdul.verify('fix')
                 hdr = hdul[hdu_idx].header
