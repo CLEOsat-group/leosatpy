@@ -288,7 +288,7 @@ class AnalyseSatObs(object):
                         f"RA={obj_pointing[0]}, DEC={obj_pointing[1]} "
                         f"observed with the {self._telescope} telescope")
 
-                result, error = self._analyse_sat_trails(files=files, sat_name=sat_name)
+                # result, error = self._analyse_sat_trails(files=files, sat_name=sat_name)
                 try:
                     result, error = self._analyse_sat_trails(files=files, sat_name=sat_name)
                 except Exception as e:
