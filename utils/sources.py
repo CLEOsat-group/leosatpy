@@ -293,7 +293,7 @@ def build_auto_kernel(imgarr, fwhm=4.0, threshold=None, mask=None, source_box=7,
                     kernel /= kernel.sum()  # Normalize the new kernel to a total flux of 1.0
                     try:
                         fwhm_table = find_fwhm(kernel, fwhm)
-                    except TypeError:
+                    except (TypeError, ValueError):
                         continue
                     if fwhm_table is not None:
                         fit_fwhm = fwhm_table['fwhm'][0]
