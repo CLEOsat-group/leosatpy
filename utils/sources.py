@@ -291,7 +291,10 @@ def build_auto_kernel(imgarr, fwhm=4.0, threshold=None, mask=None, source_box=7,
                 kernel = np.clip(kernel, 0, None)  # insure background subtracted kernel has no negative pixels
                 if kernel.sum() > 0.0:
                     kernel /= kernel.sum()  # Normalize the new kernel to a total flux of 1.0
-                    fwhm_table = find_fwhm(kernel, fwhm)
+                    try:
+                        fwhm_table = find_fwhm(kernel, fwhm)
+                    except TypeError:
+                        continue
                     if fwhm_table is not None:
                         fit_fwhm = fwhm_table['fwhm'][0]
                         if good_fwhm[1] > fit_fwhm > good_fwhm[0]:
