@@ -554,27 +554,30 @@ def create_hough_space_vectorized(image: np.ndarray,
     dtheta = 180. / num_thetas
     drho = (2. * d) / num_rhos
 
-    thetas = np.arange(-90., 90., step=dtheta)
-    rhos = np.arange(-d, d, step=drho)
+    thetas = np.arange(-90., 90., step=dtheta).astype('float32')
+    rhos = np.arange(-d, d, step=drho).astype('float32')
 
     # get cosine and sinus
-    cos_thetas = np.cos(np.deg2rad(thetas))
-    sin_thetas = np.sin(np.deg2rad(thetas))
+    cos_thetas = np.cos(np.deg2rad(thetas)).astype('float32')
+    sin_thetas = np.sin(np.deg2rad(thetas)).astype('float32')
 
     # extract edge points which are at least larger than sigma * background rms and convert them
     edge_points = np.argwhere(image != 0.)
     edge_points = edge_points - np.array([[edge_height_half, edge_width_half]])
 
     # calculate matrix product
-    rho_values = np.matmul(edge_points, np.array([sin_thetas, cos_thetas]))
+    rho_values = np.matmul(edge_points, np.array([sin_thetas, cos_thetas],
+                                                 dtype='float32')).astype('float32')
     del image, cos_thetas, sin_thetas, edge_points
 
     # get the hough space
     bins = [len(thetas), len(rhos)]
-    vals = np.array([np.tile(thetas, rho_values.shape[0]), rho_values.ravel()]).astype('float32')
+    vals = np.array([np.tile(thetas, rho_values.shape[0]),
+                     rho_values.ravel().astype('float32')], dtype='float32')
+
     ranges = np.array([[np.min(thetas), np.max(thetas)],
                        [np.min(rhos), np.max(rhos)]]).astype('float32')
-    accumulator = fhist.histogram2d(*vals, bins=bins, range=ranges)
+    accumulator = fhist.histogram2d(*vals, bins=bins, range=ranges).astype('float32')
 
     # rhos in rows and thetas in columns (rho, theta)
     accumulator = np.transpose(accumulator)

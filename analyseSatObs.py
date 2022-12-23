@@ -288,17 +288,17 @@ class AnalyseSatObs(object):
                         f"RA={obj_pointing[0]}, DEC={obj_pointing[1]} "
                         f"observed with the {self._telescope} telescope")
 
-                # result, error = self._analyse_sat_trails(files=files, sat_name=sat_name)
-                try:
-                    result, error = self._analyse_sat_trails(files=files, sat_name=sat_name)
-                except Exception as e:
-                    exc_type, exc_obj, exc_tb = sys.exc_info()
-                    fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-                    self._log.critical(f"Unexpected behaviour: {e} in file {fname}, "
-                                       f"line {exc_tb.tb_lineno}")
-                    error = [str(e), f'file: {fname}, line: {exc_tb.tb_lineno}',
-                             'Please report to christian.adam84@gmail.com']
-                    result = False
+                result, error = self._analyse_sat_trails(files=files, sat_name=sat_name)
+                # try:
+                #     result, error = self._analyse_sat_trails(files=files, sat_name=sat_name)
+                # except Exception as e:
+                #     exc_type, exc_obj, exc_tb = sys.exc_info()
+                #     fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                #     self._log.critical(f"Unexpected behaviour: {e} in file {fname}, "
+                #                        f"line {exc_tb.tb_lineno}")
+                #     error = [str(e), f'file: {fname}, line: {exc_tb.tb_lineno}',
+                #              'Please report to christian.adam84@gmail.com']
+                #     result = False
 
                 if result:
                     self._log.info(f">> Report: Satellite detection and analysis was {pass_str}")
@@ -1249,6 +1249,7 @@ class AnalyseSatObs(object):
         band = data['band'][idx]
         trail_data = data['trail_data'][idx]
         has_trail = data['has_trail'][idx]
+        img_mask = data['image_mask'][idx]
 
         # get wcs
         wcsprm = WCS(hdr).wcs
@@ -1263,7 +1264,8 @@ class AnalyseSatObs(object):
                              _photo_ref_cat_fname=self._photo_ref_cat_fname,
                              estimate_bkg=False, bkg_fname=bkg_file_name,
                              _force_extract=self._force_extract,
-                             _plot_images=self._plot_images)
+                             _plot_images=self._plot_images,
+                             image_mask=img_mask)
 
         # add to configuration
         config.update(params_to_add)
@@ -1327,7 +1329,7 @@ class AnalyseSatObs(object):
                      'trail_img_idx': None, 'ref_img_idx': None,
                      'catalog': [], 'band': [],
                      'src_cat': [], 'astro_ref_cat': [], 'photo_ref_cat': [],
-                     'bkg_data': []}
+                     'bkg_data': [], 'image_mask': []}
 
         n_imgs = len(files)
         for f in range(n_imgs):
@@ -1452,7 +1454,7 @@ class AnalyseSatObs(object):
             data_dict['header'].append(hdr)
             data_dict['catalog'].append(catalog)
             data_dict['band'].append(filter_val)
-
+            data_dict['image_mask'].append(img_mask)
             data_dict['file_names'].append(file_name_clean)
             data_dict['loc'].append(location)
             data_dict['src_loc'].append(one_up)
