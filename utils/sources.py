@@ -1264,7 +1264,8 @@ def find_worst_residual_near_center(resid: np.ndarray):
     return np.unravel_index(np.argmax(rmasked), resid.shape)
 
 
-def get_reference_catalog(ra, dec, sr=0.5, epoch=None, num_sources=None, catalog='GSC242',
+def get_reference_catalog(ra, dec, sr=0.5,
+                          epoch=None, num_sources=None, catalog='GAIADR3',
                           full_catalog=False, silent=False):
     """ Extract reference catalog from VO web service.
     Queries the catalog available at the ``SERVICELOCATION`` specified
@@ -1470,6 +1471,9 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
     save_cat = True  # todo: remove this maybe?
     ref_tbl_photo = None
     ref_catalog_photo = None
+    ref_tbl_astro = None
+    ref_catalog_astro = None
+
     read_src_cat = read_ref_cat_astro = read_ref_cat_photo = True
 
     src_cat_fname = f'{loc}/{fname}_src_cat'
@@ -1569,32 +1573,33 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
                 log.info("> Save source catalog.")
             save_catalog(cat=src_tbl, wcsprm=wcsprm, out_name=src_cat_fname,
                          kernel_fwhm=kernel_fwhm)
+    if mode != 'photo':
+        # get astrometric reference catalog
+        if read_ref_cat_astro:
+            # get reference catalog for precise positions from file
+            log.info("> Load astrometric reference source catalog from file")
+            ref_tbl_astro, _, ref_catalog_astro = read_catalog(astro_ref_cat_fname)
+        else:
+            # get reference catalog for precise positions from the web
+            ref_tbl_astro, ref_catalog_astro = \
+                get_reference_catalog(ra=ra, dec=dec, sr=fov_radius,
+                                      epoch=epoch,
+                                      num_sources=config['n_ref_sources'],
+                                      catalog='GAIAdr3',
+                                      silent=silent)
+            # add positions to table
+            pos_on_det = wcsprm.s2p(ref_tbl_astro[["RA", "DEC"]].values, 1)['pixcrd']
+            ref_tbl_astro["xcentroid"] = pos_on_det[:, 0]
+            ref_tbl_astro["ycentroid"] = pos_on_det[:, 1]
 
-    # get astrometric reference catalog
-    if read_ref_cat_astro:
-        # get reference catalog for precise positions from file
-        log.info("> Load astrometric reference source catalog from file")
-        ref_tbl_astro, _, ref_catalog_astro = read_catalog(astro_ref_cat_fname)
-    else:
-        # get reference catalog for precise positions from the web
-        ref_tbl_astro, ref_catalog_astro = \
-            get_reference_catalog(ra=ra, dec=dec, sr=fov_radius,
-                                  epoch=epoch, num_sources=config['n_ref_sources'],
-                                  catalog='GAIAdr3',
-                                  silent=silent)
-        # add positions to table
-        pos_on_det = wcsprm.s2p(ref_tbl_astro[["RA", "DEC"]].values, 1)['pixcrd']
-        ref_tbl_astro["xcentroid"] = pos_on_det[:, 0]
-        ref_tbl_astro["ycentroid"] = pos_on_det[:, 1]
+            del pos_on_det
 
-        del pos_on_det
-
-        if mode == 'photo' and save_cat:
-            if not silent:
-                log.info("> Save astrometric reference catalog.")
-                save_catalog(cat=ref_tbl_astro, wcsprm=wcsprm,
-                             out_name=astro_ref_cat_fname,
-                             mode='ref_astro', catalog=ref_catalog_astro)
+            if save_cat:
+                if not silent:
+                    log.info("> Save astrometric reference catalog.")
+                    save_catalog(cat=ref_tbl_astro, wcsprm=wcsprm,
+                                 out_name=astro_ref_cat_fname,
+                                 mode='ref_astro', catalog=ref_catalog_astro)
 
     if mode == 'photo' and has_trail:
         # get photometric reference catalog
