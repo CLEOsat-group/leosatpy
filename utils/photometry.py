@@ -148,9 +148,7 @@ def get_optimum_aper_rad(image: np.ndarray,
     rapers = np.linspace(start, stop, int((stop - start) / dstep + 1))
 
     # select only the 25 brightest sources
-    n_sel = 5 if len(std_cat) <= 20 else int(round(len(std_cat) * 0.25))
-    n_sel = n_sel // 2 if n_sel >= 20 else n_sel
-    std_cat = std_cat[:n_sel]
+    std_cat = std_cat.head(25)
 
     # get positions
     src_pos = np.array(list(zip(std_cat['xcentroid'], std_cat['ycentroid'])))
@@ -158,8 +156,8 @@ def get_optimum_aper_rad(image: np.ndarray,
     output = np.zeros((len(rapers), len(src_pos), 4))
     output[output == 0] = np.nan
 
-    for i in range(len(rapers)):
-        r_aper = rapers[i]
+    for i, r_aper in enumerate(rapers):
+
         phot_res = get_aper_photometry(image, src_pos,
                                        r_aper=r_aper * fwhm,
                                        r_in=r_in * fwhm,
