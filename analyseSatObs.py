@@ -204,6 +204,7 @@ class AnalyseSatObs(object):
         self._log_level = log_level
         self._hdu_idx = args.hdu_idx
         self._force_extract = args.force_detection
+        self._force_download = args.force_download
         self._plot_images = plot_images
         self._work_dir = None
         self._plt_path = None
@@ -1509,6 +1510,7 @@ class AnalyseSatObs(object):
                              _photo_ref_cat_fname=self._photo_ref_cat_fname,
                              estimate_bkg=False, bkg_fname=bkg_file_name,
                              _force_extract=self._force_extract,
+                             _force_download=self._force_download,
                              _plot_images=self._plot_images,
                              image_mask=img_mask)
 
@@ -1521,7 +1523,6 @@ class AnalyseSatObs(object):
                                                              imgarr, hdr, wcsprm, catalog,
                                                              has_trail=has_trail,
                                                              mode='photo',
-                                                             _log=self._log,
                                                              silent=self._silent,
                                                              **config)
         # unpack extraction result tuple

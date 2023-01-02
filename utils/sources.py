@@ -1273,8 +1273,6 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
     ref_tbl_astro = None
     ref_catalog_astro = None
 
-    read_src_cat = read_ref_cat_astro = read_ref_cat_photo = True
-
     src_cat_fname = f'{loc}/{fname}_src_cat'
     astro_ref_cat_fname = f'{loc}/{fname}_ref_cat'
     photo_ref_cat_fname = f'{loc}/{fname}_trail_img_photo_ref_cat'
@@ -1324,11 +1322,16 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
     chk_ref_cat_astro = os.path.isfile(astro_ref_cat_fname + '.cat')
     chk_ref_cat_photo = os.path.isfile(photo_ref_cat_fname + '.cat')
 
+    read_src_cat = read_ref_cat_astro = read_ref_cat_photo = True
     if config["_force_extract"]:
-        read_src_cat = read_ref_cat_astro = read_ref_cat_photo = False
+        read_src_cat = False
     else:
         if not chk_src_cat:
             read_src_cat = False
+
+    if config["_force_download"]:
+        read_ref_cat_astro = read_ref_cat_photo = False
+    else:
         if not chk_ref_cat_astro:
             read_ref_cat_astro = False
         if not chk_ref_cat_photo:

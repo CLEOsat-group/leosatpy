@@ -160,6 +160,7 @@ class CalibrateObsWCS(object):
         self._verbose = verbose
         self._plot_images = plot_images
         self._force_extract = args.force_detection
+        self._force_download = args.force_download
         self._instrument = None
         self._telescope = None
         self._obsparams = None
@@ -386,6 +387,7 @@ class CalibrateObsWCS(object):
                              n_ref_sources=self._config['REF_SOURCES_MAX_NO'],
                              bkg_fname=(bkg_fname, bkg_fname_short),
                              _force_extract=self._force_extract,
+                             _force_download=self._force_download,
                              _plot_images=self._plot_images)
 
         # add to configuration
@@ -396,7 +398,6 @@ class CalibrateObsWCS(object):
         extraction_result, state = sext.get_src_and_cat_info(fbase, cat_path,
                                                              imgarr, hdr, wcsprm, catalog,
                                                              has_trail=False, mode='astro',
-                                                             # _log=self._log,
                                                              silent=self._silent,
                                                              **config)
         # unpack extraction result tuple
