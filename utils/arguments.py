@@ -152,7 +152,10 @@ class ParseArguments(object):
                                     "to let the program choose automatically.")
         photoArgs.add_argument("-f", "--force-detection", dest='force_detection', action='store_true', default=False,
                                help="Set True to force the source and reference catalog extraction. "
-                                    "Default is False. If present the corresponding .cat files are used.")
+                                    "Default is False. If False, the corresponding present .cat files are used.")
+        photoArgs.add_argument("-d", "--force-download", dest='force_download', action='store_true', default=False,
+                               help="Set True to force the reference catalog download. "
+                                    "Default is False. If False, the corresponding present .cat files are used.")
 
         photoArgs.add_argument("-photo_ref_fname", "--photo_ref_fname", dest='ref_cat_phot_fname',
                                type=str, default=None,
@@ -222,7 +225,10 @@ class ParseArguments(object):
                                type=str, default="GAIAdr3")
         calibArgs.add_argument("-f", "--force-detection", dest='force_detection', action='store_true', default=False,
                                help="Set True to force the source and reference catalog extraction. "
-                                    "Default is False. If present the corresponding .cat files are used.")
+                                    "Default is False. If False, the corresponding present .cat files are used.")
+        calibArgs.add_argument("-d", "--force-download", dest='force_download', action='store_true', default=False,
+                               help="Set True to force the reference catalog download. "
+                                    "Default is False. If False, the corresponding present .cat files are used.")
         calibArgs.add_argument("-rot_scale", "--rotation_scale", default=True, action='store_false',
                                help="By default rotation and scaling is determined. "
                                     "If wcs already contains this info and the fit fails you can try deactivating "
