@@ -289,17 +289,17 @@ class AnalyseSatObs(object):
                         f"RA={obj_pointing[0]}, DEC={obj_pointing[1]} "
                         f"observed with the {self._telescope} telescope")
 
-                result, error = self._analyse_sat_trails(files=files, sat_name=sat_name)
-                # try:
-                #     result, error = self._analyse_sat_trails(files=files, sat_name=sat_name)
-                # except Exception as e:
-                #     exc_type, exc_obj, exc_tb = sys.exc_info()
-                #     fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-                #     self._log.critical(f"Unexpected behaviour: {e} in file {fname}, "
-                #                        f"line {exc_tb.tb_lineno}")
-                #     error = [str(e), f'file: {fname}, line: {exc_tb.tb_lineno}',
-                #              'Please report to christian.adam84@gmail.com']
-                #     result = False
+                # result, error = self._analyse_sat_trails(files=files, sat_name=sat_name)
+                try:
+                    result, error = self._analyse_sat_trails(files=files, sat_name=sat_name)
+                except Exception as e:
+                    exc_type, exc_obj, exc_tb = sys.exc_info()
+                    fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                    self._log.critical(f"Unexpected behaviour: {e} in file {fname}, "
+                                       f"line {exc_tb.tb_lineno}")
+                    error = [str(e), f'file: {fname}, line: {exc_tb.tb_lineno}',
+                             'Please report to christian.adam84@gmail.com']
+                    result = False
 
                 if result:
                     self._log.info(f">> Report: Satellite detection and analysis was {pass_str}")
