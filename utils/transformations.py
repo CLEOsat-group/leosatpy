@@ -22,11 +22,14 @@
 
 """ Modules """
 import gc
+import math
 import os
 import sys
 from copy import copy
 import inspect
 import logging
+
+import matplotlib.pyplot as plt
 import numpy as np
 from astropy.wcs import WCS, utils
 from fast_histogram import histogram2d
@@ -61,7 +64,8 @@ MODULE_PATH = os.path.dirname(inspect.getfile(inspect.currentframe()))
 # version 0.1.0 alpha version
 
 
-def get_scale_and_rotation(observation, catalog, wcsprm, scale_guessed, silent=False):
+def get_scale_and_rotation(observation, catalog, wcsprm, scale_guessed,
+                           dist_bin_size, ang_bin_size, silent=False):
     """Calculate the scale and rotation compared to the catalog based on the method of Kaiser et al. (1999).
 
     This should be quite similar to the approach by SCAMP.
@@ -74,6 +78,9 @@ def get_scale_and_rotation(observation, catalog, wcsprm, scale_guessed, silent=F
         pandas dataframe with nearby sources from online catalogs with accurate astrometric information
     wcsprm: astropy.wcs.wcsprm
         World coordinate system object describing translation between image and skycoord
+    scale_guessed:
+    dist_bin_size:
+    ang_bin_size:
     silent: bool, optional
         Set to True to suppress most console output
 
@@ -107,14 +114,18 @@ def get_scale_and_rotation(observation, catalog, wcsprm, scale_guessed, silent=F
                                         angles_obs,
                                         log_dist_cat,
                                         angles_cat,
-                                        scale_guessed=scale_guessed)
+                                        scale_guessed=scale_guessed,
+                                        dist_bin_size=dist_bin_size,
+                                        ang_bin_size=ang_bin_size)
 
     scaling, rotation, signal, _ = corr_
     corr_reflected = peak_with_cross_correlation(log_dist_obs,
                                                  -1. * angles_obs,
                                                  log_dist_cat,
                                                  angles_cat,
-                                                 scale_guessed=scale_guessed)
+                                                 scale_guessed=scale_guessed,
+                                                 dist_bin_size=dist_bin_size,
+                                                 ang_bin_size=ang_bin_size)
     scaling_reflected, rotation_reflected, signal_reflected, _ = corr_reflected
 
     if signal_reflected > signal:
@@ -209,7 +220,7 @@ def get_offset_with_orientation(observation, catalog, wcsprm, fast=False,
         log.debug("> Trying rotation {}".format(rot))
         wcsprm = rotate(copy(wcsprm_global), rot)
         report = report_global + "---- Report for rotation {} ---- \n".format(rot)
-        wcsprm, signal, report = simple_offset(observation, catalog, wcsprm, report)
+        wcsprm, signal, report = simple_offset(observation, catalog, wcsprm, report=report)
         results.append([copy(wcsprm), signal, report])
 
     signals = [i[1] for i in results]
@@ -237,7 +248,7 @@ def get_offset_with_orientation(observation, catalog, wcsprm, fast=False,
     return wcsprm, signal, report
 
 
-def simple_offset(observation, catalog, wcsprm=None, report=""):
+def simple_offset(observation, catalog, wcsprm=None, offset_binwidth=1, report=""):
     """Get the best offset in x, y direction.
 
     Parameters
@@ -248,6 +259,7 @@ def simple_offset(observation, catalog, wcsprm=None, report=""):
         pandas dataframe with nearby sources from online catalogs with accurate astrometric information
     wcsprm: object, optional
         Wold coordinates file.
+    offset_binwidth:
     report: str
         Previous part of the final report that will be extended by the method.
 
@@ -271,13 +283,13 @@ def simple_offset(observation, catalog, wcsprm=None, report=""):
     dist_x = (obs_x - cat_x.T).flatten()
     dist_y = (obs_y - cat_y.T).flatten()
 
-    binwidth = _base_conf.OFFSET_BINWIDTH  # would there be a reason to make it bigger than 1?
-    bins = [np.arange(min(dist_x), max(dist_x) + binwidth, binwidth),
-            np.arange(min(dist_y), max(dist_y) + binwidth, binwidth)]
+    # would there be a reason to make it bigger than 1?
+    bins = [np.arange(min(dist_x), max(dist_x) + offset_binwidth, offset_binwidth),
+            np.arange(min(dist_y), max(dist_y) + offset_binwidth, offset_binwidth)]
 
     H, x_edges, y_edges = np.histogram2d(dist_x, dist_y, bins=bins)
 
-    del cat_x, cat_y, obs_x, obs_y, bins, binwidth
+    del cat_x, cat_y, obs_x, obs_y, bins
     gc.collect()
 
     # finding the peak for the x and y distance where the two sets overlap and take the first peak
@@ -302,7 +314,8 @@ def simple_offset(observation, catalog, wcsprm=None, report=""):
 
     if wcsprm is not None:
         current_central_pixel = wcsprm.crpix
-        new_central_pixel = [current_central_pixel[0] + x_shift, current_central_pixel[1] + y_shift]
+        new_central_pixel = [current_central_pixel[0] + x_shift,
+                             current_central_pixel[1] + y_shift]
         wcsprm.crpix = new_central_pixel
 
         return wcsprm, signal, report
@@ -311,7 +324,7 @@ def simple_offset(observation, catalog, wcsprm=None, report=""):
 
 
 def fine_transformation(observation, catalog, wcsprm, threshold=10,
-                        compare_threshold=10, skip_rot_scale=False, silent=False):
+                        compare_threshold=10., skip_rot_scale=False, silent=False):
     """Final improvement of registration. This requires that the wcs is already accurate to a few pixels.
 
     Parameters
@@ -409,7 +422,7 @@ def fine_transformation(observation, catalog, wcsprm, threshold=10,
     return wcsprm, score
 
 
-def find_matches(obs, cat, wcsprm=None, threshold=10):
+def find_matches(obs, cat, wcsprm=None, threshold=10.):
     """Match observation with reference catalog using minimum distance."""
 
     # check if the input has data
@@ -429,8 +442,8 @@ def find_matches(obs, cat, wcsprm=None, threshold=10):
         cat_xy = cat_xy['pixcrd']
 
     # calculate the distances
-    dist_xy = np.sqrt((obs_xy[:, 0] - cat_xy[:, 0, np.newaxis])**2
-                      + (obs_xy[:, 1] - cat_xy[:, 1, np.newaxis])**2)
+    dist_xy = np.sqrt((obs_xy[:, 0] - cat_xy[:, 0, np.newaxis]) ** 2
+                      + (obs_xy[:, 1] - cat_xy[:, 1, np.newaxis]) ** 2)
 
     idx_arr = np.where(dist_xy == np.min(dist_xy, axis=0))
     min_dist_xy = dist_xy[idx_arr]
@@ -444,6 +457,11 @@ def find_matches(obs, cat, wcsprm=None, threshold=10):
     obs_matched = obs.iloc[obs_idx]
     cat_matched = cat.iloc[cat_idx]
 
+    obs_matched.reset_index(drop=True, inplace=True)
+    cat_matched.reset_index(drop=True, inplace=True)
+
+    columns_to_add = ['xcentroid', 'ycentroid', 'fwhm', 'fwhm_err', 'include_fwhm']
+    cat_matched = cat_matched.assign(**obs_matched[columns_to_add].to_dict(orient='series'))
     del obs, cat
 
     if len(min_dist_xy) == 0:  # meaning the list is empty
@@ -475,7 +493,10 @@ def cross_corr_to_fourier_space(a):
 
 def peak_with_cross_correlation(log_distance_obs: np.ndarray, angle_obs: np.ndarray,
                                 log_distance_cat: np.ndarray, angle_cat: np.ndarray,
-                                scale_guessed: bool = False):
+                                scale_guessed: bool = False,
+                                dist_bin_size: float = 1,
+                                ang_bin_size: float = 0.1,
+                                frequ_threshold: float = 0.02):
     """Find the best relation between the two sets using cross correlation.
     Either the positional offset or the scale+angle between them.
 
@@ -491,35 +512,44 @@ def peak_with_cross_correlation(log_distance_obs: np.ndarray, angle_obs: np.ndar
         first axis to consider of catalog data (angle)
     scale_guessed:
 
+    dist_bin_size:
+    ang_bin_size:
+    frequ_threshold
+
     Returns
     -------
     scaling, rotation, signal
     """
 
     if not scale_guessed:
-        minimum_distance = np.log(2)  # minimum pixel distance
+        minimum_distance = min(log_distance_obs)  # minimum pixel distance
         maximum_distance = max(log_distance_obs)
     else:
         # broader distance range if the scale is just a guess so there is a higher chance to find the correct one
         minimum_distance = min([min(log_distance_cat),
-                                min(log_distance_obs) if min(log_distance_obs) > np.log(1) else np.log(1)])
+                                min(log_distance_obs) if min(log_distance_obs) > np.log(2) else np.log(2)])
         maximum_distance = max([max(log_distance_cat),
                                 max(log_distance_obs)])
 
     # use a broader distance range for the scale,
     # so there is a higher chance to find the correct one
-    # minimum_distance = min([min(log_distance_cat), min(log_distance_obs)])
-    # maximum_distance = max([max(log_distance_cat), max(log_distance_obs)])
+    dist_bin_step = 1 + dist_bin_size
+    N_dist = math.ceil((np.e ** maximum_distance - np.e ** minimum_distance) / dist_bin_step)
+    N_dist += 1
+
     bins_dist, binwidth_dist = np.linspace(minimum_distance, maximum_distance,
-                                           _base_conf.NUM_BINS_DIST, retstep=True)
+                                           N_dist, retstep=True, dtype='float32')
 
     minimum_ang = min([min(angle_cat), min(angle_obs)])
     maximum_ang = max([max(angle_cat), max(angle_obs)])
 
-    bins_ang, binwidth_ang = np.linspace(minimum_ang, maximum_ang,
-                                         int(360 * _base_conf.BINS_ANG_FAC), retstep=True)
+    ang_bin_step = np.deg2rad(ang_bin_size)
+    N_ang = math.ceil((maximum_ang - minimum_ang) / ang_bin_step)
+    N_ang += 1
 
-    # min max of both
+    bins_ang, binwidth_ang = np.linspace(minimum_ang, maximum_ang,
+                                         N_ang, retstep=True, dtype='float32')
+
     bins = np.array([len(bins_dist), len(bins_ang)])  # .astype('uint64')
 
     vals = np.array([log_distance_obs, angle_obs])  # .astype('float32')
@@ -531,19 +561,20 @@ def peak_with_cross_correlation(log_distance_obs: np.ndarray, angle_obs: np.ndar
     H_cat = histogram2d(*vals, bins=bins,
                         range=ranges)
 
+    # FFT
     ff_obs = cross_corr_to_fourier_space(H_obs)
     ff_cat = cross_corr_to_fourier_space(H_cat)
 
+    # cross power spectrum
     cross_corr = ff_obs * np.conj(ff_cat)
 
     # frequency cut off
     step = 1  # maybe in arcsec??, this is usually the time-step to get a frequency
     frequ = np.fft.fftfreq(ff_obs.size, d=step).reshape(ff_obs.shape)
     max_frequ = np.max(frequ)  # frequencies are symmetric - to +
-    threshold = _base_conf.FREQU_THRESHOLD * max_frequ
+    threshold = frequ_threshold * max_frequ
 
     cross_corr[(frequ < threshold) & (frequ > -threshold)] = 0  # how to choose the frequency cut off?
-
     cross_corr = np.real(np.fft.ifft2(cross_corr))
     cross_corr = np.fft.fftshift(cross_corr)  # the zero shift is at (0,0), this moves it to the middle
 
@@ -575,7 +606,7 @@ def peak_with_cross_correlation(log_distance_obs: np.ndarray, angle_obs: np.ndar
 
     # get the scale and rotation
     scaling = np.e ** (-x_shift)
-    rotation = y_shift  # / 2 / np.pi * 360 maybe easier in rad
+    rotation = y_shift
 
     return scaling, rotation, signal, [x_shift, y_shift]
 

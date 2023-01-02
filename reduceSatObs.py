@@ -890,7 +890,9 @@ class ReduceSatObs(object):
         if not self.silent:
             self._log.info('> Creating bad pixel map file: %s' % os.path.basename(ccd_mask_fname))
 
-        ccd_mask = ccdproc.ccdmask(lflat[0])
+        ccd_mask = ccdproc.ccdmask(lflat[0],
+                                   findbadcolumns=False,
+                                   byblocks=False)
         mask_as_ccd = CCDData(data=ccd_mask.astype('uint8'), unit=u.dimensionless_unscaled)
         mask_as_ccd.header['imagetyp'] = 'flat mask'
 
@@ -1224,7 +1226,7 @@ class ReduceSatObs(object):
             if oscansec is not None:
                 oscan_section = oscansec
                 oscan_arr = nccd[oscan_section[0]:oscan_section[1],
-                            oscan_section[2]:oscan_section[3]]
+                                 oscan_section[2]:oscan_section[3]]
                 nccd = ccdproc.subtract_overscan(nccd,
                                                  overscan=oscan_arr,
                                                  add_keyword={'oscan_cor': oscan_corrected},
@@ -1252,7 +1254,7 @@ class ReduceSatObs(object):
                                                  ampsec[2]:ampsec[3]])
 
                     oscan_arr = amp_ccd[oscan_section[0]:oscan_section[1],
-                                oscan_section[2]:oscan_section[3]]
+                                        oscan_section[2]:oscan_section[3]]
 
                     ncc = ccdproc.subtract_overscan(amp_ccd,
                                                     overscan=oscan_arr,
@@ -1294,7 +1296,7 @@ class ReduceSatObs(object):
 
         return nccd
 
-    def _convert_fits_to_ccd(self, lfits,
+    def _convert_fits_to_ccd(self, lfits: str,
                              key_unit: str = 'BUNIT',
                              key_file: str = 'FILENAME',
                              unit=None, single: bool = False):
@@ -1323,12 +1325,12 @@ class ReduceSatObs(object):
         lccd = []
         if not isinstance(lfits, (tuple, list)):
             lfits = [lfits]
-        for f in lfits:
+        for fn in lfits:
             fits_unit = unit
-            if os.path.exists(f):
-                hdr = fits.getheader(f)
+            if os.path.exists(fn):
+                hdr = fits.getheader(fn)
             else:
-                self._log.warning('>>> File "%s" NOT found' % os.path.basename(f))
+                self._log.warning('>>> File "%s" NOT found' % os.path.basename(fn))
                 continue
             if key_unit is not None and key_unit in hdr:
                 try:
@@ -1339,15 +1341,15 @@ class ReduceSatObs(object):
                 if key_unit is not None:
                     sys.exit('>>> Units NOT found in header ("%s") of image "%s". '
                              'Specify one in "unit" variable' % (
-                                 key_unit, os.path.basename(f)))
+                                 key_unit, os.path.basename(fn)))
                 else:
                     self._log.warning('>>> "key_unit" not specified')
             self._log.setLevel("warning".upper())
             # ccd = CCDData.read(f, unit=fits_unit)
-            ccd = CCDData.read(f)
+            ccd = CCDData.read(fn)
             self._log.setLevel("info".upper())
             if key_file is not None and key_file not in ccd.header:
-                ccd.header[key_file] = os.path.basename(f)
+                ccd.header[key_file] = os.path.basename(fn)
             lccd.append(ccd)
             del ccd
         if len(lccd) == 0:
@@ -1779,23 +1781,6 @@ class ReduceSatObs(object):
                             and k in obsparams['keys_to_exclude']:
                         continue
                     new_hdr[k] = v
-
-                # # check ra, dec key in header and set if needed
-                # if 'RA' not in new_hdr or 'DEC' not in new_hdr:
-                #     if obsparams['ra'] not in new_hdr and obsparams['ra'] == 'STRRQRA':
-                #         new_ra = new_hdr['STROBRA']
-                #     else:
-                #         new_ra = new_hdr[obsparams['ra']]
-                #     new_dec = new_hdr[obsparams['dec']]
-                #     if obsparams['radec_separator'] == 'XXX':
-                #         new_hdr['RA'] = round(new_ra, _base_conf.ROUND_DECIMAL)
-                #         new_hdr['DEC'] = round(new_dec, _base_conf.ROUND_DECIMAL)
-                #     else:
-                #         new_hdr['RA'] = new_hdr[obsparams['ra']]
-                #         new_hdr['DEC'] = new_hdr[obsparams['dec']]
-                #
-                # # if 'EQUINOX' not in new_hdr:
-                # #     new_hdr['EQUINOX'] = new_hdr[obsparams['equinox']]
 
                 # check object key in header and set if needed
                 if 'OBJECT' not in new_hdr:

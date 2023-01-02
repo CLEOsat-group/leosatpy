@@ -451,7 +451,9 @@ def fit_trail_params(Hij, rhos, thetas, theta_0, image_size, cent_ind, win_size)
     # fit quadratic model
     pmodel = Model(poly_func)
     params = pmodel.make_params(a0=1., a1=1., a2=1.)
-    quad_fit_result = pmodel.fit(var, params, x=theta_i_rad, scale_covar=True)
+    quad_fit_result = pmodel.fit(var, params, x=theta_i_rad,
+                                 weights=np.sqrt(1. / var),
+                                 scale_covar=True)
     fit_results['quad_fit'] = quad_fit_result
     fit_results['quad_xnew'] = theta_i_rad_new
     fit_results['quad_x'] = theta_i_rad
@@ -482,7 +484,7 @@ def fit_trail_params(Hij, rhos, thetas, theta_0, image_size, cent_ind, win_size)
 
     # fix quadratic term
     params['a2'].vary = False
-    lin_fit_result = pmodel.fit(y, params, x=x, scale_covar=False)
+    lin_fit_result = pmodel.fit(y, params, x=x, scale_covar=True)
     fit_results['lin_fit'] = lin_fit_result
     fit_results['lin_xnew'] = xnew
     fit_results['lin_x'] = x
@@ -512,8 +514,8 @@ def fit_trail_params(Hij, rhos, thetas, theta_0, image_size, cent_ind, win_size)
 
 # noinspection PyAugmentAssignment
 def create_hough_space_vectorized(image: np.ndarray,
-                                  num_rhos: int = None,
-                                  num_thetas: int = 720,
+                                  dtheta: float = 0.05,
+                                  drho: float = 1,
                                   silent: bool = False):
     """ Create Hough transform parameter space H(theta, rho).
 
@@ -523,10 +525,10 @@ def create_hough_space_vectorized(image: np.ndarray,
     ----------
         image:
             Input image
-        num_rhos:
+        drho:
             Number of rho values.
             Defaults to None.
-        num_thetas:
+        dtheta:
             Number of angle values.
             Defaults to 720=0.5deg
         silent:
@@ -548,14 +550,14 @@ def create_hough_space_vectorized(image: np.ndarray,
     # get step-size for rho and theta
     d = np.sqrt(np.square(edge_height) + np.square(edge_width))
 
-    if num_rhos is None:
-        num_rhos = int((2. * d))  # * 2
-
-    dtheta = 180. / num_thetas
-    drho = (2. * d) / num_rhos
-
-    thetas = np.arange(-90., 90., step=dtheta).astype('float32')
-    rhos = np.arange(-d, d, step=drho).astype('float32')
+    N_theta = math.ceil(180 / dtheta)
+    N_theta += 1
+    thetas, binwidth_theta = np.linspace(-90, 90,
+                                         N_theta, retstep=True, dtype='float32')
+    N_rho = math.ceil(2 * d / drho)
+    N_rho += 1
+    rhos, binwidth_rho = np.linspace(-d, d,
+                                     N_rho, retstep=True, dtype='float32')
 
     # get cosine and sinus
     cos_thetas = np.cos(np.deg2rad(thetas)).astype('float32')
@@ -691,17 +693,6 @@ def detect_sat_trails(image: np.ndarray,
     df_init = pd.DataFrame(regs)
     df_init['orientation_deg'] = df_init['orientation'] * 180. / np.pi
 
-    # fig = plt.figure(figsize=(10, 6))
-    # gs = gridspec.GridSpec(2, 2)
-    # ax1 = fig.add_subplot(gs[0, 0])
-    # ax2 = fig.add_subplot(gs[0, 1])
-    # ax3 = fig.add_subplot(gs[1, 0])
-    #
-    # ax1.hist(df_init['eccentricity'], density=False, bins='auto')
-    # ax2.hist(df_init['orientation_deg'], density=False, bins='auto')
-    # ax3.hist(df_init['axis_major_length'], density=False, bins='auto')
-    # plt.show()
-
     # first filter roundish objects
     labels = df_init.query("eccentricity >= 0.985 and area > @min_trail_length")['label']
     if labels.size == 0:
@@ -755,7 +746,6 @@ def detect_sat_trails(image: np.ndarray,
 
             return None, False
 
-        # grouped = df1.groupby(by='groups')
         s = df1.groupby(by='groups')['axis_major_length'].sum().reset_index()
         res = s[s['axis_major_length'] == s.groupby(['groups'])['axis_major_length'].transform('max')]
         ind = res.sort_values(by='axis_major_length', ascending=False)['groups'].values
@@ -793,7 +783,14 @@ def get_distance(loc1, loc2):
 
 def get_trail_properties(segm_map, df, config,
                          silent: bool = False):
-    """"""
+    """
+    Perform Hough transform and determine trail parameter, i.e. length, width, and
+    orientation
+
+    """
+
+    theta_bin_size = config['THETA_BIN_SIZE']
+    rho_bin_size = config['RHO_BIN_SIZE']
 
     binary_img = np.zeros(segm_map.shape)
     for row in df.itertuples(name='label'):
@@ -804,11 +801,11 @@ def get_trail_properties(segm_map, df, config,
     dilated = nd.binary_dilation(binary_img, structure=footprint, iterations=3)
 
     # create hough space and get peaks
-    hspace_smooth, peaks, dist, theta = get_hough_transform(dilated, silent=silent)
-    # print(peaks)
-    # plt.figure()
-    # plt.imshow(hspace_smooth)
-    # plt.show()
+    hspace_smooth, peaks, dist, theta = get_hough_transform(dilated,
+                                                            theta_bin_size=theta_bin_size,
+                                                            rho_bin_size=rho_bin_size,
+                                                            silent=silent)
+
     if len(peaks) > 1:
         edge_height, edge_width = dilated.shape[:2]
         edge_height_half, edge_width_half = edge_height // 2, edge_width // 2
@@ -848,8 +845,6 @@ def get_trail_properties(segm_map, df, config,
         # this can be extended later to let the user choose which to pick
         # set 0 for first entry
         sel_idx = config['PARALLEL_TRAIL_SELECT']
-        # print(df, sel_dict, sel_idx, sel_dict[sel_idx], df.loc[sel_dict[sel_idx]])
-        # _df = df.iloc[sel_dict[sel_idx]] if len(df) > 1 else df.loc[sel_dict[sel_idx]]
         _df = df.loc[sel_dict[sel_idx]]
         binary_img = np.zeros(segm_map.shape)
         for row in _df.itertuples(name='label'):
@@ -860,13 +855,22 @@ def get_trail_properties(segm_map, df, config,
         dilated = nd.binary_dilation(binary_img, structure=footprint, iterations=5)
 
         # create hough space and get peaks
-        hspace_smooth, peaks, dist, theta = get_hough_transform(dilated, silent=silent)
+        hspace_smooth, peaks, dist, theta = get_hough_transform(dilated,
+                                                                theta_bin_size=theta_bin_size,
+                                                                rho_bin_size=rho_bin_size,
+                                                                silent=silent)
 
     indices = np.where(hspace_smooth == peaks[0][0])
     row_ind, col_ind = indices[0][0], indices[1][0]
     center_idx = (row_ind, col_ind)
 
-    sub_win_size = _base_conf.SUB_WIN_SIZE_HOUGH
+    # set sub-window size
+    theta_sub_win_size = math.ceil(config['THETA_SUB_WIN_SIZE'] / theta_bin_size)
+    rho_sub_win_size = math.ceil(4. * np.sqrt(2.)
+                                 * config['RHO_SUB_WIN_RES_FWHM']
+                                 * config['fwhm'] / rho_bin_size)
+    sub_win_size = (rho_sub_win_size, theta_sub_win_size)
+
     theta_init = np.deg2rad(theta[col_ind])
     fit_res = fit_trail_params(hspace_smooth, dist, theta, theta_init,
                                dilated.shape, center_idx, sub_win_size)
@@ -895,13 +899,16 @@ def get_trail_properties(segm_map, df, config,
 
 
 def get_hough_transform(image: np.ndarray, sigma: float = 2.,
+                        theta_bin_size=0.02,
+                        rho_bin_size=1,
                         silent: bool = False):
     """ Perform a Hough transform on the selected region and fit parameter """
 
     # generate Hough space H(theta, rho)
     res = create_hough_space_vectorized(image=image,
-                                        num_thetas=_base_conf.NUM_THETAS,
-                                        num_rhos=None, silent=silent)
+                                        dtheta=theta_bin_size,
+                                        drho=rho_bin_size,
+                                        silent=silent)
     hspace, dist, theta, _, _ = res
     # apply gaussian filter to smooth the image
     hspace_smooth = nd.gaussian_filter(hspace, sigma)

@@ -137,7 +137,7 @@ DEF_RES_TBL_COL_NAMES = ['File', 'Object', 'Sat-Name', 'AltID', 'UniqueID',
                          'TrailCX', 'e_TrailCX', 'TrailCY', 'e_TrailCY',
                          'TrailCRA', 'e_TrailCRA', 'TrailCDEC', 'e_TrailCDEC',
                          'TrailANG', 'e_TrailANG', 'OptAperHeight',
-                         'CalRA', 'CalDEC', 'CentX', 'CentY', 'PixScale', 'DetRotAng', 'FWHM',
+                         'CalRA', 'CalDEC', 'CentX', 'CentY', 'PixScale', 'DetRotAng', 'FWHM', 'e_FWHM',
                          'bias_cor', 'dark_cor', 'flat_cor', 'WCS_cal', 'mag_conv', 'QlfAperRad']
 
 # To be implemented
@@ -184,6 +184,7 @@ DEF_KEY_TRANSLATIONS = {
     'PixScale': ['PIXSCALE'],
     'DetRotAng': ['DETROTANG'],
     'FWHM': ['FWHM'],
+    'e_FWHM': ['FWHMERR'],
     'Airmass': ['AIRMASS', 'STROBAM'],
     'Date-Obs': ['DATE-OBS'],
     'Binning': ['BINNING'],
@@ -348,53 +349,8 @@ CONV_SSDS_BVRI = {'BMag': [[-0.8116, 0.1313, 0.0095],
                   'IMag': [[-1.2444, -0.3820, 0.0078],
                            [-0.3780, -0.3974, 0.0063]]}
 
-
-# resolution of scale and rotation estimation.
-NUM_BINS_DIST = 7500  # number of distance bins
-BINS_ANG_FAC = 10  # multiplier for rotation resolution
-
-MAX_AREA_LIMIT = 1964  # area in pixel above which the source is considered to be saturated
-
-# frequency cut off threshold
-FREQU_THRESHOLD = 0.02
-
 # source detection
 USE_N_SOURCES = 100  # number of sources to be used in fast mode
-OFFSET_BINWIDTH = 1  # width in pixel for the offset determination
-
-# maximum number of trails expected in the observation
-N_TRAILS_MAX = 1
-
-# number of angles to use in hough transform
-NUM_THETAS = 10000
-
-# Hough space sub-window size
-SUB_WIN_SIZE_HOUGH = (50, 50)
-
-# standard star and trail photometry
-NUM_STD = 1000  # maximum number of standard stars sources to consider
-NUM_STD_MIN = 3  # minimum number of standard stars sources in a given band
-
-# start, stop and step size for optimal aperture estimation from S/N in multiple of fwhm
-APER_START = 0.1
-APER_STOP = 5
-APER_STEP_SIZE = 0.1
-
-# inner and outer radius of circular aperture for sky estimation in aperture photometry
-RSKYIN_STD = 20
-RSKYOUT_STD = 30
-
-# inner and outer height of rectangular aperture for sky estimation in aperture photometry
-HSKYIN_STD = 25
-HSKYOUT_STD = 35
-
-# centroid box size in pixels
-BOX_SIZE = 11
-
-# plot options
-# FIG_TYPE = 'png'
-# LINE_LENGTH = 5  # scale line length in arcmin
-# ARRW_LENGTH = 0.15  # compass arrow length; 15% of image size
 
 # URL configuration for photometry pipeline
 ASTROMETRIC_CAT_ENVVAR = "ASTROMETRIC_CATALOG_URL"

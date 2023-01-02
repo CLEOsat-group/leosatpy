@@ -123,13 +123,7 @@ dk154_params = {
                      'objra', 'objdec', 'airmass', 'binning'],
 
     # source extractor settings
-    'average_fwhm': 2.5,
     'saturation_limit': 6e5,
-    'nsigma': 1.25,
-    'source_box': 9,
-    'isolation_size': 9,
-    'box_size': 27,
-    'win_size': 11,
     'apply_mask': True
 }
 
@@ -222,13 +216,7 @@ cbnuo_params = {
                      'ra', 'dec', 'airmass', 'binning'],
 
     # source extractor settings
-    'average_fwhm': 2.,
     'saturation_limit': 6.5e4,
-    'nsigma': 1.1,
-    'source_box': 7,
-    'isolation_size': 9,
-    'box_size': 27,
-    'win_size': 11,
     'apply_mask': True
 
 }
@@ -322,13 +310,7 @@ ca123dlrmkiii_param = {
                      'ra', 'dec', 'airmass', 'binning'],
 
     # source extractor settings
-    'average_fwhm': 5,
     'saturation_limit': 5e4,
-    'nsigma': 2.0,
-    'source_box': 15,
-    'isolation_size': 5,
-    'box_size': 27,
-    'win_size': 11,
     'apply_mask': True
 }
 
@@ -428,13 +410,7 @@ ckoir_param = {
                      'objctra', 'objctdec', 'airmass', 'binning'],
 
     # source extractor settings
-    'average_fwhm': 2.5,
     'saturation_limit': 6.5e4,
-    'nsigma': 1.25,
-    'source_box': 11,
-    'isolation_size': 11,
-    'box_size': 27,
-    'win_size': 11,
     'apply_mask': True
 }
 
@@ -540,13 +516,7 @@ ctio_params = {
                      'ra', 'dec', 'airmass', 'binning'],
 
     # source extractor settings
-    'average_fwhm': 2.,
     'saturation_limit': 6.5e4,
-    'nsigma': 1.125,
-    'source_box': 7,
-    'isolation_size': 9,
-    'box_size': 27,
-    'win_size': 11,
     'apply_mask': True
 
 }
@@ -632,13 +602,7 @@ spm_params = {
                      'strrqra', 'strrqde', 'strobam', 'binning'],
 
     # source extractor settings
-    'average_fwhm': 2.,
     'saturation_limit': 6.5e4,
-    'nsigma': 5.,
-    'source_box': 9,
-    'isolation_size': 9,
-    'box_size': 27,
-    'win_size': 11,
     'apply_mask': True
 }
 
@@ -720,13 +684,7 @@ ouka_params = {
                      'ra', 'dec', 'airmass', 'binning'],
 
     # source extractor settings
-    'average_fwhm': 2.,
     'saturation_limit': 6.5e4,
-    'nsigma': 3.,
-    'source_box': 7,
-    'isolation_size': 9,
-    'box_size': 27,
-    'win_size': 11,
     'apply_mask': True
 
 }
