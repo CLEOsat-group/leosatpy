@@ -23,6 +23,7 @@
 
 """ Modules """
 import gc
+import math
 # STDLIB
 import os
 import random
@@ -443,7 +444,7 @@ class CalibrateObsWCS(object):
             idx = [True] * len(src_tbl)
         src_tbl = src_tbl[idx]
 
-        n_ref_to_select = 2*len(src_tbl)
+        n_ref_to_select = math.ceil(len(src_tbl) / self._config['THRESHOLD_CONVERGENCE'])
         for i in range(max_iter):
             idx = -1 * n_ref_to_select
             ref_tbl_select = ref_tbl_truncated[idx:]
@@ -768,7 +769,7 @@ class CalibrateObsWCS(object):
                             "{}px and at least 0.25 * minimum ( observed sources, catalog sources in fov) "
                             "matches with the same radius".format(len_obs_x))
 
-            if len_obs_x >= 3 and len_obs_x >= 0.5 * N:
+            if len_obs_x >= 3 and len_obs_x >= self._config['THRESHOLD_CONVERGENCE'] * N:
                 converged = True
                 dic_rms = {"radius_px": r, "matches": len_obs_x, "rms": rms}
                 if not self._silent:
