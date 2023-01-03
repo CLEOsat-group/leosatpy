@@ -482,9 +482,9 @@ class CalibrateObsWCS(object):
                 self._log.warning(f"  Convergence test and refinement has FAILED "
                                   f" - increasing number of reference sources for comparison")
 
-                if n_ref_to_select == len(ref_tbl_truncated):
+                if n_ref_to_select >= len(ref_tbl_truncated):
                     break
-            n_ref_to_select += 10
+                n_ref_to_select += 10
 
         # update report dict
         report["converged"] = converged
