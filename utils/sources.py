@@ -168,8 +168,31 @@ def moffat2d(x, y, amp, xc, yc, alpha, beta, sky):
     return M
 
 
+from scipy.spatial import KDTree
+
+
+def distance(point1, point2):
+    """"""
+    return np.linalg.norm(point1 - point2)
+
+
+def remove_close_elements(df, distance_threshold):
+    """"""
+    points = df[['xcentroid', 'ycentroid']].to_numpy()
+    tree = KDTree(points)
+    close_points = tree.query_ball_point(points, distance_threshold)
+    mask = np.ones(len(df), dtype=bool)
+    for i, point in enumerate(close_points):
+        if len(point) > 1:
+            mask[i] = False
+    df = df[mask]
+    return df
+
+
 def auto_build_source_catalog(data,
                               img_std,
+                              use_catalog=None,
+                              fwhm=None,
                               source_box_size=25,
                               fwhm_init_guess=4., threshold_value=25,
                               min_source_no=3,
@@ -183,7 +206,8 @@ def auto_build_source_catalog(data,
                               max_good_fwhm=30,
                               sigmaclip_FWHM_sigma=3.,
                               isolate_sources_fwhm_sep=5., init_iso_dist=25.,
-                              sat_lim=65000., silent=False):
+                              sat_lim=65536.,
+                              silent=False):
     """
     Credit:  https://github.com/Astro-Sean/autophot/blob/master/autophot/packages/find.py
     """
@@ -194,6 +218,14 @@ def auto_build_source_catalog(data,
     # Try to use PSF derived from the image as detection kernel
     # The kernel must be derived from well-isolated sources not near the edge of the image
     # kernel_psf = False
+    using_catalog_sources = False
+    if use_catalog is not None:
+        using_catalog_sources = True
+    init_fwhm = fwhm_init_guess
+    if fwhm is not None:
+        init_fwhm = fwhm
+
+    init_r2 = 0.7
 
     # decrease
     m = 0
@@ -240,58 +272,63 @@ def auto_build_source_catalog(data,
     nddata = NDData(data=data)
     isolated_sources = []
     while True:
-        if failsafe > max_iter:
-            break
-        else:
-            failsafe += 1
+        if using_catalog_sources:
+            sources = use_catalog
+            sources.reset_index(drop=True, inplace=True)
+        if not using_catalog_sources:
 
-        # check if threshold value is still good
-        threshold_value_check = threshold_value + n - m
+            if failsafe > max_iter:
+                break
+            else:
+                failsafe += 1
 
-        # if <=0 reverse previous drop and fine_fudge factor
-        if threshold_value_check < lim_threshold_value and not decrease_increment:
-            log.warning(
-                '    Threshold value has gone below background limit [%d sigma] - '
-                'increasing by smaller increment ' % lim_threshold_value)
+            # check if threshold value is still good
+            threshold_value_check = threshold_value + n - m
 
-            # revert previous decrease
-            decrease_increment = True
-            m = fudge_factor
+            # if <=0 reverse previous drop and fine_fudge factor
+            if threshold_value_check < lim_threshold_value and not decrease_increment:
+                log.warning(
+                    '    Threshold value has gone below background limit [%d sigma] - '
+                    'increasing by smaller increment ' % lim_threshold_value)
 
-        elif threshold_value_check < lim_threshold_value and decrease_increment:
-            log.critical('    FWHM detection failed - cannot find suitable threshold value ')
-            return None, None, False
-        else:
-            threshold_value = round(threshold_value + n - m, 3)
+                # revert previous decrease
+                decrease_increment = True
+                m = fudge_factor
 
-        # if threshold goes negative use smaller fudge factor
-        if decrease_increment:
-            fudge_factor = fine_fudge_factor
+            elif threshold_value_check < lim_threshold_value and decrease_increment:
+                log.critical('    FWHM detection failed - cannot find suitable threshold value ')
+                return None, None, False
+            else:
+                threshold_value = round(threshold_value + n - m, 3)
 
-        daofind = DAOStarFinder(fwhm=fwhm_init_guess,
-                                threshold=threshold_value * img_std,
-                                exclude_border=True,
-                                peakmax=sat_lim,
-                                brightest=brightest)
-        sources = daofind(data)
-        if sources is None:
-            log.warning('    Sources == None at %.1f sigma - decreasing threshold' % threshold_value)
-            m = fudge_factor
-            continue
+            # if threshold goes negative use smaller fudge factor
+            if decrease_increment:
+                fudge_factor = fine_fudge_factor
 
-        # Sort based on peak_value to identify the brightest sources for use as a kernel
-        sources.sort('peak', reverse=True)
-        sources = sources.to_pandas()
+            daofind = DAOStarFinder(fwhm=init_fwhm,
+                                    threshold=threshold_value * img_std,
+                                    exclude_border=True,
+                                    peakmax=sat_lim,
+                                    brightest=brightest)
+            sources = daofind(data)
+            if sources is None:
+                log.warning('    Sources == None at %.1f sigma - decreasing threshold' % threshold_value)
+                m = fudge_factor
+                continue
+
+            # Sort based on peak_value to identify the brightest sources for use as a kernel
+            sources.sort('peak', reverse=True)
+            sources = sources.to_pandas()
 
         if not silent:
             log.info('    Number of sources before cleaning [ %.1f sigma ]: %d ' % (threshold_value, len(sources)))
 
-        if len(sources) == 0:
+        if len(sources) == 0 and not using_catalog_sources:
             log.warning('No sources')
             m = fudge_factor
             continue
 
-        if check and len(sources) >= 10:
+        if check and len(sources) >= 10 and not using_catalog_sources:
             pass
 
         elif check and len(sources) > check_len:
@@ -305,7 +342,7 @@ def auto_build_source_catalog(data,
             continue
 
         # Last ditch attempt to recover a few more sources
-        elif len(sources) < 5 and not check:
+        elif len(sources) < 5 and not check and not using_catalog_sources:
             if not silent:
                 log.info('    Sources found but attempting to go lower')
             m = fudge_factor
@@ -313,73 +350,87 @@ def auto_build_source_catalog(data,
             check = True
             continue
 
-        len_with_boundary = len(sources)
-        hsize = (source_box_size - 1) // 2
-        boundary_mask = ((sources['xcentroid'] > hsize) & (sources['xcentroid'] < (data.shape[1] - 1 - hsize)) &
-                         (sources['ycentroid'] > hsize) & (sources['ycentroid'] < (data.shape[0] - 1 - hsize)))
-        sources = sources[boundary_mask]
-        if len_with_boundary - len(sources) > 0:
-            if not silent:
-                log.info('    %d sources removed near boundary' % (len_with_boundary - len(sources)))
-
         if not update_guess:
             if not silent:
                 log.info('    Updating search FWHM value')
 
             new_fwhm_guess = []
+            new_r_squared_guess = []
             no_sources = 10 if len(sources.index.values) > 10 else len(sources.index.values)
 
             for i in sample(list(sources.index.values), no_sources):
+                try:
 
-                idx = sources.index.values[i]
+                    idx = sources.index.values[i]
 
-                stars_tbl = Table()
-                stars_tbl['x'] = sources['xcentroid'].loc[[idx]]
-                stars_tbl['y'] = sources['ycentroid'].loc[[idx]]
-                stars = extract_stars(nddata, stars_tbl, size=source_box_size)[0].data
+                    stars_tbl = Table()
+                    stars_tbl['x'] = sources['xcentroid'].loc[[idx]]
+                    stars_tbl['y'] = sources['ycentroid'].loc[[idx]]
+                    stars = extract_stars(nddata, stars_tbl, size=source_box_size)
+                    stars = stars.data
+                    snr_stars = np.nanmean(stars) / np.sqrt(np.nanstd(stars) * source_box_size**2)
 
-                model_func.set_param_hint('amp', value=np.nanmax(stars),
-                                          method='leastsq',
-                                          min=1e-3, max=1.5 * np.nanmax(stars))
-                model_func.set_param_hint('sky', value=np.nanmedian(stars))
-                fit_params = model_func.make_params()
+                    if np.nanmax(stars) >= sat_lim or np.isnan(np.max(stars)):
+                        continue
 
-                result = model_func.fit(data=stars, x=xx, y=yy,
-                                        method=fitting_method,
-                                        params=fit_params, nan_policy='omit')
+                    model_func.set_param_hint('amp', value=np.nanmax(stars),
+                                              min=1e-3, max=1.5 * np.nanmax(stars))
+                    model_func.set_param_hint('sky', value=np.nanmedian(stars))
+                    fit_params = model_func.make_params()
 
-                fwhm_fit = 2. * result.params['alpha'] * np.sqrt((2. ** (1. / result.params['beta'])) - 1.)
-                if (max_good_fwhm <= fwhm_fit <= min_good_fwhm) or (result.params['fwhm'].value is None):
-                    new_fwhm_guess.append(np.nan)
-                    continue
+                    result = model_func.fit(data=stars, x=xx, y=yy,
+                                            method=fitting_method,
+                                            params=fit_params,
+                                            calc_covar=True,
+                                            nan_policy='omit')
 
-                new_fwhm_guess.append(fwhm_fit)
-                m = 0
+                    fwhm_fit = 2. * result.params['alpha'] * np.sqrt((2. ** (1. / result.params['beta'])) - 1.)
+                    if (max_good_fwhm <= fwhm_fit <= min_good_fwhm) \
+                            or (result.params['fwhm'].value is None) \
+                            or (result.params['amp'] >= sat_lim) \
+                            or (snr_stars <= 0.):
+                        new_fwhm_guess.append(np.nan)
+                        continue
 
+                    new_r_squared_guess.append(result.rsquared)
+                    new_fwhm_guess.append(fwhm_fit)
+                    m = 0
+
+                except Exception as e:
+                    # log.warning("    ERROR : {} ".format(e))
+                    pass
+
+            new_r_squared_guess = np.array(new_r_squared_guess)
             new_fwhm_guess = np.array(new_fwhm_guess)
-
             all_nan_check = (np.where(new_fwhm_guess == np.nan, True, False)).all()
-
-            if all_nan_check and not decrease_increment:
+            if all_nan_check and not decrease_increment and not using_catalog_sources:
                 log.warning('    No FWHM values - decreasing threshold')
                 m = fudge_factor
                 continue
             else:
+
+                new_r2_rounded = np.round(new_r_squared_guess, 1)
+                new_r2_rounded = new_r2_rounded[new_r2_rounded > 0.5]
+
                 # print(new_fwhm_guess)
                 int_fwhm = np.nanmedian(new_fwhm_guess)
-                if ~np.isnan(int_fwhm) and len(new_fwhm_guess[~np.isnan(new_fwhm_guess)]) >= 3:
+                if ~np.isnan(int_fwhm):  # and len(new_fwhm_guess[~np.isnan(new_fwhm_guess)]) >= 3:
                     if not silent:
                         log.info('    Updated guess for FWHM: %.1f pixels ' % int_fwhm)
+                    init_r2 = np.nanmean(new_r2_rounded)
+
+                    if not silent:
+                        log.info('    Updated limit for R-squared: %.1f' % init_r2)
 
                     brightest = None
                     update_guess = True
                     continue
-                else:
+                if not using_catalog_sources:
                     log.warning('    Not enough FWHM values - decreasing threshold')
                     m = fudge_factor
                     continue
 
-        if len(sources) > max_source_no:
+        if len(sources) > max_source_no and not using_catalog_sources:
             log.warning('    Too many sources - increasing threshold')
             if n == 0:
                 threshold_value *= 2
@@ -391,7 +442,7 @@ def auto_build_source_catalog(data,
                 n = fudge_factor
             continue
 
-        elif len(sources) > 5000 and m != 0:
+        elif len(sources) > 5000 and m != 0 and not using_catalog_sources:
             log.warning('    Picking up noise - increasing threshold')
             fudge_factor = fine_fudge_factor
             n = fine_fudge_factor
@@ -399,21 +450,27 @@ def auto_build_source_catalog(data,
             decrease_increment = True
             continue
 
-        elif len(sources) < min_source_no and not decrease_increment:
+        elif len(sources) < min_source_no and not decrease_increment and not using_catalog_sources:
             log.warning('    Too few sources - decreasing threshold')
             m = fudge_factor
             continue
 
-        elif len(sources) == 0:
+        elif len(sources) == 0 and not using_catalog_sources:
             log.warning('    No sources - decreasing threshold')
             m = fudge_factor
             continue
 
-        v = sources[['xcentroid', 'ycentroid']]
-        dist = euclidean_distances(v, v)
-        dist = np.floor(dist)
+        len_with_boundary = len(sources)
+        hsize = (source_box_size - 1) // 2
+        boundary_mask = ((sources['xcentroid'] > hsize) & (sources['xcentroid'] < (data.shape[1] - 1 - hsize)) &
+                         (sources['ycentroid'] > hsize) & (sources['ycentroid'] < (data.shape[0] - 1 - hsize)))
+        sources = sources[boundary_mask]
+        if len_with_boundary - len(sources) > 0:
+            if not silent:
+                log.info('    %d sources removed near boundary' % (len_with_boundary - len(sources)))
 
-        isolated_sources = sources[~np.tril(dist <= init_iso_dist, k=-1).any(axis=1)].copy()
+        isolated_sources = remove_close_elements(sources, init_iso_dist)
+
         if len(sources) - len(isolated_sources) > 0:
             log.info('    %d crowded sources removed' % (len(sources) - len(isolated_sources)))
 
@@ -432,11 +489,12 @@ def auto_build_source_catalog(data,
             continue
 
         if not silent:
-            log.info('    Fitting %d source for FWHM estimation.' % (len(isolated_sources.index)))
+            log.info(
+                '    Fitting %d source for FWHM estimation. (This may take a second.)' % (len(isolated_sources.index)))
 
-        col_names = ['fwhm', 'fwhm_err']
+        col_names = ['fwhm', 'fwhm_err', 'median']
         result_arr = np.empty((len(isolated_sources.index), len(col_names)))
-        nan_arr = np.array([[np.nan] * 2])
+        nan_arr = np.array([[np.nan] * 3])
         saturated_source = 0
         high_fwhm = 0
         for i in range(len(isolated_sources.index)):
@@ -448,38 +506,54 @@ def auto_build_source_catalog(data,
             stars_tbl = Table()
             stars_tbl['x'] = x0
             stars_tbl['y'] = y0
-            stars = extract_stars(nddata, stars_tbl, size=source_box_size)[0].data
+            stars = extract_stars(nddata, stars_tbl, size=source_box_size)
+            stars = stars.data
 
-            model_func.set_param_hint('amp', value=np.nanmax(stars),
-                                      min=1e-3, max=1.5 * np.nanmax(stars))
-            model_func.set_param_hint('sky', value=np.nanmedian(stars))
-            fit_params = model_func.make_params()
+            if np.nanmax(stars) >= sat_lim or np.isnan(np.max(stars)):
+                result_arr[i] = nan_arr
+                continue
 
-            result = model_func.fit(data=stars, x=xx, y=yy,
-                                    method=fitting_method,
-                                    params=fit_params, nan_policy='omit')
+            try:
+                model_func.set_param_hint('amp', value=np.nanmax(stars),
+                                          min=1e-3, max=1.5 * np.nanmax(stars))
+                model_func.set_param_hint('sky', value=np.nanmedian(stars))
+                fit_params = model_func.make_params()
 
-            fwhm_fit = 2. * result.params['alpha'] * np.sqrt((2. ** (1. / result.params['beta'])) - 1.)
+                result = model_func.fit(data=stars, x=xx, y=yy,
+                                        method=fitting_method,
+                                        params=fit_params, calc_covar=True,
+                                        nan_policy='omit')
 
-            fwhm_fit_err = result.params['fwhm'].stderr
-            A = result.params['amp'].value
-            x_fitted = result.params['xc'].value
-            y_fitted = result.params['yc'].value
-            # bkg_approx = result.params['sky'].value
-            to_add = nan_arr
-            if fwhm_fit_err is not None:
-                corrected_x = x_fitted - source_box_size / 2 + x0
-                corrected_y = y_fitted - source_box_size / 2 + y0
-                if A > sat_lim:
-                    to_add = nan_arr
-                    saturated_source += 1
-                elif max_good_fwhm <= fwhm_fit <= min_good_fwhm:
-                    to_add = nan_arr
-                    high_fwhm += 1
-                else:
-                    to_add = np.array([fwhm_fit, fwhm_fit_err])
-                    isolated_sources['xcentroid'] = isolated_sources['xcentroid'].replace([x0], corrected_x)
-                    isolated_sources['ycentroid'] = isolated_sources['ycentroid'].replace([y0], corrected_y)
+                fwhm_fit = 2. * result.params['alpha'] * np.sqrt((2. ** (1. / result.params['beta'])) - 1.)
+                fwhm_fit_err = result.params['fwhm'].stderr
+
+                A = result.params['amp'].value
+                A_err = result.params['amp'].stderr
+                x_fitted = result.params['xc'].value
+                y_fitted = result.params['yc'].value
+                bkg_approx = result.params['sky'].value
+
+                to_add = nan_arr
+                if fwhm_fit_err is not None:
+                    corrected_x = x_fitted - source_box_size / 2 + x0
+                    corrected_y = y_fitted - source_box_size / 2 + y0
+                    if A > sat_lim:
+                        to_add = nan_arr
+                        saturated_source += 1
+                    elif max_good_fwhm - 1 <= fwhm_fit <= min_good_fwhm:
+                        to_add = nan_arr
+                        high_fwhm += 1
+                    elif A <= A_err:
+                        to_add = nan_arr
+                    elif result.rsquared < init_r2:
+                        to_add = nan_arr
+                    else:
+                        to_add = np.array([fwhm_fit, fwhm_fit_err, bkg_approx])
+                        isolated_sources['xcentroid'] = isolated_sources['xcentroid'].replace([x0], corrected_x)
+                        isolated_sources['ycentroid'] = isolated_sources['ycentroid'].replace([y0], corrected_y)
+            except Exception as e:
+                to_add = nan_arr
+
             result_arr[i] = to_add
 
         if saturated_source != 0:
@@ -501,77 +575,109 @@ def auto_build_source_catalog(data,
         )
 
         isolated_sources.reset_index(inplace=True, drop=True)
-        if len(isolated_sources['fwhm'].values) == 0:
-            log.warning('    No sigma values taken')
-            continue
+        if not using_catalog_sources:
 
-        if len(isolated_sources) < min_source_no:
-            log.warning('    Less than min source after sigma clipping: %d' % len(isolated_sources))
-            threshold_value += m
-            if n == 0:
-                decrease_increment = True
-                n = fine_fudge_factor
-                fudge_factor = fine_fudge_factor
+            if len(isolated_sources['fwhm'].values) == 0:
+                log.warning('    No sigma values taken')
+                continue
+
+            if len(isolated_sources) < min_source_no:
+                log.warning('    Less than min source after sigma clipping: %d' % len(isolated_sources))
+                threshold_value += m
+                if n == 0:
+                    decrease_increment = True
+                    n = fine_fudge_factor
+                    fudge_factor = fine_fudge_factor
+                else:
+                    n = fudge_factor
+                m = 0
+                continue
+
+            FWHM_mask = sigma_clip(isolated_sources['fwhm'].values,
+                                   sigma=sigmaclip_FWHM_sigma,
+                                   masked=True,
+                                   maxiters=10,
+                                   cenfunc=np.nanmedian,
+                                   stdfunc=mad_std)
+
+            if np.sum(FWHM_mask.mask) == 0 or len(isolated_sources) < 5:
+                isolated_sources['include_fwhm'] = [True] * len(isolated_sources)
+                fwhm_array = isolated_sources['fwhm'].values
             else:
-                n = fudge_factor
-            m = 0
-            continue
+                fwhm_array = isolated_sources[~FWHM_mask.mask]['fwhm'].values
+                isolated_sources['include_fwhm'] = ~FWHM_mask.mask
+                log.info('    Removed %d FWHM outliers' % (np.sum(FWHM_mask.mask)))
 
-        FWHM_mask = sigma_clip(isolated_sources['fwhm'].values,
-                               sigma=sigmaclip_FWHM_sigma,
-                               masked=True,
-                               maxiters=10,
-                               cenfunc=np.nanmedian,
-                               stdfunc=mad_std)
+            median_mask = sigma_clip(isolated_sources['median'].values,
+                                     sigma=3.,
+                                     masked=True,
+                                     maxiters=10,
+                                     cenfunc=np.nanmedian,
+                                     stdfunc=mad_std)
 
-        if np.sum(FWHM_mask.mask) == 0 or len(isolated_sources) < 5:
-            isolated_sources['include_fwhm'] = [True] * len(isolated_sources)
-            fwhm_array = isolated_sources['fwhm'].values
-        else:
-            fwhm_array = isolated_sources[~FWHM_mask.mask]['fwhm'].values
-            isolated_sources['include_fwhm'] = ~FWHM_mask.mask
-            log.info('    Removed %d FWHM outliers' % (np.sum(FWHM_mask.mask)))
+            if np.sum(median_mask) == 0 or np.sum(~median_mask.mask) < 5:
+                isolated_sources['include_median'] = [True] * len(isolated_sources)
+                pass
 
-        if not silent:
-            log.info('    Usable sources found [ %d sigma ]: %d' % (threshold_value,
-                                                                    len(isolated_sources)))
-
-        image_fwhm = np.nanmean(fwhm_array)
-        if len(fwhm_array) == 0:
-            log.warning('    Less than min source after sigma clipping: %d' % len(isolated_sources))
-            threshold_value -= n
-
-            if m == 0:
-                decrease_increment = True
-                m = fine_fudge_factor
-                fudge_factor = fine_fudge_factor
             else:
-                m = fudge_factor
+                isolated_sources['include_median'] = ~median_mask.mask
+                log.info('    Removed %d median outliers' % (np.sum(median_mask.mask)))
 
-            n = 0
-            continue
+            if not silent:
+                log.info('    Usable sources found [ %d sigma ]: %d' % (threshold_value,
+                                                                        len(isolated_sources)))
 
-        if len(isolated_sources) > 5:
-            too_close = (isolated_sources['min_sep'] <= isolate_sources_fwhm_sep * image_fwhm)
-            isolated_sources = isolated_sources[~too_close]
-            log.info('    Removes %d sources within '
-                     'minimum separation [ %d pixel ]' % (too_close.sum(),
-                                                          (isolate_sources_fwhm_sep * image_fwhm)))
+            image_fwhm = np.nanmean(fwhm_array)
+            if len(fwhm_array) == 0:
+                log.warning('    Less than min source after sigma clipping: %d' % len(isolated_sources))
+                threshold_value -= n
 
+                if m == 0:
+                    decrease_increment = True
+                    m = fine_fudge_factor
+                    fudge_factor = fine_fudge_factor
+                else:
+                    m = fudge_factor
+
+                n = 0
+                continue
+
+            if len(isolated_sources) > 5:
+                too_close = (isolated_sources['min_sep'] <= isolate_sources_fwhm_sep * image_fwhm)
+                isolated_sources = isolated_sources[~too_close]
+                log.info('    Removes %d sources within '
+                         'minimum separation [ %d pixel ]' % (too_close.sum(),
+                                                              (isolate_sources_fwhm_sep * image_fwhm)))
         break
 
-    image_fwhm = np.nanmean(isolated_sources['fwhm'].values)
-    image_fwhm_err = np.nanstd(isolated_sources['fwhm'].values)
+    isolated_sources = isolated_sources.dropna(subset=['fwhm', 'fwhm_err'], inplace=False)
+    FWHM_mask = sigma_clip(isolated_sources['fwhm'].values,
+                           sigma=sigmaclip_FWHM_sigma,
+                           masked=True,
+                           maxiters=10,
+                           cenfunc=np.nanmedian,
+                           stdfunc=mad_std)
+
+    if np.sum(FWHM_mask.mask) == 0 or len(isolated_sources) < 5:
+        isolated_sources['include_fwhm'] = [True] * len(isolated_sources)
+        fwhm_array = isolated_sources['fwhm'].values
+    else:
+        fwhm_array = isolated_sources[~FWHM_mask.mask]['fwhm'].values
+        isolated_sources['include_fwhm'] = ~FWHM_mask.mask
+        log.info('    Removed %d FWHM outliers' % (np.sum(FWHM_mask.mask)))
+
+    image_fwhm = np.nanmean(fwhm_array)
+    image_fwhm_err = np.nanstd(fwhm_array)
 
     if not silent:
         log.info(f'    FWHM: {image_fwhm:.3f} +/- {image_fwhm_err:.3f} [ pixels ]')
     isolated_sources['cat_id'] = np.arange(1, len(isolated_sources) + 1)
-    del isolated_sources['id']
+    # del isolated_sources['id']
 
     return (image_fwhm, image_fwhm_err), isolated_sources, True
 
 
-def clean_catalog_trail(imgarr, mask, catalog, fwhm, r=3.):
+def clean_catalog_trail(imgarr, mask, catalog, fwhm, r=5.):
     """Remove objects from the source catalog.
 
     Remove objects from the source catalog where any
@@ -952,6 +1058,8 @@ def dilate_mask(mask, tophat_size: int) -> np.ndarray:
 
 
 def extract_source_catalog(imgarr,
+                           use_catalog=None,
+                           known_fwhm=None,
                            vignette=-1, vignette_rectangular=-1.,
                            cutouts=None, only_rectangle=None,
                            silent=False, **config):
@@ -965,6 +1073,8 @@ def extract_source_catalog(imgarr,
     ----------
     imgarr: np.ndarray
         Input image as an astropy.io.fits HDUList.
+    use_catalog:
+    known_fwhm:
     config: dict
         Dictionary containing the configuration
     vignette: float, optional
@@ -1013,7 +1123,7 @@ def extract_source_catalog(imgarr,
 
     # apply bad pixel mask if present
     if img_mask is not None:
-        imgarr_bkg_subtracted[img_mask] = np.nan
+        imgarr_bkg_subtracted[img_mask] = bkg_rms_median
 
     if not silent:
         log.info("  > Mask image")
@@ -1029,6 +1139,9 @@ def extract_source_catalog(imgarr,
 
     fwhm, source_cat, state = auto_build_source_catalog(data=imgarr_bkg_subtracted,
                                                         img_std=bkg_rms_median,
+                                                        use_catalog=use_catalog,
+                                                        fwhm=known_fwhm,
+                                                        source_box_size=config['SOURCE_BOX_SIZE'],
                                                         fwhm_init_guess=config['FWHM_INIT_GUESS'],
                                                         threshold_value=config['THRESHOLD_VALUE'],
                                                         min_source_no=config['SOURCE_MIN_NO'],
@@ -1255,6 +1368,106 @@ def get_reference_catalog_phot(ra, dec, sr=0.1, epoch=None, num_sources=None, ca
         ref_table = ref_table[:idx] if num_sources < 0 else ref_table[idx:]
 
     return ref_table.to_pandas(), catalog
+
+
+def get_photometric_catalog(fname, loc, imgarr, hdr, wcsprm,
+                            catalog, silent=False, **config):
+    """"""
+
+    # Initialize logging for this user-callable function
+    log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
+
+    fwhm = hdr['FWHM']
+    ref_tbl_photo = None
+    ref_catalog_photo = None
+
+    src_cat_fname = f'{loc}/{fname}_src_cat'
+    photo_ref_cat_fname = f'{loc}/{fname}_trail_img_photo_ref_cat'
+
+    if catalog.upper() not in _base_conf.SUPPORTED_CATALOGS:
+        log.warning(f"Given photometry catalog '{catalog}' NOT SUPPORTED. "
+                    "Defaulting to GSC242")
+        catalog = "GSC243"
+
+    if config["_photo_ref_cat_fname"] is not None:
+        photo_ref_cat_fname = config["_photo_ref_cat_fname"]
+
+    # get the observation date
+    t = pd.to_datetime(hdr['date-obs'], format=_base_conf.FRMT, utc=False)
+    if 'time-obs' in hdr:
+        t = pd.to_datetime(f"{hdr['date-obs']}T{hdr['time-obs']}",
+                           format=_base_conf.FRMT, utc=False)
+    epoch = Time(t)
+
+    # set ra and dec
+    wcs = WCS(wcsprm.to_header())
+    ra, dec = wcs.wcs_pix2world(hdr['NAXIS1'] // 2,
+                                hdr['NAXIS2'] // 2, 0)
+
+    # estimate the radius of the FoV for ref. catalog creation
+    fov_radius = compute_radius(wcs,
+                                naxis1=hdr['NAXIS1'],
+                                naxis2=hdr['NAXIS2'],
+                                ra=ra, dec=dec)
+
+    # check for source catalog file. If present and not force extraction use these catalogs
+    chk_ref_cat_photo = os.path.isfile(photo_ref_cat_fname + '.cat')
+
+    read_ref_cat_photo = True
+    if config["_force_download"] or not chk_ref_cat_photo:
+        read_ref_cat_photo = False
+
+    # get photometric reference catalog
+    if read_ref_cat_photo:
+        log.info("> Load photometric reference source catalog from file")
+        ref_tbl_photo, _, ref_catalog_photo = read_catalog(photo_ref_cat_fname)
+    else:
+        # get reference catalog
+        ref_tbl_photo, ref_catalog_photo = \
+            get_reference_catalog_phot(ra=ra, dec=dec, sr=fov_radius,
+                                       epoch=epoch.decimalyear,  # num_sources=_base_conf.NUM_SOURCES_MAX,
+                                       catalog=catalog,
+                                       full_catalog=True, silent=silent)
+
+        # add positions to table
+        pos_on_det = wcsprm.s2p(ref_tbl_photo[["RA", "DEC"]].values, 1)['pixcrd']
+        ref_tbl_photo["xcentroid"] = pos_on_det[:, 0]
+        ref_tbl_photo["ycentroid"] = pos_on_det[:, 1]
+
+        # remove non-stars from catalog
+        if 'classification' in ref_tbl_photo:
+            ref_tbl_photo = ref_tbl_photo[ref_tbl_photo.classification == 0]
+
+        # mask positions outside the image boundaries
+        mask = (ref_tbl_photo["xcentroid"] > 0) & \
+               (ref_tbl_photo["xcentroid"] < hdr['NAXIS1']) & \
+               (ref_tbl_photo["ycentroid"] > 0) & \
+               (ref_tbl_photo["ycentroid"] < hdr['NAXIS2'])
+        ref_tbl_photo = ref_tbl_photo[mask]
+
+        if not silent:
+            log.info("> Save photometry reference catalog.")
+        save_catalog(cat=ref_tbl_photo, wcsprm=wcsprm, out_name=photo_ref_cat_fname,
+                     mode='ref_photo', catalog=ref_catalog_photo)
+
+    # todo: make it so that if not enough stars remain after extraction in the original filter
+    #  the alternative mag data are used.
+    #  calculate conversion for all and separate those which have both mags, original and converted
+    df, std_fkeys, mag_conv = select_std_stars(ref_tbl_photo,
+                                               ref_catalog_photo,
+                                               config['_filter_val'],
+                                               num_std_max=config['NUM_STD_MAX'],
+                                               num_std_min=config['NUM_STD_MIN'])
+
+    src_tbl, _, _, _, kernel_fwhm, state = \
+        extract_source_catalog(imgarr=imgarr,
+                               use_catalog=df,
+                               known_fwhm=fwhm,
+                               vignette=config["_vignette"],
+                               vignette_rectangular=config["_vignette_rectangular"],
+                               cutouts=config["_cutouts"],
+                               silent=silent, **config)
+    return src_tbl, std_fkeys, mag_conv, kernel_fwhm, state
 
 
 def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
@@ -1814,8 +2027,7 @@ def select_std_stars(ref_cat: pd.DataFrame,
     df = cat_srt.sort_values(by=[filter_keys[0]], axis=0, ascending=True, inplace=False)
     df = df.dropna(subset=filter_keys, inplace=False)
     if df.empty:
-        log.critical("No sources with uncertainties!!! Please decrease threshold "
-                     "and re-run source detection.")
+        log.critical("No sources with uncertainties!!!")
         del ref_cat, cat_srt, df, alt_cat
         gc.collect()
         return None, filter_keys, has_mag_conv
@@ -1826,8 +2038,9 @@ def select_std_stars(ref_cat: pd.DataFrame,
         df = df[:idx]
 
     # result column names
-    cols = ['objID', 'RA', 'DEC', 'xcentroid', 'ycentroid',
-            'fwhm', 'fwhm_err', 'include_fwhm']
+    # cols = ['objID', 'RA', 'DEC', 'xcentroid', 'ycentroid',
+    #         'fwhm', 'fwhm_err', 'include_fwhm']
+    cols = ['objID', 'RA', 'DEC', 'xcentroid', 'ycentroid']
     cols += filter_keys
 
     df = df[cols]

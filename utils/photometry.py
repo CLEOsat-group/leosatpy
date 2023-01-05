@@ -140,7 +140,7 @@ def get_optimum_aper_rad(image: np.ndarray,
     # Initialize logging for this user-callable function
     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
 
-    image[image < 0.] = 0.
+    image[image < 0.] = 0
 
     dstep = config['APER_STEP_SIZE']
     start = config['APER_START']
@@ -303,6 +303,7 @@ def get_aper_photometry(image: np.ndarray,
 
 def get_std_photometry(image, std_cat, src_pos, fwhm, config):
     """Perform aperture photometry on standard stars"""
+    res_cat = std_cat.copy()
     aper_dict = dict(aper=config['APER_RAD'] * fwhm,
                      inf_aper=config['INF_APER_RAD'] * fwhm)
 
@@ -313,10 +314,10 @@ def get_std_photometry(image, std_cat, src_pos, fwhm, config):
                                        r_out=config['RSKYOUT'] * fwhm)
 
         aper_flux_counts, aper_flux_count_err, _, aper_bkg_counts, _ = phot_res
-        std_cat[f'flux_counts_{key}'] = aper_flux_counts
-        std_cat[f'flux_counts_err_{key}'] = aper_flux_count_err
+        res_cat[f'flux_counts_{key}'] = aper_flux_counts
+        res_cat[f'flux_counts_err_{key}'] = aper_flux_count_err
 
     del src_pos, image
     gc.collect()
 
-    return std_cat
+    return res_cat

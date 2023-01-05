@@ -980,7 +980,7 @@ class CalibrateObsWCS(object):
 
         # increase FoV for SPM data
         if self._telescope == 'DDOTI 28-cm f/2.2':
-            fov_radius *= 0.5
+            fov_radius *= 1.5
 
         if not self._silent:
             log.info("  Using field-of-view radius: {:.3g} deg".format(fov_radius))
