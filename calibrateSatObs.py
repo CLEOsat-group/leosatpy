@@ -250,7 +250,7 @@ class CalibrateObsWCS(object):
                         self._log.info(f">> Astrometric calibration has {fail_str}")
                         # not_converged.append(file_df['input'])
                         with open(fail_fname, "a", encoding="utf8") as file:
-                            file.write('{}\t{}'.format(self._telescope, file_df["input"]))
+                            file.write('{}\t{}\n'.format(self._telescope, file_df["input"]))
 
                 if multiple:
                     self._log.info(">> Final report:")
@@ -980,7 +980,7 @@ class CalibrateObsWCS(object):
 
         # increase FoV for SPM data
         if self._telescope == 'DDOTI 28-cm f/2.2':
-            fov_radius *= 0.5
+            fov_radius *= 1.5
 
         if not self._silent:
             log.info("  Using field-of-view radius: {:.3g} deg".format(fov_radius))

@@ -512,12 +512,12 @@ class AnalyseSatObs(object):
         #     sat_name = f'{sat_name}-{sat_info["UniqueID"].values[0]}'
         if not self._silent:
             self._log.info("  > Calculate satellite information from tle")
-        sat_vel, sat_vel_err, tle_pos_df = self._get_angular_velocity(hdr=hdr, sat_name=sat_name,
-                                                                      tle_location=str(tle_location[2]),
-                                                                      date_obs=date_obs,
-                                                                      obs_times=[obs_start, obs_mid, obs_end],
-                                                                      exptime=exptime,
-                                                                      dt=self._config['DT_STEP_SIZE'])
+        sat_vel, sat_vel_err, tle_pos_df = self._get_data_from_tle(hdr=hdr, sat_name=sat_name,
+                                                                   tle_location=str(tle_location[2]),
+                                                                   date_obs=date_obs,
+                                                                   obs_times=[obs_start, obs_mid, obs_end],
+                                                                   exptime=exptime,
+                                                                   dt=self._config['DT_STEP_SIZE'])
 
         sat_vel = float('%.3f' % sat_vel)
         sat_vel_err = float('%.3f' % sat_vel_err)
@@ -831,7 +831,7 @@ class AnalyseSatObs(object):
 
         sat_vel = float('%.3f' % sat_vel)
         sat_vel_err = float('%.3f' % sat_vel_err)
-        print(tle_pos_df)
+
         # observation and location data
         geo_lon = obsparams['longitude']
         geo_lat = obsparams['latitude']
@@ -1001,6 +1001,7 @@ class AnalyseSatObs(object):
         obspar = self._obsparams
         imgarr = img_dict['imgarr']
         img_bkg = img_dict['bkg_data']['bkg']
+        img_bkg_rms = img_dict['bkg_data']['bkg_rms_med']
         hdr = img_dict['hdr']
         file_name = img_dict['fname']
         fwhm = img_dict['kernel_fwhm'][0]
@@ -1046,20 +1047,27 @@ class AnalyseSatObs(object):
 
         ref_img_warped = None
         if has_ref:
+            img_mask = data_dict['image_mask'][ref_img_idx]
             ref_imgarr = data_dict['images'][ref_img_idx]
             ref_bkg = data_dict['bkg_data'][ref_img_idx]['bkg']
+            ref_bkg_rms = data_dict['bkg_data'][ref_img_idx]['bkg_rms_med']
 
             img_bkg_sub = imgarr - img_bkg
-            img_bkg_sub[img_bkg_sub < 0.] = 0.
+            if img_mask is not None:
+                img_bkg_sub[img_mask] = img_bkg_rms
+            img_bkg_sub[img_bkg_sub < 0.] = img_bkg_rms
 
             ref_img_bkg_sub = ref_imgarr - ref_bkg
-            ref_img_bkg_sub[ref_img_bkg_sub < 0.] = 0.
+            if img_mask is not None:
+                ref_img_bkg_sub[img_mask] = ref_bkg_rms
+            ref_img_bkg_sub[ref_img_bkg_sub < 0.] = ref_bkg_rms
+
             try:
                 T, _ = astroalign.find_transform(img_bkg_sub, ref_img_bkg_sub,
                                                  detection_sigma=3.,
                                                  max_control_points=100,
                                                  min_area=9)
-            except TypeError:
+            except (TypeError, astroalign.MaxIterError):
                 T, _ = astroalign.find_transform(nd.gaussian_filter(img_bkg_sub, 2.),
                                                  nd.gaussian_filter(ref_img_bkg_sub, 2.),
                                                  detection_sigma=5.,
@@ -1239,9 +1247,11 @@ class AnalyseSatObs(object):
         obspar = self._obsparams
         imgarr = data['imgarr']
         hdr = data['hdr']
-        phot_cat_cleaned = data['cats_cleaned']['ref_cat_cleaned']
+        std_cat = data['cats_cleaned']['ref_cat_cleaned']
         catalog = data['cat']
         filter_val = data['band']
+        std_fkeys = data['std_fkeys']
+        mag_conv = data['mag_conv']
         file_name = data['fname']
         kernel_fwhm = data['kernel_fwhm'][0]
         exp_time = hdr[obspar['exptime']]
@@ -1252,19 +1262,19 @@ class AnalyseSatObs(object):
             self._log.info("> Perform photometry on standard stars")
             self._log.info("  > Select standard stars")
 
-        # select standard stars
-        std_cat, std_fkeys, mag_conv = sext.select_std_stars(phot_cat_cleaned,
-                                                             catalog, filter_val,
-                                                             num_std_max=config['NUM_STD_MAX'],
-                                                             num_std_min=config['NUM_STD_MIN'],
-                                                             silent=self._silent)
-        if std_cat is None:
-            del data, imgarr, catalog, phot_cat_cleaned, std_cat
-            gc.collect()
-
-            return None, None, None, None, None, None, False, ['StdSelectError',
-                                                               'No suitable standard stars found',
-                                                               'To be solved']
+        # # select standard stars
+        # std_cat, std_fkeys, mag_conv = sext.select_std_stars(phot_cat_cleaned,
+        #                                                      catalog, filter_val,
+        #                                                      num_std_max=config['NUM_STD_MAX'],
+        #                                                      num_std_min=config['NUM_STD_MIN'],
+        #                                                      silent=self._silent)
+        # if std_cat is None:
+        #     del data, imgarr, catalog, phot_cat_cleaned, std_cat
+        #     gc.collect()
+        #
+        #     return None, None, None, None, None, None, False, ['StdSelectError',
+        #                                                        'No suitable standard stars found',
+        #                                                        'To be solved']
 
         # select only good sources if possible
         if 'include_fwhm' in std_cat.columns:
@@ -1272,6 +1282,7 @@ class AnalyseSatObs(object):
         else:
             idx = [True] * len(std_cat)
         std_cat = std_cat[idx]
+        # std_cat = std_cat.head(100)
 
         # get reference positions
         src_pos = np.array(list(zip(std_cat['xcentroid'], std_cat['ycentroid'])))
@@ -1317,7 +1328,7 @@ class AnalyseSatObs(object):
         mag_corr = self._get_magnitude_correction(df=std_cat,
                                                   file_base=file_name)
         if not mag_corr:
-            del data, imgarr, catalog, phot_cat_cleaned, std_cat, result, fluxes
+            del data, imgarr, catalog, std_cat, result, fluxes
             gc.collect()
 
             return None, None, None, None, None, None, False, ['MagCorrectError',
@@ -1329,7 +1340,7 @@ class AnalyseSatObs(object):
             self._log.info('    ==> estimated magnitude correction: '
                            '{:.3f} +/- {:.3f} (mag)'.format(mag_corr[0], mag_corr[1]))
 
-        del imgarr, result, src_pos, fluxes, rapers, data, phot_cat_cleaned
+        del imgarr, result, src_pos, fluxes, rapers, data
         gc.collect()
 
         return std_cat, std_fkeys, opt_aprad, mag_conv, mag_corr, qlf_aprad, True, ['', '', '']
@@ -1386,8 +1397,8 @@ class AnalyseSatObs(object):
 
         imgarr = data['imgarr']
         fwhm = data['kernel_fwhm'][0]
-        src_tbl = data['src_tbl']
-        ref_tbl_photo = data['ref_tbl_photo']
+        # src_tbl = data['src_tbl']
+        ref_tbl_photo = data['src_tbl']
         ref_cat_str = 'ref_cat_cleaned'
 
         # create a masked image for detected trail
@@ -1400,7 +1411,7 @@ class AnalyseSatObs(object):
         data['trail_data']['mask_list'] = mask_list
 
         if ref_tbl_photo.empty or not mask[mask > 0.].any():
-            del imgarr, src_tbl, ref_tbl_photo, mask_list
+            del imgarr, ref_tbl_photo, mask_list
             return data, False, ['IntegrityError',
                                  'Empty data frame or empty mask',
                                  'Check input data, trail/sources detection']
@@ -1409,7 +1420,7 @@ class AnalyseSatObs(object):
                                                                 catalog=ref_tbl_photo,
                                                                 fwhm=fwhm)
         if ref_cat_cln is None:
-            del imgarr, src_tbl, ref_tbl_photo, ref_cat_cln, ref_cat_removed, mask_list
+            del imgarr, ref_tbl_photo, ref_cat_cln, ref_cat_removed, mask_list
             return data, False, ['SrcMatchError',
                                  'No standard stars left '
                                  'after removing stars close to trail',
@@ -1420,45 +1431,47 @@ class AnalyseSatObs(object):
         data['cats_cleaned'] = {ref_cat_str: ref_cat_cln}
         data['cats_cleaned_rem'] = {ref_cat_str: ref_cat_removed}
 
-        # match source catalog with cleaned reference catalog
-        matches = imtrans.find_matches(src_tbl,
-                                       ref_cat_cln,
-                                       threshold=1.5 * fwhm)
-        src_cat_matched, ref_cat_cln_matched, _, _, _, _, state = matches
+        return data, True, ['', '', '']
 
-        del matches, _
-
-        if not state:
-            del src_tbl, ref_tbl_photo, ref_cat_cln, ref_cat_removed
-            return data, False, ['SrcMatchError',
-                                 'No sources after matching '
-                                 'with photometric reference catalog',
-                                 'To be solved']
-
-        data['cats_cleaned'].update({ref_cat_str: ref_cat_cln_matched})
-
-        if ref_cat_removed.empty:
-            # return result
-            return data, True, ['', '', '']
-        else:
-
-            # match source catalog with cleaned reference catalog
-            matches = imtrans.find_matches(src_tbl,
-                                           ref_cat_removed,
-                                           threshold=1.5 * fwhm)
-            src_cat_removed_matched, ref_cat_removed_cln_matched, _, _, _, _, state = matches
-            data['cats_cleaned_rem'].update({ref_cat_str: ref_cat_cln_matched})
-
-            del matches, _, src_tbl, ref_tbl_photo, ref_cat_cln, \
-                ref_cat_removed
-            gc.collect()
-            if not state:
-                return data, False, ['SrcMatchError',
-                                     'No sources after matching '
-                                     'with photometric reference catalog',
-                                     'To be solved']
-            # return result
-            return data, True, ['', '', '']
+        # # match source catalog with cleaned reference catalog
+        # matches = imtrans.find_matches(src_tbl,
+        #                                ref_cat_cln,
+        #                                threshold=1.5 * fwhm)
+        # src_cat_matched, ref_cat_cln_matched, _, _, _, _, state = matches
+        #
+        # del matches, _
+        #
+        # if not state:
+        #     del src_tbl, ref_tbl_photo, ref_cat_cln, ref_cat_removed
+        #     return data, False, ['SrcMatchError',
+        #                          'No sources after matching '
+        #                          'with photometric reference catalog',
+        #                          'To be solved']
+        #
+        # data['cats_cleaned'].update({ref_cat_str: ref_cat_cln_matched})
+        #
+        # if ref_cat_removed.empty:
+        #     # return result
+        #     return data, True, ['', '', '']
+        # else:
+        #
+        #     # match source catalog with cleaned reference catalog
+        #     matches = imtrans.find_matches(src_tbl,
+        #                                    ref_cat_removed,
+        #                                    threshold=1.5 * fwhm)
+        #     src_cat_removed_matched, ref_cat_removed_cln_matched, _, _, _, _, state = matches
+        #     data['cats_cleaned_rem'].update({ref_cat_str: ref_cat_cln_matched})
+        #
+        #     del matches, _, src_tbl, ref_tbl_photo, ref_cat_cln, \
+        #         ref_cat_removed
+        #     gc.collect()
+        #     if not state:
+        #         return data, False, ['SrcMatchError',
+        #                              'No sources after matching '
+        #                              'with photometric reference catalog',
+        #                              'To be solved']
+        #     # return result
+        #     return data, True, ['', '', '']
 
     def _get_img_dict(self, data: dict, idx: int,
                       obsparam: dict,
@@ -1502,6 +1515,7 @@ class AnalyseSatObs(object):
 
         # extract sources on detector
         params_to_add = dict(_fov_radius=None,
+                             _filter_val=band,
                              _trail_data=trail_data,
                              _vignette=self._vignette,
                              _vignette_rectangular=self._vignette_rectangular,
@@ -1518,53 +1532,84 @@ class AnalyseSatObs(object):
         config.update(params_to_add)
         for key, value in self._config.items():
             config[key] = value
+        src_tbl, std_fkeys, mag_conv, kernel_fwhm, state = sext.get_photometric_catalog(file_name, self._cat_path,
+                                                                                        imgarr, hdr, wcsprm, catalog,
+                                                                                        silent=self._silent,
+                                                                                        **config)
 
-        extraction_result, state = sext.get_src_and_cat_info(file_name, self._cat_path,
-                                                             imgarr, hdr, wcsprm, catalog,
-                                                             has_trail=has_trail,
-                                                             mode='photo',
-                                                             silent=self._silent,
-                                                             **config)
-        # unpack extraction result tuple
-        (src_tbl, ref_tbl_astro, ref_catalog_astro, ref_tbl_photo, ref_catalog_photo,
-         src_cat_fname, astro_ref_cat_fname, photo_ref_cat_fname,
-         kernel_fwhm, kernel, segmap, segmap_thld) = extraction_result
-
-        res_keys = ['imgarr', 'hdr', 'fname', 'loc', 'cat', 'band', 'src_tbl',
-                    'ref_tbl_astro', 'ref_catalog_astro',
-                    'ref_tbl_photo', 'ref_catalog_photo',
-                    'src_cat_fname', 'astro_ref_cat_fname', 'photo_ref_cat_fname',
-                    'kernel_fwhm', 'trail_data', 'bkg_data']
+        res_keys = ['imgarr', 'hdr', 'fname', 'loc', 'cat', 'band', 'src_tbl', 'kernel_fwhm',
+                    'trail_data', 'bkg_data', 'std_fkeys', 'mag_conv']
 
         res_vals = [imgarr, hdr, file_name, location, catalog, band,
-                    src_tbl, ref_tbl_astro, ref_catalog_astro, ref_tbl_photo, ref_catalog_photo,
-                    src_cat_fname, astro_ref_cat_fname, photo_ref_cat_fname, kernel_fwhm, trail_data,
-                    bkg_data]
+                    src_tbl, kernel_fwhm, trail_data,
+                    bkg_data, std_fkeys, mag_conv]
 
         result = dict(zip(res_keys, res_vals))
 
-        if mode != 'ref':
-            if not self._silent:
-                self._log.info("> Load object information")
+        if not self._silent:
+            self._log.info("> Load object information")
 
-            ra = hdr[obsparam['ra']]
-            dec = hdr[obsparam['dec']]
-            if obsparam['radec_separator'] == 'XXX':
-                ra = round(hdr[obsparam['ra']], _base_conf.ROUND_DECIMAL)
-                dec = round(hdr[obsparam['dec']], _base_conf.ROUND_DECIMAL)
-            hdr[obsparam['ra']] = ra
-            hdr[obsparam['dec']] = dec
+        ra = hdr[obsparam['ra']]
+        dec = hdr[obsparam['dec']]
+        if obsparam['radec_separator'] == 'XXX':
+            ra = round(hdr[obsparam['ra']], _base_conf.ROUND_DECIMAL)
+            dec = round(hdr[obsparam['dec']], _base_conf.ROUND_DECIMAL)
+        hdr[obsparam['ra']] = ra
+        hdr[obsparam['dec']] = dec
 
-            self._obsTable.get_object_data(fname=file_name, kwargs=hdr,
-                                           obsparams=obsparam)
-            self._obj_info = self._obsTable.obj_info
-
-        del imgarr, res_vals, extraction_result, bkg_data, hdr, file_name, location, catalog, band, \
-            src_tbl, ref_tbl_astro, ref_catalog_astro, ref_tbl_photo, ref_catalog_photo, \
-            src_cat_fname, astro_ref_cat_fname, photo_ref_cat_fname, kernel_fwhm, trail_data
-        gc.collect()
+        self._obsTable.get_object_data(fname=file_name, kwargs=hdr,
+                                       obsparams=obsparam)
+        self._obj_info = self._obsTable.obj_info
 
         return result
+        # sys.exit()
+        #
+        # extraction_result, state = sext.get_src_and_cat_info(file_name, self._cat_path,
+        #                                                      imgarr, hdr, wcsprm, catalog,
+        #                                                      has_trail=has_trail,
+        #                                                      mode='photo',
+        #                                                      silent=self._silent,
+        #                                                      **config)
+        # # unpack extraction result tuple
+        # (src_tbl, ref_tbl_astro, ref_catalog_astro, ref_tbl_photo, ref_catalog_photo,
+        #  src_cat_fname, astro_ref_cat_fname, photo_ref_cat_fname,
+        #  kernel_fwhm, kernel, segmap, segmap_thld) = extraction_result
+        #
+        # res_keys = ['imgarr', 'hdr', 'fname', 'loc', 'cat', 'band', 'src_tbl',
+        #             'ref_tbl_astro', 'ref_catalog_astro',
+        #             'ref_tbl_photo', 'ref_catalog_photo',
+        #             'src_cat_fname', 'astro_ref_cat_fname', 'photo_ref_cat_fname',
+        #             'kernel_fwhm', 'trail_data', 'bkg_data']
+        #
+        # res_vals = [imgarr, hdr, file_name, location, catalog, band,
+        #             src_tbl, ref_tbl_astro, ref_catalog_astro, ref_tbl_photo, ref_catalog_photo,
+        #             src_cat_fname, astro_ref_cat_fname, photo_ref_cat_fname, kernel_fwhm, trail_data,
+        #             bkg_data]
+        #
+        # result = dict(zip(res_keys, res_vals))
+        #
+        # if mode != 'ref':
+        #     if not self._silent:
+        #         self._log.info("> Load object information")
+        #
+        #     ra = hdr[obsparam['ra']]
+        #     dec = hdr[obsparam['dec']]
+        #     if obsparam['radec_separator'] == 'XXX':
+        #         ra = round(hdr[obsparam['ra']], _base_conf.ROUND_DECIMAL)
+        #         dec = round(hdr[obsparam['dec']], _base_conf.ROUND_DECIMAL)
+        #     hdr[obsparam['ra']] = ra
+        #     hdr[obsparam['dec']] = dec
+        #
+        #     self._obsTable.get_object_data(fname=file_name, kwargs=hdr,
+        #                                    obsparams=obsparam)
+        #     self._obj_info = self._obsTable.obj_info
+        #
+        # del imgarr, res_vals, extraction_result, bkg_data, hdr, file_name, location, catalog, band, \
+        #     src_tbl, ref_tbl_astro, ref_catalog_astro, ref_tbl_photo, ref_catalog_photo, \
+        #     src_cat_fname, astro_ref_cat_fname, photo_ref_cat_fname, kernel_fwhm, trail_data
+        # gc.collect()
+        #
+        # return result
 
     def _identify_trails(self, files: list):
         """Identify image with the satellite trail(s) and collect image info and trail parameters."""
@@ -1836,9 +1881,9 @@ class AnalyseSatObs(object):
 
         return data_dict
 
-    def _get_angular_velocity(self, hdr, sat_name: str, tle_location: str,
-                              date_obs, obs_times,
-                              exptime, dt=None):
+    def _get_data_from_tle(self, hdr, sat_name: str, tle_location: str,
+                           date_obs, obs_times,
+                           exptime, dt=None):
         """ Calculate angular velocity from tle, satellite and observer location """
 
         wcs = WCS(hdr)
@@ -1853,7 +1898,6 @@ class AnalyseSatObs(object):
 
         pos_times = [datetime.strptime(f"{date_obs}T{i}",
                                        frmt) for i in obs_times]
-
 
         fname = f"tle_predicted_positions_{sat_name.upper()}_{pos_times[0].strftime(frmt)[:-3]}.csv"
         fname = os.path.join(tle_pos_path, fname)
