@@ -1245,7 +1245,7 @@ def get_reference_catalog_astro(ra, dec, sr: float = 0.5,
             WHERE 1 = CONTAINS(
                POINT({coord.ra.value}, {coord.dec.value}),
                CIRCLE(ra, dec, {radius.value}))
-            AND phot_g_mean_mag < 19.5
+            AND phot_g_mean_mag <= 18
             AND parallax IS NOT NULL
             ORDER BY phot_g_mean_mag ASC
         """
@@ -1665,8 +1665,8 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
 
 
 def mask_image(image,
-               vignette=-1,
-               vignette_rectangular=-1,
+               vignette=-1.,
+               vignette_rectangular=-1.,
                cutouts=None,
                only_rectangle=None, silent=False):
     """Mask image"""
