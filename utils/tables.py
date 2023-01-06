@@ -80,18 +80,27 @@ class ObsTables(object):
         self._obs_info = pd.DataFrame()
         self._obj_info = pd.DataFrame()
         self._sat_info = pd.DataFrame()
+        self._roi_info = pd.DataFrame()
+        self._roi_data = pd.DataFrame()
+
         self._vis_info = pd.DataFrame()
         self._def_path = Path(config['RESULT_TABLE_PATH']).expanduser().resolve()
-        self._def_name = config['RESULT_TABLE_NAME']
+        self._def_tbl_name = config['RESULT_TABLE_NAME']
+        self._def_roi_name = config['ROI_TABLE_NAME']
         self._def_cols = _base_conf.DEF_RES_TBL_COL_NAMES
         self._def_col_units = _base_conf.DEF_RES_TBL_COL_UNITS
-        self._fname_table = self._def_path / self._def_name
+        self._fname_res_table = self._def_path / self._def_tbl_name
+        self._fname_roi_table = self._def_path / self._def_roi_name
         self._def_key_transl = _base_conf.DEF_KEY_TRANSLATIONS
         self._create_obs_table()
 
     @property
     def obs_info(self):
         return self._obs_info
+
+    @property
+    def roi_data(self):
+        return self._roi_data
 
     @property
     def obj_info(self):
@@ -205,23 +214,53 @@ class ObsTables(object):
 
         return True
 
+    def load_roi_table(self):
+        """Load the observation info table"""
+        roi_info = self._roi_info
+
+        # files info
+        fname = self._fname_roi_table
+        if fname.exists():
+            if not self._silent:
+                self._log.info(f'> Read Region-of-Interest {self._def_roi_name}')
+            roi_info = pd.read_csv(fname, header=0, delimiter=',')
+
+        self._roi_info = roi_info
+
     def load_obs_table(self):
         """Load the observation info table"""
         obs_info = self._obs_info
 
         # files info
-        fname = self._fname_table
+        fname = self._fname_res_table
         if fname.exists():
             if not self._silent:
-                self._log.info(f'> Read {self._def_name}')
+                self._log.info(f'> Read {self._def_tbl_name}')
             obs_info = pd.read_csv(fname, header=0, delimiter=',')
             # obs_info.drop([0], axis=0, inplace=True)
             # obs_info.reset_index(drop=True)
             # obs_info = obs_info.apply(pd.to_numeric, errors='ignore')
         else:
-            self._log.error(f'> {self._def_name} does not exist!! '
+            self._log.error(f'> {self._def_tbl_name} does not exist!! '
                             f'This should not happen.')
         self._obs_info = obs_info
+
+    def get_roi(self, fname):
+        """Get region of interest"""
+        roi_info = self._roi_info
+        if not roi_info.empty:
+            pos_df = roi_info.copy()
+
+            # convert file name to uppercase
+            pos_df['File'] = roi_info['File'].str.upper()
+            fname_upper = fname.upper()
+            # check position
+            pos_mask = pos_df['File'] == fname_upper
+            pos = np.flatnonzero(pos_mask)
+
+            if list(pos):
+                pos_df = roi_info[pos_mask]
+                self._roi_data = pos_df
 
     def get_object_data(self, fname, kwargs, obsparams):
         """Extract a row from the obs info table"""
@@ -381,7 +420,7 @@ class ObsTables(object):
         """
 
         obs_info = self._obs_info
-        fname = self._fname_table
+        fname = self._fname_res_table
 
         # update the columns in case the table was changed
         for col in self._def_cols:
@@ -608,7 +647,7 @@ class ObsTables(object):
     def _create_obs_table(self):
         """Method to create csv file that contains basic model info"""
 
-        fname = self._fname_table
+        fname = self._fname_res_table
         df = pd.DataFrame(columns=self._def_cols)
         if not fname.exists():
             if not self._silent:
