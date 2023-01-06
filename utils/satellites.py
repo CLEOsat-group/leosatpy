@@ -716,6 +716,12 @@ def detect_sat_trails(image: np.ndarray,
             if not silent:
                 log.info("  ==> 1 satellite trails detected.")
             reg_dict = get_trail_properties(segm, df, config, silent=True)
+            if config['roi_offset'] is not None:
+                coords = np.array(reg_dict['coords'])
+                coords[0] = coords[0] + config['roi_offset'][0]
+                coords[1] = coords[1] + config['roi_offset'][1]
+                reg_dict['coords'] = tuple(coords)
+
             reg_dict['detection_imgs'].update({'img_sharp': sharpened,
                                                'segm_map': segm_init})
 
