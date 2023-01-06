@@ -221,6 +221,7 @@ class AnalyseSatObs(object):
         self._obsTable = None
         self._obs_info = None
         self._obj_info = None
+        self._roi_info = None
 
         self._observer = None
 
@@ -237,6 +238,9 @@ class AnalyseSatObs(object):
         self._obsTable.load_obs_table()
         self._obs_info = ObsTables.obs_info
         self._obj_info = ObsTables.obj_info
+
+        # Load Region-of-Interest
+        self._obsTable.load_roi_table()
 
         if not self._silent:
             self._log.info("> Search input and prepare data")
@@ -687,311 +691,6 @@ class AnalyseSatObs(object):
 
         return True, []
 
-    def _get_final_results_old(self,
-                               img_dict: dict,
-                               sat_name: str,
-                               sat_apphot: dict,
-                               std_apphot: astropy.table.Table,
-                               std_filter_keys: dict,
-                               mag_conv: bool, mag_corr: tuple):
-        """Get final results
-
-        Use all collected data to estimate all parameters required for publication.
-        Calculate observed and estimated lengths, magnitudes and angles employing the available
-        telemetry and observation datasets.
-
-        Parameters
-        ----------
-        img_dict:
-            Dictionary with trail image data
-        sat_name:
-            Satellite identifier
-        sat_apphot:
-            Catalog with satellite photometry
-        std_apphot:
-            Catalog with standard star photometry
-        std_filter_keys:
-            Standard star filter band and error names
-        """
-
-        obj_info = self._obj_info
-
-        hdr = img_dict['hdr']
-        obsparams = self._obsparams
-        file_name = img_dict['fname']
-        n_trails_max = self._config['N_TRAILS_MAX']
-
-        # get additional info
-        exptime = hdr['exptime']
-        pixelscale = hdr['pixscale']  # arcsec/pix
-        pixelscale_err = 0.05 * pixelscale
-
-        if not self._silent:
-            self._log.info("> Perform final analysis of satellite trail data")
-
-        # get nominal orbit altitude
-        sat_h_orb_ref = _base_conf.SAT_HORB_REF['ONEWEB']
-        if 'STARLINK' in sat_name:
-            sat_h_orb_ref = _base_conf.SAT_HORB_REF['STARLINK']
-        if 'BLUEWALKER' in sat_name:
-            sat_h_orb_ref = _base_conf.SAT_HORB_REF['BLUEWALKER']
-
-        # get time delta of obs mid time
-        date_obs = obj_info['Date-Obs'].to_numpy(dtype=object)[0]
-        obs_mid = obj_info['Obs-Mid'].to_numpy(dtype=object)[0]
-        obs_start = obj_info['Obs-Start'].to_numpy(dtype=object)[0]
-        obs_end = obj_info['Obs-Stop'].to_numpy(dtype=object)[0]
-        dtobj_obs = datetime.strptime(f"{date_obs}T{obs_mid}", "%Y-%m-%dT%H:%M:%S.%f")
-        pointing = (obj_info['RA'].to_numpy(dtype=object)[0],
-                    obj_info['DEC'].to_numpy(dtype=object)[0])
-
-        # standard star data
-        _aper_sum = np.array(list(zip(std_apphot['flux_counts_aper'],
-                                      std_apphot['flux_counts_err_aper'])))
-        _mags = np.array(list(zip(std_apphot[std_filter_keys[0]],
-                                  std_apphot[std_filter_keys[1]])))
-        std_pos = np.array(list(zip(std_apphot['xcentroid'],
-                                    std_apphot['ycentroid'])))
-
-        for i in range(n_trails_max):
-            reg_info = img_dict["trail_data"]['reg_info_lst'][i]
-
-            if not self._silent:
-                self._log.info("  > Plot trail detection result")
-            # final plot
-            self._plot_final_result(img_dict=img_dict,
-                                    reg_data=reg_info,
-                                    obs_date=(date_obs, obs_mid),
-                                    expt=exptime,
-                                    std_pos=std_pos,
-                                    file_base=file_name)
-
-        if not self._silent:
-            self._log.info("  > Load satellite visibility data")
-        state = self._obsTable.load_visibility_file(img_filter=hdr['FILTER'],
-                                                    src_loc=img_dict['loc'])
-        if not state:
-            return state, ['LoadVisError',
-                           'Visibility file not found',
-                           'Check that the naming of the visibility file ']
-
-        self._obsTable.get_sat_data_from_visibility(sat_name=sat_name,
-                                                    obs_date=dtobj_obs,
-                                                    pointing=pointing)
-        sat_info = self._obsTable.sat_info
-
-        # get timestamp of tle data
-        ut_date = sat_info['UT Date'].to_numpy(dtype=object)[0]
-        ut_time = sat_info['UT time'].to_numpy(dtype=object)[0]
-        dtobj_sat = datetime.strptime(f"{ut_date}T{ut_time}", "%Y-%m-%dT%H:%M:%S")
-
-        # get time difference
-        dt = dtobj_obs - dtobj_sat
-        dt_sec = dt.microseconds / 1.e6
-        if not self._silent:
-            self._log.info("  > Find tle file location")
-        # get tle file and calculate angular velocity
-        tle_location = self._obsTable.find_tle_file(sat_name=sat_name,
-                                                    img_filter=hdr['FILTER'],
-                                                    src_loc=img_dict['loc'])
-
-        if tle_location is None:
-            return False, ['LoadTLEError',
-                           'TLE file not found',
-                           'Check that naming of the tle file']
-
-        # required satellite data
-        sat_info.reset_index(drop=True)
-
-        result = sat_info.iloc[0].to_dict()
-        sat_lon = sat_info['SatLon'].to_numpy(dtype=float)[0]
-        sat_lat = sat_info['SatLat'].to_numpy(dtype=float)[0]
-        sat_alt = sat_info['SatAlt'].to_numpy(dtype=float)[0]
-        sat_az = sat_info['SatAz'].to_numpy(dtype=float)[0]
-        sat_elev = sat_info['SatElev'].to_numpy(dtype=float)[0]
-
-        # Get angular velocity. In case the visibility file was created before 2022-06-01
-        # the velocity is calculated from the ra and dec at the start and end of the obs.
-        # This is required since there was a bug in the older version of the satellite track
-        # calculations.
-        # sat_vel = sat_info['SatAngularSpeed'].to_numpy(dtype=float)[0]
-        # if date_obs < "2022-0-01":
-        if not pd.isnull(sat_info['AltID']).any():
-            sat_name = f'{sat_name} ({sat_info["AltID"].values[0]})'
-        if not pd.isnull(sat_info['UniqueID']).any() and 'BLUEWALKER' not in sat_name:
-            sat_name = f'{sat_name}-{sat_info["UniqueID"].values[0]}'
-        if not self._silent:
-            self._log.info("  > Calculate angular velocity from tle")
-        sat_vel, sat_vel_err, tle_pos_df = self._get_angular_velocity(hdr=hdr, sat_name=sat_name,
-                                                                      tle_location=str(tle_location[2]),
-                                                                      date_obs=date_obs,
-                                                                      obs_times=[obs_start, obs_mid, obs_end],
-                                                                      exptime=exptime,
-                                                                      dt=self._config['DT_STEP_SIZE'])
-
-        sat_vel = float('%.3f' % sat_vel)
-        sat_vel_err = float('%.3f' % sat_vel_err)
-
-        # observation and location data
-        geo_lon = obsparams['longitude']
-        geo_lat = obsparams['latitude']
-        geo_alt = obsparams['altitude'] / 1.e3  # in km
-        # geo_alt = sats.get_elevation(lat=geo_lat, long=geo_lon) / 1.e3  # in km
-
-        for i in range(n_trails_max):
-            reg_info = img_dict["trail_data"]['reg_info_lst'][i]
-            if not self._silent:
-                self._log.info("  > Calculate angles and magnitudes")
-
-            # observed trail length
-            obs_trail_len = reg_info['width'] * pixelscale
-            obs_trail_len_err = np.sqrt((pixelscale * reg_info['e_width']) ** 2
-                                        + (reg_info['width'] * pixelscale_err) ** 2)
-
-            # estimated trail length and count
-            est_trail_len = exptime * sat_vel
-            est_trail_len_err = np.sqrt(est_trail_len)
-
-            # time on detector
-            time_on_det = obs_trail_len / sat_vel
-            time_on_det_err = np.sqrt((obs_trail_len_err / sat_vel) ** 2
-                                      + (obs_trail_len * sat_vel_err / sat_vel ** 2) ** 2)
-
-            # calculate solar incidence angle theta_1
-            sun_inc_ang = sats.sun_inc_elv_angle(dtobj_sat,
-                                                 (sat_lat, sat_lon))
-
-            # range, distance observer satellite
-            dist_obs_sat = sats.get_obs_range(sat_elev, sat_alt, geo_alt, geo_lat)
-
-            # calculate observer phase angle theta_2
-            phi = sats.get_observer_angle(sat_lat, geo_lat, sat_alt, geo_alt, dist_obs_sat)
-
-            # eta, distance observer to satellite on the surface of the earth
-            # eta = sats.get_distance((geo_lat, geo_lon), (sat_lat, sat_lon))
-            # phi_rad = np.arcsin((eta / sat_alt) * np.sin(np.deg2rad(sat_elev)))
-            # phi = np.rad2deg(phi_rad)
-
-            sun_sat_ang, sun_phase_angle, sun_az, sun_alt = sats.get_solar_phase_angle(sat_az=sat_az,
-                                                                                       sat_alt=sat_elev,
-                                                                                       geo_loc=(geo_lat, geo_lon),
-                                                                                       obs_range=dist_obs_sat,
-                                                                                       obsDate=dtobj_sat)
-            # get scaled estimated magnitude with scale factor -5log(range/h_orb_ref)
-            mag_scale = -5. * np.log10((dist_obs_sat / sat_h_orb_ref))
-
-            # observed trail count
-            obs_trail_count = sat_apphot[i]['aperture_sum_bkgsub'].values[0]
-            obs_trail_count_err = sat_apphot[i]['aperture_sum_bkgsub_err'].values[0]
-
-            # estimated trail count
-            est_trail_count = obs_trail_count * (est_trail_len / obs_trail_len)
-            est_trail_count_err = ((obs_trail_count + obs_trail_count_err)
-                                   * ((est_trail_len + est_trail_len_err)
-                                      / (obs_trail_len - obs_trail_len_err))) - est_trail_count
-
-            obs_mag_avg_w = None
-            obs_mag_avg_err = None
-            est_mag_avg_w = None
-            est_mag_avg_err = None
-            est_mag_avg_w_scaled = None
-            est_mag_avg_err_scaled = None
-
-            if obs_trail_count > 0.:
-                # observed satellite magnitude relative to std stars
-                obs_mag_avg = sats.get_average_magnitude(flux=obs_trail_count,
-                                                         flux_err=obs_trail_count_err,
-                                                         std_fluxes=_aper_sum,
-                                                         mag_corr=mag_corr,
-                                                         std_mags=_mags)
-                obs_mag_avg_w, obs_mag_avg_err = obs_mag_avg
-
-                # estimated magnitude difference
-                est_mag_avg = sats.get_average_magnitude(flux=est_trail_count,
-                                                         flux_err=est_trail_count_err,
-                                                         std_fluxes=_aper_sum,
-                                                         mag_corr=mag_corr,
-                                                         std_mags=_mags)
-                est_mag_avg_w, est_mag_avg_err = est_mag_avg
-
-                # estimated magnitude difference scaled with mag scale
-                est_mag_avg_scaled = sats.get_average_magnitude(flux=est_trail_count,
-                                                                flux_err=est_trail_count_err,
-                                                                std_fluxes=_aper_sum,
-                                                                std_mags=_mags,
-                                                                mag_corr=mag_corr,
-                                                                mag_scale=mag_scale)
-
-                est_mag_avg_w_scaled, est_mag_avg_err_scaled = est_mag_avg_scaled
-
-            tbl_names = [obsparams['ra'], obsparams['dec'],
-                         obsparams['instrume'], obsparams['object'],
-                         obsparams['exptime'],
-                         'SatAngularSpeed', 'e_SatAngularSpeed',
-                         'ObsSatRange',
-                         'ToD', 'e_ToD',
-                         'ObsTrailLength', 'e_ObsTrailLength',
-                         'EstTrailLength', 'e_EstTrailLength',
-                         'SunSatAng', 'SunPhaseAng', 'SunIncAng', 'ObsAng',
-                         'ObsMag', 'e_ObsMag',
-                         'EstMag', 'e_EstMag',
-                         'EstScaleMag', 'e_EstScaleMag',
-                         'SunAzAng', 'SunElevAng',
-                         'FluxScale', 'MagScale', 'MagCorrect', 'e_MagCorrect',
-                         'dt_tle-obs', 'mag_conv']
-
-            ra = hdr[obsparams['ra']]
-            dec = hdr[obsparams['dec']]
-            if obsparams['radec_separator'] == 'XXX':
-                ra = round(hdr[obsparams['ra']], _base_conf.ROUND_DECIMAL)
-                dec = round(hdr[obsparams['dec']], _base_conf.ROUND_DECIMAL)
-
-            tbl_vals = [ra, dec,
-                        hdr[obsparams['instrume']],
-                        hdr[obsparams['object']],
-                        hdr[obsparams['exptime']],
-                        sat_vel, sat_vel_err, dist_obs_sat,
-                        time_on_det, time_on_det_err,
-                        obs_trail_len, obs_trail_len_err,
-                        est_trail_len, est_trail_len_err,
-                        sun_sat_ang, sun_phase_angle, sun_inc_ang, phi,
-                        obs_mag_avg_w, obs_mag_avg_err,
-                        est_mag_avg_w, est_mag_avg_err,
-                        est_mag_avg_w_scaled, est_mag_avg_err_scaled,
-                        sun_az, sun_alt, (est_trail_len / obs_trail_len), mag_scale,
-                        mag_corr[0], mag_corr[1], dt_sec,
-                        'T' if mag_conv else 'F']
-
-            for k, v in zip(tbl_names, tbl_vals):
-                result[k] = v
-
-            result['RADEC_Separator'] = obsparams['radec_separator']
-            file = img_dict['fname']
-            self._obsTable.update_obs_table(file=file,
-                                            kwargs=result, obsparams=obsparams)
-
-            if not self._silent:
-                self._log.info("  > Plot trail detection result (including tle positions)")
-
-            # final plot
-            self._plot_final_result(img_dict=img_dict,
-                                    reg_data=reg_info,
-                                    obs_date=(date_obs, obs_mid),
-                                    expt=exptime,
-                                    std_pos=std_pos,
-                                    file_base=file_name,
-                                    tle_pos=tle_pos_df)
-
-        if not self._silent:
-            if dt_sec > exptime / 2.:
-                self._log.warning('  Time difference lager than half of exposure time!!! '
-                                  'Please consider using more accurate visibility data.')
-
-        del _mags, _aper_sum, sat_info, obj_info, hdr, obsparams, img_dict, sat_apphot, std_apphot
-        gc.collect()
-
-        return True, []
-
     def _run_sat_photometry(self,
                             data_dict: dict,
                             img_dict: dict, qlf_aprad: bool):
@@ -1138,12 +837,15 @@ class AnalyseSatObs(object):
 
             # this can be helpful
             # annulus_aperture = RectangularAnnulus(src_pos[0], w_in=w_in, w_out=w_out,
-            #                                       h_in=h_in, h_out=h_out, theta=ang)
+            #                                       h_in=h_in, h_out=h_out,
+            #                                       theta=ang
+            #                                       )
             # aperture = RectangularAperture(src_pos[0],
             #                                w=width,
             #                                h=optimum_apheight,
-            #                                theta=ang)
-            # plt.imshow(imgarr, interpolation='nearest')
+            #                                theta=ang
+            #                                )
+            # plt.imshow(imgarr*~src_mask, interpolation='nearest')
             #
             # ap_patches = aperture.plot(**{'color': 'white',
             #                               'lw': 2, 'label': 'Photometry aperture'})
@@ -1248,8 +950,6 @@ class AnalyseSatObs(object):
         imgarr = data['imgarr']
         hdr = data['hdr']
         std_cat = data['cats_cleaned']['ref_cat_cleaned']
-        catalog = data['cat']
-        filter_val = data['band']
         std_fkeys = data['std_fkeys']
         mag_conv = data['mag_conv']
         file_name = data['fname']
@@ -1261,20 +961,6 @@ class AnalyseSatObs(object):
         if not self._silent:
             self._log.info("> Perform photometry on standard stars")
             self._log.info("  > Select standard stars")
-
-        # # select standard stars
-        # std_cat, std_fkeys, mag_conv = sext.select_std_stars(phot_cat_cleaned,
-        #                                                      catalog, filter_val,
-        #                                                      num_std_max=config['NUM_STD_MAX'],
-        #                                                      num_std_min=config['NUM_STD_MIN'],
-        #                                                      silent=self._silent)
-        # if std_cat is None:
-        #     del data, imgarr, catalog, phot_cat_cleaned, std_cat
-        #     gc.collect()
-        #
-        #     return None, None, None, None, None, None, False, ['StdSelectError',
-        #                                                        'No suitable standard stars found',
-        #                                                        'To be solved']
 
         # select only good sources if possible
         if 'include_fwhm' in std_cat.columns:
@@ -1433,46 +1119,6 @@ class AnalyseSatObs(object):
 
         return data, True, ['', '', '']
 
-        # # match source catalog with cleaned reference catalog
-        # matches = imtrans.find_matches(src_tbl,
-        #                                ref_cat_cln,
-        #                                threshold=1.5 * fwhm)
-        # src_cat_matched, ref_cat_cln_matched, _, _, _, _, state = matches
-        #
-        # del matches, _
-        #
-        # if not state:
-        #     del src_tbl, ref_tbl_photo, ref_cat_cln, ref_cat_removed
-        #     return data, False, ['SrcMatchError',
-        #                          'No sources after matching '
-        #                          'with photometric reference catalog',
-        #                          'To be solved']
-        #
-        # data['cats_cleaned'].update({ref_cat_str: ref_cat_cln_matched})
-        #
-        # if ref_cat_removed.empty:
-        #     # return result
-        #     return data, True, ['', '', '']
-        # else:
-        #
-        #     # match source catalog with cleaned reference catalog
-        #     matches = imtrans.find_matches(src_tbl,
-        #                                    ref_cat_removed,
-        #                                    threshold=1.5 * fwhm)
-        #     src_cat_removed_matched, ref_cat_removed_cln_matched, _, _, _, _, state = matches
-        #     data['cats_cleaned_rem'].update({ref_cat_str: ref_cat_cln_matched})
-        #
-        #     del matches, _, src_tbl, ref_tbl_photo, ref_cat_cln, \
-        #         ref_cat_removed
-        #     gc.collect()
-        #     if not state:
-        #         return data, False, ['SrcMatchError',
-        #                              'No sources after matching '
-        #                              'with photometric reference catalog',
-        #                              'To be solved']
-        #     # return result
-        #     return data, True, ['', '', '']
-
     def _get_img_dict(self, data: dict, idx: int,
                       obsparam: dict,
                       mode: str = 'trail',
@@ -1507,7 +1153,6 @@ class AnalyseSatObs(object):
         catalog = data['catalog'][idx]
         band = data['band'][idx]
         trail_data = data['trail_data'][idx]
-        has_trail = data['has_trail'][idx]
         img_mask = data['image_mask'][idx]
 
         # get wcs
@@ -1562,54 +1207,6 @@ class AnalyseSatObs(object):
         self._obj_info = self._obsTable.obj_info
 
         return result
-        # sys.exit()
-        #
-        # extraction_result, state = sext.get_src_and_cat_info(file_name, self._cat_path,
-        #                                                      imgarr, hdr, wcsprm, catalog,
-        #                                                      has_trail=has_trail,
-        #                                                      mode='photo',
-        #                                                      silent=self._silent,
-        #                                                      **config)
-        # # unpack extraction result tuple
-        # (src_tbl, ref_tbl_astro, ref_catalog_astro, ref_tbl_photo, ref_catalog_photo,
-        #  src_cat_fname, astro_ref_cat_fname, photo_ref_cat_fname,
-        #  kernel_fwhm, kernel, segmap, segmap_thld) = extraction_result
-        #
-        # res_keys = ['imgarr', 'hdr', 'fname', 'loc', 'cat', 'band', 'src_tbl',
-        #             'ref_tbl_astro', 'ref_catalog_astro',
-        #             'ref_tbl_photo', 'ref_catalog_photo',
-        #             'src_cat_fname', 'astro_ref_cat_fname', 'photo_ref_cat_fname',
-        #             'kernel_fwhm', 'trail_data', 'bkg_data']
-        #
-        # res_vals = [imgarr, hdr, file_name, location, catalog, band,
-        #             src_tbl, ref_tbl_astro, ref_catalog_astro, ref_tbl_photo, ref_catalog_photo,
-        #             src_cat_fname, astro_ref_cat_fname, photo_ref_cat_fname, kernel_fwhm, trail_data,
-        #             bkg_data]
-        #
-        # result = dict(zip(res_keys, res_vals))
-        #
-        # if mode != 'ref':
-        #     if not self._silent:
-        #         self._log.info("> Load object information")
-        #
-        #     ra = hdr[obsparam['ra']]
-        #     dec = hdr[obsparam['dec']]
-        #     if obsparam['radec_separator'] == 'XXX':
-        #         ra = round(hdr[obsparam['ra']], _base_conf.ROUND_DECIMAL)
-        #         dec = round(hdr[obsparam['dec']], _base_conf.ROUND_DECIMAL)
-        #     hdr[obsparam['ra']] = ra
-        #     hdr[obsparam['dec']] = dec
-        #
-        #     self._obsTable.get_object_data(fname=file_name, kwargs=hdr,
-        #                                    obsparams=obsparam)
-        #     self._obj_info = self._obsTable.obj_info
-        #
-        # del imgarr, res_vals, extraction_result, bkg_data, hdr, file_name, location, catalog, band, \
-        #     src_tbl, ref_tbl_astro, ref_catalog_astro, ref_tbl_photo, ref_catalog_photo, \
-        #     src_cat_fname, astro_ref_cat_fname, photo_ref_cat_fname, kernel_fwhm, trail_data
-        # gc.collect()
-        #
-        # return result
 
     def _identify_trails(self, files: list):
         """Identify image with the satellite trail(s) and collect image info and trail parameters."""
@@ -1716,14 +1313,27 @@ class AnalyseSatObs(object):
                     for yx in ccd_mask_list:
                         detect_mask[yx[0]:yx[1], yx[2]:yx[3]] = 1
                     detect_mask = np.where(detect_mask == 1, True, False)
+                roi_img = img.copy()
+
+                # extract region of interest for detection
+                self._obsTable.get_roi(file_name_clean)
+                roi_info = self._obsTable.roi_data
+                _config['roi_offset'] = None
+                if not roi_info.empty:
+                    yx = roi_info.to_numpy()[0][1:]
+
+                    roi_img = img[yx[2]:yx[3], yx[0]:yx[1]]
+                    _config['roi_offset'] = (yx[0], yx[2])
+
                 if not self._silent:
                     self._log.info(f"> Find satellite trail(s) in image: {file_name_clean}")
 
                 # extract satellite trails from the image and create mask
-                masks_dict, has_trail = sats.detect_sat_trails(image=img,
+                masks_dict, has_trail = sats.detect_sat_trails(image=roi_img,
                                                                config=_config,
                                                                alpha=30, mask=detect_mask,
                                                                silent=self._silent)
+
                 kwargs = hdr.copy()
                 kwargs['HasTrail'] = 'T' if has_trail else 'F'
 
@@ -1766,12 +1376,6 @@ class AnalyseSatObs(object):
             del imgarr, img, bkg_data, bkg, bkg_rms, bkg_dict
             gc.collect()
 
-        # TEST: second version of trail detection.
-        # If two or more images are available, subtract from each other and search for trails
-        # Might allow detection of faint trails and increase precision by removing stars on trail
-        # if n_imgs > 1:
-        #     data_dict = self._multi_img_detection(data_dict)
-
         # group images
         has_trail_check = np.array(data_dict['has_trail'])
         if (n_imgs == 1 and not np.all(has_trail_check)) or \
@@ -1787,99 +1391,6 @@ class AnalyseSatObs(object):
             data_dict['ref_img_idx'] = np.asarray(~has_trail_check).nonzero()[0]
 
         return data_dict, None
-
-    def _multi_img_detection(self, data_dict: dict):
-        """Alternate detection try using the difference image"""
-
-        obspar = self._obsparams
-        image_list = data_dict['images']
-        bkg_list = data_dict['bkg_data']
-        n_imgs = len(image_list)
-        trail_data = [{}] * n_imgs
-        has_trail_votes = [False] * n_imgs
-        has_no_trail_votes = [False] * n_imgs
-
-        # get all combinations of images
-        perm_arr = np.array(list(itertools.permutations(np.arange(n_imgs), 2)))
-
-        # loop over these permutations, subtract the second from the first.
-        # The idea is that the trail is only positive if an image without trail is subtracted
-        for p in perm_arr[::-1]:
-
-            if has_trail_votes[p[0]]:
-                continue
-
-            if has_no_trail_votes[p[0]]:
-                continue
-
-            file_name_clean = data_dict['file_names'][p[0]]
-            hdr = data_dict['header'][p[0]]
-
-            image_one = image_list[p[0]]
-            image_two = image_list[p[1]]
-            bkg_one = bkg_list[p[0]]['bkg']
-            bkg_two = bkg_list[p[1]]['bkg']
-
-            img_one = image_one - bkg_one
-            img_two = image_two - bkg_two
-
-            img_one[img_one < 0.] = 0
-            img_two[img_two < 0.] = 0
-
-            # apply gaussian filter to smooth the image
-            img_one_f = nd.gaussian_filter(img_one, 1)
-            img_two_f = nd.gaussian_filter(img_two, 1)
-
-            # get offset between the trail and the reference image and shift
-            T, _ = astroalign.find_transform(img_two_f,
-                                             img_one_f,
-                                             detection_sigma=2,
-                                             max_control_points=150)
-            img_two_warped, footprint = astroalign.apply_transform(T,
-                                                                   img_two,
-                                                                   img_one,
-                                                                   propagate_mask=True)
-
-            img_two_warped_scaled = img_two_warped * (img_one.mean() / img_two.mean())
-            diff_img = img_one - img_two_warped_scaled
-            diff_img[diff_img < 0.] = 0
-
-            # continue
-            if not self._silent:
-                self._log.info(f"> Find satellite trail(s) in image: {file_name_clean}")
-
-            masks_dict, has_trail = sats.detect_sat_trails(image=diff_img,
-                                                           config=self._config,
-                                                           alpha=30,
-                                                           silent=self._silent)
-
-            kwargs = hdr.copy()
-            kwargs['HasTrail'] = 'T' if has_trail else 'F'
-            if has_trail:
-                has_trail_votes[p[0]] = True
-                trail_data[p[0]] = masks_dict
-                if not self._silent:
-                    self._log.info("  > Plot trail detection results")
-                self._plot_fit_results(masks_dict, file_name_clean)
-            else:
-                has_no_trail_votes[p[0]] = True
-                idx = np.where(perm_arr[:, 0] == p[0])
-                perm_arr = np.delete(perm_arr, idx, axis=0)
-
-            self._obsTable.update_obs_table(file=file_name_clean,
-                                            kwargs=kwargs, obsparams=self._obsparams)
-            self._obj_info = self._obsTable.obj_info
-
-            del img_one, image_two, img_two_warped, diff_img, \
-                bkg_one, bkg_two, masks_dict
-
-        data_dict['has_trail'] = has_trail_votes
-        data_dict['trail_data'] = trail_data
-
-        del image_list, bkg_list
-        gc.collect()
-
-        return data_dict
 
     def _get_data_from_tle(self, hdr, sat_name: str, tle_location: str,
                            date_obs, obs_times,
@@ -1911,6 +1422,7 @@ class AnalyseSatObs(object):
         loc = EarthLocation(lat=obs_lat * u.deg,
                             lon=obs_lon * u.deg,
                             height=obs_ele * u.m)
+
         try:
             satellite = Orbital(sat_name, tle_file=tle_location)
         except KeyError:
@@ -1932,6 +1444,7 @@ class AnalyseSatObs(object):
             pos_times.insert(0, pos_times[0] - timedelta(seconds=delta_time))
         # print(pos_times)
         positions = np.empty((len(pos_times), 17), object)
+
         for t, val in enumerate(pos_times):
             sun_coordinates = pyorbital.astronomy.sun_ra_dec(val)
 
@@ -1992,37 +1505,6 @@ class AnalyseSatObs(object):
         pos_df[1:].to_csv(fname, index=False)
 
         return angular_velocity, e_angular_velocity, pos_df
-
-    def _get_angular_velocity_old(self, sat_name: str, tle_location: str,
-                                  exposure_start: datetime, exposure_stop: datetime,
-                                  exptime):
-        """ Calculate angular velocity from tle, satellite and observer location """
-
-        # get ephemeris
-        self._set_observer()
-
-        try:
-            satellite = Orbital(sat_name, tle_file=tle_location)
-        except KeyError:
-            sat_name = sat_name.replace('-', ' ')
-            satellite = Orbital(sat_name, tle_file=tle_location)
-
-        prev_sat_az_alt = satellite.get_observer_look(exposure_start,
-                                                      self._obsparams["longitude"],
-                                                      self._obsparams["latitude"],
-                                                      self._obsparams["altitude"] / 1000.0)
-        sat_az_alt = satellite.get_observer_look(exposure_stop,
-                                                 self._obsparams["longitude"],
-                                                 self._obsparams["latitude"],
-                                                 self._obsparams["altitude"] / 1000.0)
-
-        dtheta = sats.get_angular_distance(self._observer, sat_az_alt, prev_sat_az_alt)
-
-        dtime = exptime
-
-        angular_velocity = dtheta / dtime
-
-        return angular_velocity
 
     def _set_observer(self):
         """"""

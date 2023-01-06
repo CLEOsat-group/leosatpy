@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import gc
+import math
 
 """ Modules """
 import os
@@ -275,7 +276,7 @@ def auto_build_source_catalog(data,
         if using_catalog_sources:
             sources = use_catalog
             sources.reset_index(drop=True, inplace=True)
-        if not using_catalog_sources:
+        else:
 
             if failsafe > max_iter:
                 break
@@ -356,19 +357,22 @@ def auto_build_source_catalog(data,
 
             new_fwhm_guess = []
             new_r_squared_guess = []
-            no_sources = 10 if len(sources.index.values) > 10 else len(sources.index.values)
+            src_tmp = sources.copy()
+            src_tmp = src_tmp.head(25)
+            no_sources = 10 if len(src_tmp.index.values) > 10 else len(src_tmp.index.values)
 
-            for i in sample(list(sources.index.values), no_sources):
+            for i in sample(list(src_tmp.index.values), no_sources):
                 try:
 
-                    idx = sources.index.values[i]
+                    idx = src_tmp.index.values[i]
 
                     stars_tbl = Table()
-                    stars_tbl['x'] = sources['xcentroid'].loc[[idx]]
-                    stars_tbl['y'] = sources['ycentroid'].loc[[idx]]
+                    stars_tbl['x'] = src_tmp['xcentroid'].loc[[idx]]
+                    stars_tbl['y'] = src_tmp['ycentroid'].loc[[idx]]
                     stars = extract_stars(nddata, stars_tbl, size=source_box_size)
                     stars = stars.data
-                    snr_stars = np.nanmean(stars) / np.sqrt(np.nanstd(stars) * source_box_size**2)
+                    snr_stars = np.nansum(stars) / np.sqrt(np.nanstd(stars) * source_box_size ** 2
+                                                           + ((1. / 2.) ** 2) * source_box_size ** 2)
 
                     if np.nanmax(stars) >= sat_lim or np.isnan(np.max(stars)):
                         continue
@@ -381,7 +385,7 @@ def auto_build_source_catalog(data,
                     result = model_func.fit(data=stars, x=xx, y=yy,
                                             method=fitting_method,
                                             params=fit_params,
-                                            calc_covar=True,
+                                            calc_covar=True, scale_covar=True,
                                             nan_policy='omit')
 
                     fwhm_fit = 2. * result.params['alpha'] * np.sqrt((2. ** (1. / result.params['beta'])) - 1.)
@@ -409,18 +413,20 @@ def auto_build_source_catalog(data,
                 continue
             else:
 
-                new_r2_rounded = np.round(new_r_squared_guess, 1)
-                new_r2_rounded = new_r2_rounded[new_r2_rounded > 0.5]
+                new_r_squared_guess = [math.floor(a*100) / 100 for a in new_r_squared_guess]
+                new_r_squared_guess = [math.floor(a*10) / 10 for a in new_r_squared_guess]
+                new_r_squared_guess = np.array(new_r_squared_guess)
+                new_r_squared_guess = new_r_squared_guess[new_r_squared_guess > 0.5]
 
                 # print(new_fwhm_guess)
                 int_fwhm = np.nanmedian(new_fwhm_guess)
                 if ~np.isnan(int_fwhm):  # and len(new_fwhm_guess[~np.isnan(new_fwhm_guess)]) >= 3:
                     if not silent:
                         log.info('    Updated guess for FWHM: %.1f pixels ' % int_fwhm)
-                    init_r2 = np.nanmean(new_r2_rounded)
+                    init_r2 = np.nanmean(new_r_squared_guess)
 
                     if not silent:
-                        log.info('    Updated limit for R-squared: %.1f' % init_r2)
+                        log.info('    Updated limit for R-squared: %.3f' % init_r2)
 
                     brightest = None
                     update_guess = True
@@ -521,7 +527,7 @@ def auto_build_source_catalog(data,
 
                 result = model_func.fit(data=stars, x=xx, y=yy,
                                         method=fitting_method,
-                                        params=fit_params, calc_covar=True,
+                                        params=fit_params, calc_covar=True, scale_covar=True,
                                         nan_policy='omit')
 
                 fwhm_fit = 2. * result.params['alpha'] * np.sqrt((2. ** (1. / result.params['beta'])) - 1.)
@@ -551,6 +557,7 @@ def auto_build_source_catalog(data,
                         to_add = np.array([fwhm_fit, fwhm_fit_err, bkg_approx])
                         isolated_sources['xcentroid'] = isolated_sources['xcentroid'].replace([x0], corrected_x)
                         isolated_sources['ycentroid'] = isolated_sources['ycentroid'].replace([y0], corrected_y)
+
             except Exception as e:
                 to_add = nan_arr
 
@@ -863,9 +870,9 @@ def compute_2d_background(imgarr, mask, box_size, win_size,
         try:
 
             # create a simple source mask
-            threshold = detect_threshold(imgarr, nsigma=2.0,
+            threshold = detect_threshold(imgarr, nsigma=2.,
                                          sigma_clip=SigmaClip(sigma=3.0, maxiters=10))
-            segment_img = detect_sources(imgarr, threshold, npixels=5)
+            segment_img = detect_sources(imgarr, threshold, npixels=9)
             src_mask = segment_img.make_source_mask(footprint=None)
 
             if mask is not None:
@@ -873,7 +880,7 @@ def compute_2d_background(imgarr, mask, box_size, win_size,
 
             # estimate the background
             bkg = my_background(imgarr,
-                                mask=src_mask,
+                                mask=mask,
                                 box_size=(box_size, box_size),
                                 filter_size=(win_size, win_size),
                                 exclude_percentile=percentile,
@@ -882,9 +889,10 @@ def compute_2d_background(imgarr, mask, box_size, win_size,
                                 edge_method="pad")
 
             # create a simple source mask
-            threshold = detect_threshold(imgarr - bkg.background, nsigma=1.5,
+            threshold = detect_threshold(imgarr - bkg.background.astype('float32'),
+                                         nsigma=2.,
                                          sigma_clip=SigmaClip(sigma=3.0, maxiters=10))
-            segment_img = detect_sources(imgarr - bkg.background, threshold, npixels=5)
+            segment_img = detect_sources(imgarr - bkg.background.astype('float32'), threshold, npixels=9)
             src_mask = segment_img.make_source_mask(footprint=None)
 
             if mask is not None:
@@ -892,9 +900,9 @@ def compute_2d_background(imgarr, mask, box_size, win_size,
 
             # estimate the background
             bkg = my_background(imgarr, mask=src_mask,
-                                box_size=(box_size, box_size),
-                                filter_size=(win_size, win_size),
-                                exclude_percentile=5,
+                                box_size=(7, 7),
+                                # filter_size=(win_size, win_size),
+                                exclude_percentile=10,
                                 bkg_estimator=bkg_estimator,
                                 bkgrms_estimator=rms_estimator,
                                 edge_method="pad")
@@ -948,7 +956,8 @@ def compute_2d_background(imgarr, mask, box_size, win_size,
     hdu2 = fits.ImageHDU(data=bkg_rms)
     new_hdul = fits.HDUList([hdu1, hdu2])
     new_hdul.writeto(f'{bkg_fname[0]}.fits', output_verify='ignore', overwrite=True)
-
+    # plt.imshow(bkg_background)
+    # plt.show()
     del imgarr, hdu1, hdu2, new_hdul
     gc.collect()
     # sys.exit()
@@ -1656,10 +1665,10 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
 
 
 def mask_image(image,
-               vignette,
-               vignette_rectangular,
-               cutouts,
-               only_rectangle, silent=False):
+               vignette=-1,
+               vignette_rectangular=-1,
+               cutouts=None,
+               only_rectangle=None, silent=False):
     """Mask image"""
 
     # Initialize logging for this user-callable function
@@ -1744,7 +1753,7 @@ def my_background(img, box_size, mask=None, interp=None, filter_size=(1, 1),
         interp = BkgZoomInterpolator()
 
     return Background2D(img, box_size,
-                        sigma_clip=SigmaClip(sigma=3.),
+                        sigma_clip=SigmaClip(sigma=3., maxiters=10),
                         exclude_percentile=exclude_percentile,
                         mask=mask,
                         bkg_estimator=bkg_estimator(),
