@@ -290,20 +290,20 @@ CATALOG_FILTER_EXT = {
                "z": {'Prim': [['SDSSzMag', 'SDSSzMagErr']], 'Alt': None},
                "y": {'Prim': [['PS1yMag', 'PS1ymagErr']], 'Alt': None}},
     'PS1DR1': None,
-    'GSC243': {"U": {'Prim': [['UMag', 'UMagErr']], 'Alt': None},
-               "B": {'Prim': [['BMag', 'BMagErr']],
+    'GSC243': {"U": {'Prim': [['Umag', 'UmagErr']], 'Alt': None},
+               "B": {'Prim': [['Bmag', 'BmagErr']],
                      'Alt': [['SDSSuMag', 'SDSSuMagErr'],
                              ['SDSSgMag', 'SDSSgMagErr'],
                              ['SDSSrMag', 'SDSSrMagErr']]},
-               "V": {'Prim': [['VMag', 'VMagErr']],
+               "V": {'Prim': [['Vmag', 'VmagErr']],
                      'Alt': [['SDSSuMag', 'SDSSuMagErr'],
                              ['SDSSgMag', 'SDSSgMagErr'],
                              ['SDSSrMag', 'SDSSrMagErr']]},
-               "R": {'Prim': [['RMag', 'RMagErr']],
+               "R": {'Prim': [['Rmag', 'RmagErr']],
                      'Alt': [['SDSSgMag', 'SDSSgMagErr'],
                              ['SDSSrMag', 'SDSSrMagErr'],
                              ['SDSSiMag', 'SDSSiMagErr']]},
-               "I": {'Prim': [['IMag', 'IMagErr']],
+               "I": {'Prim': [['Imag', 'ImagErr']],
                      'Alt': [['SDSSrMag', 'SDSSrMagErr'],
                              ['SDSSiMag', 'SDSSiMagErr'],
                              ['SDSSzMag', 'SDSSzMagErr']]},
@@ -313,20 +313,20 @@ CATALOG_FILTER_EXT = {
                "w": {'Prim': [['SDSSgMag', 'SDSSgMagErr'],
                               ['SDSSrMag', 'SDSSrMagErr']], 'Alt': None},
                "z": {'Prim': [['SDSSzMag', 'SDSSzMagErr']], 'Alt': None}},
-    'GSC242': {"U": {'Prim': [['UMag', 'UMagErr']], 'Alt': None},
-               "B": {'Prim': [['BMag', 'BMagErr']],
+    'GSC242': {"U": {'Prim': [['Umag', 'UmagErr']], 'Alt': None},
+               "B": {'Prim': [['Bmag', 'BmagErr']],
                      'Alt': [['SDSSuMag', 'SDSSuMagErr'],
                              ['SDSSgMag', 'SDSSgMagErr'],
                              ['SDSSrMag', 'SDSSrMagErr']]},
-               "V": {'Prim': [['VMag', 'VMagErr']],
+               "V": {'Prim': [['Vmag', 'VmagErr']],
                      'Alt': [['SDSSuMag', 'SDSSuMagErr'],
                              ['SDSSgMag', 'SDSSgMagErr'],
                              ['SDSSrMag', 'SDSSrMagErr']]},
-               "R": {'Prim': [['RMag', 'RMagErr']],
+               "R": {'Prim': [['Rmag', 'RmagErr']],
                      'Alt': [['SDSSgMag', 'SDSSgMagErr'],
                              ['SDSSrMag', 'SDSSrMagErr'],
                              ['SDSSiMag', 'SDSSiMagErr']]},
-               "I": {'Prim': [['IMag', 'IMagErr']],
+               "I": {'Prim': [['Imag', 'ImagErr']],
                      'Alt': [['SDSSrMag', 'SDSSrMagErr'],
                              ['SDSSiMag', 'SDSSiMagErr'],
                              ['SDSSzMag', 'SDSSzMagErr']]},
@@ -340,13 +340,13 @@ CATALOG_FILTER_EXT = {
 }
 
 # Color conversion factors for transformation from SSDS mag to BVRI following Lupton (2005)
-CONV_SSDS_BVRI = {'BMag': [[-0.8116, 0.1313, 0.0095],
+CONV_SSDS_BVRI = {'Bmag': [[-0.8116, 0.1313, 0.0095],
                            [0.3130, 0.2271, 0.0107]],
-                  'VMag': [[-0.2906, 0.0885, 0.0129],
+                  'Vmag': [[-0.2906, 0.0885, 0.0129],
                            [-0.5784, -0.0038, 0.0054]],
-                  'RMag': [[-0.1837, -0.0971, 0.0106],
+                  'Rmag': [[-0.1837, -0.0971, 0.0106],
                            [-0.2936, -0.1439, 0.0072]],
-                  'IMag': [[-1.2444, -0.3820, 0.0078],
+                  'Imag': [[-1.2444, -0.3820, 0.0078],
                            [-0.3780, -0.3974, 0.0063]]}
 
 # source detection
@@ -361,7 +361,7 @@ if ASTROMETRIC_CAT_ENVVAR in os.environ:
 else:
     SERVICELOCATION = DEF_CAT_URL
 
-SAT_HORB_REF = {'STARLINK': 550., 'ONEWEB': 1200., 'BLUEWALKER': 550.}
+SAT_HORB_REF = {'STARLINK': 550., 'ONEWEB': 1200., 'BLUEWALKER': 500.}
 
 REARTH_EQU = 6378.137  # Radius at sea level at the equator in km
 REARTH_POL = 6356.752  # Radius at poles in km

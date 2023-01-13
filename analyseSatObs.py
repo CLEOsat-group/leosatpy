@@ -704,6 +704,7 @@ class AnalyseSatObs(object):
         hdr = img_dict['hdr']
         file_name = img_dict['fname']
         fwhm = img_dict['kernel_fwhm'][0]
+        fwhm_err = img_dict['kernel_fwhm'][1]
         n_trails = self._config['N_TRAILS_MAX']
 
         if not self._silent:
@@ -838,14 +839,15 @@ class AnalyseSatObs(object):
             # this can be helpful
             # annulus_aperture = RectangularAnnulus(src_pos[0], w_in=w_in, w_out=w_out,
             #                                       h_in=h_in, h_out=h_out,
-            #                                       theta=ang
-            #                                       )
+            #                                       theta=ang)
             # aperture = RectangularAperture(src_pos[0],
             #                                w=width,
             #                                h=optimum_apheight,
-            #                                theta=ang
-            #                                )
-            # plt.imshow(imgarr*~src_mask, interpolation='nearest')
+            #                                theta=ang)
+            # plt_img = imgarr
+            # plt_img[src_mask] = np.nan
+            # plt.figure()
+            # plt.imshow(plt_img, interpolation='nearest')
             #
             # ap_patches = aperture.plot(**{'color': 'white',
             #                               'lw': 2, 'label': 'Photometry aperture'})
@@ -886,6 +888,8 @@ class AnalyseSatObs(object):
                       obspar['object']: hdr[obspar['object']],
                       obspar['instrume']: hdr[obspar['instrume']],
                       obspar['exptime']: hdr[obspar['exptime']],
+                      'FWHM': fwhm,  # in px
+                      'e_FWHM': fwhm_err,  # in px
                       'TrailCX': src_pos[0][1],  # in px
                       'e_TrailCX': src_pos_err[0][1],  # in px
                       'TrailCY': src_pos[0][0],  # in px
@@ -1158,6 +1162,21 @@ class AnalyseSatObs(object):
         # get wcs
         wcsprm = WCS(hdr).wcs
 
+        if not self._silent:
+            self._log.info("> Load object information")
+
+        ra = hdr[obsparam['ra']]
+        dec = hdr[obsparam['dec']]
+        if obsparam['radec_separator'] == 'XXX':
+            ra = round(hdr[obsparam['ra']], _base_conf.ROUND_DECIMAL)
+            dec = round(hdr[obsparam['dec']], _base_conf.ROUND_DECIMAL)
+        hdr[obsparam['ra']] = ra
+        hdr[obsparam['dec']] = dec
+
+        self._obsTable.get_object_data(fname=file_name, kwargs=hdr,
+                                       obsparams=obsparam)
+        self._obj_info = self._obsTable.obj_info
+
         # extract sources on detector
         params_to_add = dict(_fov_radius=None,
                              _filter_val=band,
@@ -1177,6 +1196,10 @@ class AnalyseSatObs(object):
         config.update(params_to_add)
         for key, value in self._config.items():
             config[key] = value
+        fwhm_guess = self._obj_info['FWHM'].values[0] if 'FWHM' in self._obj_info else None
+        if fwhm_guess is not None:
+            config['ISOLATE_SOURCES_INIT_SEP'] = config['ISOLATE_SOURCES_FWHM_SEP'] * fwhm_guess
+
         src_tbl, std_fkeys, mag_conv, kernel_fwhm, state = sext.get_photometric_catalog(file_name, self._cat_path,
                                                                                         imgarr, hdr, wcsprm, catalog,
                                                                                         silent=self._silent,
@@ -1190,21 +1213,6 @@ class AnalyseSatObs(object):
                     bkg_data, std_fkeys, mag_conv]
 
         result = dict(zip(res_keys, res_vals))
-
-        if not self._silent:
-            self._log.info("> Load object information")
-
-        ra = hdr[obsparam['ra']]
-        dec = hdr[obsparam['dec']]
-        if obsparam['radec_separator'] == 'XXX':
-            ra = round(hdr[obsparam['ra']], _base_conf.ROUND_DECIMAL)
-            dec = round(hdr[obsparam['dec']], _base_conf.ROUND_DECIMAL)
-        hdr[obsparam['ra']] = ra
-        hdr[obsparam['dec']] = dec
-
-        self._obsTable.get_object_data(fname=file_name, kwargs=hdr,
-                                       obsparams=obsparam)
-        self._obj_info = self._obsTable.obj_info
 
         return result
 
