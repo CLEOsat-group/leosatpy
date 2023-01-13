@@ -47,7 +47,7 @@ from skimage.draw import line
 from skimage.measure import regionprops_table
 from skimage.transform import hough_line_peaks, hough_line
 
-from astropy.stats import (sigma_clipped_stats, sigma_clip)
+from astropy.stats import (sigma_clipped_stats, sigma_clip, mad_std)
 from astropy import constants as const
 from photutils.segmentation import (SegmentationImage, detect_sources, detect_threshold)
 
@@ -144,11 +144,13 @@ def get_average_magnitude(flux, flux_err, std_fluxes, std_mags, mag_corr, mag_sc
     mask_mag = np.array(sigma_clip(mag,
                                    sigma=3.,
                                    maxiters=None,
-                                   cenfunc=np.nanmedian).mask)
+                                   cenfunc=np.nanmedian,
+                                   stdfunc=mad_std).mask)
     mask_mag_err = np.array(sigma_clip(mag_err,
                                        sigma=3.,
                                        maxiters=None,
-                                       cenfunc=np.nanmedian).mask)
+                                       cenfunc=np.nanmedian,
+                                       stdfunc=mad_std).mask)
 
     mask = np.ma.mask_or(mask_mag, mask_mag_err)
     mag_cleaned = mag[~mask]
@@ -220,7 +222,6 @@ def get_radius_earth(B):
 
 
 def ang_distance(lat1, lat2, lon1, lon2):
-
     # Haversine formula
     if lon2 > lon1:
         delta_lambda = math.radians(lon2 - lon1)
@@ -293,7 +294,7 @@ def get_observer_angle(sat_lat, geo_lat, sat_h_orb_km, h_obs_km, sat_range_km):
     Rearth_h_sat = Rearth_sat + sat_h_orb_km
 
     # use cosine theorem to calc obs phase angle
-    theta_2 = math.acos((sat_range_km**2 + Rearth_h_sat**2 - Rearth_h_obs**2) /
+    theta_2 = math.acos((sat_range_km ** 2 + Rearth_h_sat ** 2 - Rearth_h_obs ** 2) /
                         (2. * sat_range_km * Rearth_h_sat))
     theta_2 = np.rad2deg(theta_2)
 

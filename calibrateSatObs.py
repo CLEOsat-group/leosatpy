@@ -424,7 +424,16 @@ class CalibrateObsWCS(object):
             return
 
         # get reference positions before the transformation
-        ref_positions_before = wcsprm.s2p(ref_tbl[["RA", "DEC"]].values, 1)['pixcrd']
+        ref_positions_before = wcsprm.s2p(ref_tbl[["RA", "DEC"]].values, 0)['pixcrd']
+
+        # if 'include_fwhm' in src_tbl.columns:
+        #     idx = src_tbl['include_fwhm']
+        #     if np.sum(idx) <= 11:
+        #         idx = [True] * len(src_tbl)
+        # else:
+        #     idx = [True] * len(src_tbl)
+        #
+        # src_tbl = src_tbl[idx]
 
         converged = False
         dic_rms = {}
@@ -432,59 +441,67 @@ class CalibrateObsWCS(object):
         rotation_angle = np.nan
         max_iter = 50
         max_ref_src_no = self._config['REF_SOURCES_MAX_NO']
-
+        src_no = len(src_tbl)
         # select the brightest reference sources
         idx = -1 * max_ref_src_no
         ref_tbl_truncated = ref_tbl[idx:] if len(ref_tbl) > max_ref_src_no else ref_tbl
         ref_tbl_truncated.reset_index(inplace=True, drop=True)
+        ref_no = len(ref_tbl_truncated)
+        n_ref_to_select = math.ceil(src_no / self._config['THRESHOLD_CONVERGENCE'])
+        max_ref_src_no = math.ceil(10 * src_no) if 10 * src_no < ref_no else ref_no
+        idx_list = sorted(list(set(np.linspace(n_ref_to_select, max_ref_src_no, max_iter,
+                                               endpoint=True, dtype=int))), reverse=False)
 
-        if 'include_fwhm' in src_tbl.columns:
-            idx = src_tbl['include_fwhm']
-        else:
-            idx = [True] * len(src_tbl)
-        src_tbl = src_tbl[idx]
-
-        n_ref_to_select = math.ceil(len(src_tbl) / self._config['THRESHOLD_CONVERGENCE'])
-        for i in range(max_iter):
-            idx = -1 * n_ref_to_select
+        for i, val in enumerate(idx_list):
+            idx = -1 * val
             ref_tbl_select = ref_tbl_truncated[idx:]
-
+            wcsprm_tmp = wcsprm
             # get reference positions before the transformation
-            ref_positions_before = wcsprm.s2p(ref_tbl_select[["RA", "DEC"]].values, 1)['pixcrd']
+            ref_positions_before = wcsprm_tmp.s2p(ref_tbl_select[["RA", "DEC"]].values, 0)['pixcrd']
             self._log.info("> Try [ %d/%d ] Find scale, rotation and offset "
-                           "using %d reference sources" % (i+1, max_iter, len(ref_tbl_select)))
+                           "using %d reference sources" % (i + 1, len(idx_list),
+                                                           len(ref_tbl_select)))
             # get the scale, rotation and offset
-            wcsprm, fine_tune_status = self._get_transformations(source_cat=src_tbl,
+            wcsprm_tmp, fine_tune_status = self._get_transformations(source_cat=src_tbl,
                                                                  ref_cat=ref_tbl_select,
-                                                                 wcsprm=wcsprm)
+                                                                 wcsprm=wcsprm_tmp)
 
             # move scaling to cdelt, out of the pc matrix
-            wcsprm, scales = imtrans.translate_wcsprm(wcsprm=wcsprm)
+            wcsprm_tmp, scales = imtrans.translate_wcsprm(wcsprm=wcsprm_tmp)
 
             # WCS difference before and after
             wcs_pixscale, rotation_angle = self._compare_results(imgarr,
                                                                  hdr,
-                                                                 wcsprm,
+                                                                 wcsprm_tmp,
                                                                  wcsprm_original,
                                                                  scales)
 
             # check convergence
             if not self._silent:
                 self._log.info("> Evaluate goodness of transformation")
-            converged, dic_rms = self._determine_if_fit_converged(ref_tbl_select, src_tbl, wcsprm,
+            converged, dic_rms = self._determine_if_fit_converged(ref_tbl_select, src_tbl, wcsprm_tmp,
                                                                   imgarr.shape[0], imgarr.shape[1],
                                                                   kernel_fwhm[0])
 
             if converged and fine_tune_status:
-                self._log.info(f"  Convergence test and refinement was SUCCESSFUL")
+                self._log.info(f"  Try [ %d/%d ] Convergence test and/or"
+                               f" refinement was SUCCESSFUL" % (i + 1, len(idx_list)))
+                wcsprm = wcsprm_tmp
                 break
             else:
-                self._log.warning(f"  Convergence test and refinement has FAILED "
-                                  f" - increasing number of reference sources for comparison")
+                # if n_ref_to_select >= len(ref_tbl_truncated):
+                #     break
 
-                if n_ref_to_select >= len(ref_tbl_truncated):
-                    break
-                n_ref_to_select += 10
+                if i + 1 == len(idx_list):
+                    self._log.warning(f"  Try [ %d/%d ] Final convergence test and/or refinement has FAILED "
+                                      f"- Giving up for now! "
+                                      f"Please retry with adjusted configuration." % (i + 1, len(idx_list)))
+                else:
+                    self._log.warning(f"  Try [ %d/%d ] Convergence test and/or refinement has FAILED "
+                                      f"- Retrying with increased number of "
+                                      f"reference sources." % (i + 1, len(idx_list)))
+
+                # n_ref_to_select += 20
 
         # update report dict
         report["converged"] = converged
@@ -512,12 +529,12 @@ class CalibrateObsWCS(object):
                                    dest=cal_path,
                                    wcsprm=wcsprm,
                                    report=report, hdul_idx=hdu_idx)
-            if not self._silent:
-                self._log.info("> Save source and reference catalog.")
-            sext.save_catalog(cat=src_tbl, wcsprm=wcsprm, out_name=src_cat_fname,
-                              kernel_fwhm=kernel_fwhm)
-            sext.save_catalog(cat=ref_tbl, wcsprm=wcsprm, out_name=ref_cat_fname,
-                              mode='ref_astro', catalog=ref_catalog)
+            # if not self._silent:
+            #     self._log.info("> Save source and reference catalog.")
+            # sext.save_catalog(cat=src_tbl, wcsprm=wcsprm, out_name=src_cat_fname,
+            #                   kernel_fwhm=kernel_fwhm)
+            # sext.save_catalog(cat=ref_tbl, wcsprm=wcsprm, out_name=ref_cat_fname,
+            #                   mode='ref_astro', catalog=ref_catalog)
         else:
             ra = hdr[obsparams['ra']]
             dec = hdr[obsparams['dec']]
@@ -566,8 +583,6 @@ class CalibrateObsWCS(object):
             World coordinate system object describing translation between image and skycoord
         """
         INCREASE_FOV_FLAG, PIXSCALE_UNCLEAR = self._wcs_check
-        # print(source_cat[source_cat['include_fwhm']])
-        source_cat = source_cat[source_cat['include_fwhm']]
 
         if self._rot_scale:
             if not self._silent:
@@ -647,7 +662,7 @@ class CalibrateObsWCS(object):
 
         return wcs_pixscale, rotation_angle
 
-    def _correct_subpixel_error(self, source_cat, ref_cat, wcsprm):
+    def _correct_subpixel_error(self, source_cat: pd.DataFrame, ref_cat, wcsprm):
         """ Correct the subpixel error using fine transformation.
 
         Parameters
@@ -665,7 +680,7 @@ class CalibrateObsWCS(object):
             New world coordinate system object describing translation between image and skycoord
         """
 
-        compare_threshold = 7
+        compare_threshold = 5
         if self._high_res:
             compare_threshold = 50
 
@@ -680,7 +695,7 @@ class CalibrateObsWCS(object):
         if self._fine_transformation:
             if not self._silent:
                 self._log.info("  > Refine scale and rotation")
-            lis = [2, 3, 5, 8, 10, 6, 4, 20, 2, 1, 0.5, 0.25, 0.2]
+            lis = [2, 3, 5, 8, 10, 20, 1, 0.5, 0.2, 0.1]  # , 0.5, 0.25, 0.2, 0.1
             if self._high_res:
                 lis = [200, 300, 100, 150, 80, 40, 70, 20, 100, 30, 9, 5]
             skip_rot_scale = True
@@ -696,10 +711,12 @@ class CalibrateObsWCS(object):
                 if i == 20:
                     # only allow rot and scaling for the last few tries
                     skip_rot_scale = False
+
                 if score > best_score:
                     wcsprm = wcsprm_new
                     best_score = score
                     fine_transformation_success = True
+
             pass_str = _base_conf.BCOLORS.PASS + "PASS" + _base_conf.BCOLORS.ENDC
             fail_str = _base_conf.BCOLORS.FAIL + "FAIL (result will be discarded)" + _base_conf.BCOLORS.ENDC
             if not fine_transformation_success:
@@ -734,7 +751,7 @@ class CalibrateObsWCS(object):
 
         N_obs = observation.shape[0]
 
-        catalog_on_sensor = wcsprm.s2p(catalog[["RA", "DEC"]], 1)['pixcrd']
+        catalog_on_sensor = wcsprm.s2p(catalog[["RA", "DEC"]], 0)['pixcrd']
         cat_x = np.array([catalog_on_sensor[:, 0]])
         cat_y = np.array([catalog_on_sensor[:, 1]])
         mask = (cat_x >= 0) & (cat_x <= NAXIS1) & (cat_y >= 0) & (cat_y <= NAXIS2)
@@ -765,18 +782,20 @@ class CalibrateObsWCS(object):
                                                    len_obs_x,
                                                    rms,
                                                    rms * px_scale))
-            self._log.debug("  Conditions for convergence of fit: at least 3 matches within "
-                            "{}px and at least 0.25 * minimum ( observed sources, catalog sources in fov) "
-                            "matches with the same radius".format(len_obs_x))
+            # self._log.debug("  Conditions for convergence of fit: at least 3 matches within "
+            #                 "{}px and at least 0.25 * minimum ( observed sources, catalog sources in fov) "
+            #                 "matches with the same radius".format(len_obs_x))
 
-            if len_obs_x >= 3 and len_obs_x >= self._config['THRESHOLD_CONVERGENCE'] * N:
+            if (len_obs_x >= self._config['MIN_SOURCE_NO_CONVERGENCE']) \
+                    and (r >= 1.) \
+                    and (len_obs_x >= self._config['THRESHOLD_CONVERGENCE'] * N):
                 converged = True
                 dic_rms = {"radius_px": r, "matches": len_obs_x, "rms": rms}
                 if not self._silent:
-                    self._log.info("  Within {} pixel or {:.3g} arcsec {} sources where matched. "
+                    self._log.info("  Within {} pixel or {:.3g} arcsec {}/{} ({:.1f}%) sources where matched. "
                                    "The rms is {:.3g} pixel or "
                                    "{:.3g} arcsec".format(r, px_scale * r,
-                                                          len_obs_x,
+                                                          len_obs_x, N_obs, (len_obs_x / N_obs) * 100,
                                                           rms, rms * px_scale))
                 break
 
@@ -952,6 +971,7 @@ class CalibrateObsWCS(object):
             INCREASE_FOV_FLAG = True
             # If the sky position is not found check header for RA and DEC info
             wcsprm.crval = [ra_deg, dec_deg]
+        else:
             if not self._silent:
                 log.info("  RA and DEC information found in the header.")
                 log.info("  {}".format(" ".join(np.array(wcsprm.crval, str))))

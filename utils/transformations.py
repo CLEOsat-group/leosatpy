@@ -92,7 +92,7 @@ def get_scale_and_rotation(observation, catalog, wcsprm, scale_guessed,
     # Initialize logging for this user-callable function
     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
 
-    catalog_on_sensor = wcsprm.s2p(catalog[["RA", "DEC"]], 1)
+    catalog_on_sensor = wcsprm.s2p(catalog[["RA", "DEC"]], 0)
     catalog_on_sensor = catalog_on_sensor['pixcrd']
 
     obs_x = [observation["xcentroid"].values]
@@ -142,20 +142,24 @@ def get_scale_and_rotation(observation, catalog, wcsprm, scale_guessed,
         # reflecting, but which direction?? this is a flip of the y-axis
         rot = np.array([[1, 0], [0, -1]]) @ rot
 
-    wcsprm_new = rotate(copy(wcsprm), rot)
-    wcsprm_new = scale(wcsprm_new, scaling)
+    wcsprm_new = copy(wcsprm)
+    if 0.45 < scaling < 4.:
+        # wcsprm = scale(wcsprm, scaling)
+        wcsprm_new = rotate(copy(wcsprm), rot)
+        wcsprm_new = scale(wcsprm_new, scaling)
 
     if is_reflected:
         refl = ""
     else:
         refl = "not "
     if not silent:
+        # print(confidence)
         log.info("    Found a rotation of {:.3g} deg and the pixelscale "
                  "was scaled with the factor {:.3g}.".format(rotation / 2 / np.pi * 360., scaling) +
                  " The image was " + refl + "mirrored.")
-    log.debug("   The confidence level is {}. values between 1 and 2 are bad. "
+    log.debug("    The confidence level is {}. Values between 1 and 2 are bad. "
               "Much higher values are best.".format(confidence))
-    log.debug("   Note that there still might be a 180deg rotation. "
+    log.debug("    Note that there still might be a 180deg rotation. "
               "If this is the case it should be correct in the next step")
 
     del observation, catalog_on_sensor, obs_x, obs_y, cat_x, cat_y, \
@@ -224,8 +228,8 @@ def get_offset_with_orientation(observation, catalog, wcsprm, fast=False,
         results.append([copy(wcsprm), signal, report])
 
     signals = [i[1] for i in results]
-    median = np.median(signals)
-    i = np.argmax(signals)
+    median = np.nanmedian(signals)
+    i = np.nanargmax(signals)
     wcsprm = results[i][0]
     signal = signals[i]
 
@@ -272,7 +276,7 @@ def simple_offset(observation, catalog, wcsprm=None, offset_binwidth=1, report="
     cat_x = np.array([catalog["xcentroid"].values])
     cat_y = np.array([catalog["ycentroid"].values])
     if wcsprm is not None:
-        catalog_on_sensor = wcsprm.s2p(catalog[["RA", "DEC"]], 1)
+        catalog_on_sensor = wcsprm.s2p(catalog[["RA", "DEC"]], 0)
         catalog_on_sensor = catalog_on_sensor['pixcrd']
         cat_x = np.array([catalog_on_sensor[:, 0]])
         cat_y = np.array([catalog_on_sensor[:, 1]])
@@ -284,11 +288,13 @@ def simple_offset(observation, catalog, wcsprm=None, offset_binwidth=1, report="
     dist_y = (obs_y - cat_y.T).flatten()
 
     # would there be a reason to make it bigger than 1?
-    bins = [np.arange(min(dist_x), max(dist_x) + offset_binwidth, offset_binwidth),
-            np.arange(min(dist_y), max(dist_y) + offset_binwidth, offset_binwidth)]
-
+    bins = [np.arange(min(dist_x), max(dist_x) + offset_binwidth, offset_binwidth, dtype='float32'),
+            np.arange(min(dist_y), max(dist_y) + offset_binwidth, offset_binwidth, dtype='float32')]
+    # print(bins)
     H, x_edges, y_edges = np.histogram2d(dist_x, dist_y, bins=bins)
-
+    # plt.figure()
+    # plt.imshow(H)
+    # plt.show()
     del cat_x, cat_y, obs_x, obs_y, bins
     gc.collect()
 
@@ -354,10 +360,6 @@ def fine_transformation(observation, catalog, wcsprm, threshold=10,
 
     wcsprm_original = wcsprm
     wcsprm = copy(wcsprm)
-
-    # if threshold == 20 or threshold == 100:
-    #     observation = observation.nlargest(20, "flux")
-    #     print(observation)
 
     _, _, obs_xy, cat_xy, _, _, _ = \
         find_matches(observation, catalog, wcsprm, threshold=threshold)
@@ -438,7 +440,7 @@ def find_matches(obs, cat, wcsprm=None, threshold=10.):
     # set up the catalog data; use RA, Dec if used with wcsprm
     cat_xy = cat[["xcentroid", "ycentroid"]].to_numpy()
     if wcsprm is not None:
-        cat_xy = wcsprm.s2p(cat[["RA", "DEC"]], 1)
+        cat_xy = wcsprm.s2p(cat[["RA", "DEC"]], 0)
         cat_xy = cat_xy['pixcrd']
 
     # calculate the distances
@@ -494,7 +496,7 @@ def cross_corr_to_fourier_space(a):
 def peak_with_cross_correlation(log_distance_obs: np.ndarray, angle_obs: np.ndarray,
                                 log_distance_cat: np.ndarray, angle_cat: np.ndarray,
                                 scale_guessed: bool = False,
-                                dist_bin_size: float = 1,
+                                dist_bin_size: float = 1e-3,
                                 ang_bin_size: float = 0.1,
                                 frequ_threshold: float = 0.02):
     """Find the best relation between the two sets using cross correlation.
@@ -522,19 +524,20 @@ def peak_with_cross_correlation(log_distance_obs: np.ndarray, angle_obs: np.ndar
     """
 
     if not scale_guessed:
-        minimum_distance = min(log_distance_obs)  # minimum pixel distance
+        minimum_distance = min(log_distance_obs)
         maximum_distance = max(log_distance_obs)
     else:
         # broader distance range if the scale is just a guess so there is a higher chance to find the correct one
         minimum_distance = min([min(log_distance_cat),
-                                min(log_distance_obs) if min(log_distance_obs) > np.log(2) else np.log(2)])
+                                min(log_distance_obs)])
         maximum_distance = max([max(log_distance_cat),
                                 max(log_distance_obs)])
 
     # use a broader distance range for the scale,
     # so there is a higher chance to find the correct one
-    dist_bin_step = 1 + dist_bin_size
+    dist_bin_step = dist_bin_size
     N_dist = math.ceil((np.e ** maximum_distance - np.e ** minimum_distance) / dist_bin_step)
+    # N_dist = math.ceil((maximum_distance - minimum_distance) / np.log(dist_bin_step))
     N_dist += 1
 
     bins_dist, binwidth_dist = np.linspace(minimum_distance, maximum_distance,
@@ -561,12 +564,20 @@ def peak_with_cross_correlation(log_distance_obs: np.ndarray, angle_obs: np.ndar
     H_cat = histogram2d(*vals, bins=bins,
                         range=ranges)
 
+    # H_obs = (H_obs - np.nanmean(H_obs)) / np.nanstd(H_obs)
+    # H_cat = (H_cat - np.nanmean(H_cat)) / np.nanstd(H_cat)
+
     # FFT
     ff_obs = cross_corr_to_fourier_space(H_obs)
     ff_cat = cross_corr_to_fourier_space(H_cat)
 
+    # normalize
+    # ff_obs = (ff_obs - np.nanmean(ff_obs)) / np.nanstd(ff_obs)
+    # ff_cat = (ff_cat - np.nanmean(ff_cat)) / np.nanstd(ff_cat)
+
     # cross power spectrum
     cross_corr = ff_obs * np.conj(ff_cat)
+    cross_corr /= (abs(ff_obs) * abs(ff_cat))
 
     # frequency cut off
     step = 1  # maybe in arcsec??, this is usually the time-step to get a frequency
@@ -576,7 +587,14 @@ def peak_with_cross_correlation(log_distance_obs: np.ndarray, angle_obs: np.ndar
 
     cross_corr[(frequ < threshold) & (frequ > -threshold)] = 0  # how to choose the frequency cut off?
     cross_corr = np.real(np.fft.ifft2(cross_corr))
+    # plt.figure()
+    # plt.imshow(cross_corr, aspect='auto')
+    # plt.show()
     cross_corr = np.fft.fftshift(cross_corr)  # the zero shift is at (0,0), this moves it to the middle
+
+    # plt.figure()
+    # plt.imshow(cross_corr, aspect='auto')
+    # plt.show()
 
     # take first peak
     peak = np.argwhere(cross_corr == np.max(cross_corr))[0]
@@ -598,7 +616,7 @@ def peak_with_cross_correlation(log_distance_obs: np.ndarray, angle_obs: np.ndar
     x_shift = (peak[0] + peak_x_subpixel - middle_x) * binwidth_dist
     y_shift = (peak[1] + peak_y_subpixel - middle_y) * binwidth_ang
 
-    del cross_corr, middle_x, middle_y, frequ, \
+    del cross_corr, middle_x, middle_y, \
         log_distance_obs, log_distance_cat, angle_obs, angle_cat, \
         bins_dist, bins_ang, binwidth_dist, binwidth_ang, \
         vals, H_obs, H_cat, ff_obs, ff_cat

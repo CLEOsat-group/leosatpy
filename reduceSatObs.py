@@ -634,6 +634,21 @@ class ReduceSatObs(object):
                                              mbox=mbox, rbox=rbox, gbox=gbox, sigclip=sigclip,
                                              cleantype=cleantype, cosmic_method=cosmic_method)
 
+            # mask bad pixel
+            if 'ccd_mask' in obsparams and obsparams['ccd_mask'][self._bin_str] is not None:
+                ccd_mask_list = obsparams['ccd_mask'][self._bin_str]
+                for yx in ccd_mask_list:
+                    ccd.data[yx[0]:yx[1], yx[2]:yx[3]] = 0
+
+            if self._ccd_mask_fname is not None:
+                mask_ccdmask = CCDData.read(self._ccd_mask_fname,
+                                            unit=u.dimensionless_unscaled)
+                ccd.mask = mask_ccdmask.data.astype('bool')
+            else:
+                # remove mask and the uncertainty extension
+                ccd.mask = None
+                mask_ccdmask = None
+
             # bias or dark frame subtract
             dark_corrected = False
             if self._config['DARK_CORRECT'] and master_dark is not None:
@@ -672,6 +687,7 @@ class ReduceSatObs(object):
                 mflat = master_flat[image_filter]
                 if isinstance(mflat, str):
                     mflat = self._convert_fits_to_ccd(mflat, single=True)
+                    mflat.mask = None if mask_ccdmask is None else mask_ccdmask.data.astype('bool')
                 ccd = ccdproc.flat_correct(ccd, mflat)
                 add_key_to_hdr(ccd.header, 'MFLAT', get_filename(mflat))
                 flat_corrected = True
@@ -687,19 +703,6 @@ class ReduceSatObs(object):
 
             # change to float32 to keep the file size under control
             ccd.data = ccd.data.astype('float32')
-
-            # mask bad pixel
-            if 'ccd_mask' in obsparams and obsparams['ccd_mask'][self._bin_str] is not None:
-                ccd_mask_list = obsparams['ccd_mask'][self._bin_str]
-                for yx in ccd_mask_list:
-                    ccd.data[yx[0]:yx[1], yx[2]:yx[3]] = 0
-            if self._ccd_mask_fname is not None:
-                mask_ccdmask = CCDData.read(self._ccd_mask_fname,
-                                            unit=u.dimensionless_unscaled)
-                ccd.mask = mask_ccdmask.data.astype('bool')
-            else:
-                # remove mask and the uncertainty extension
-                ccd.mask = None
 
             ccd.uncertainty = None
             hdr = ccd.header
@@ -903,8 +906,11 @@ class ReduceSatObs(object):
         combine = ccdproc.combine(lflat, method=method,
                                   mem_limit=_base_conf.MEM_LIMIT_COMBINE,
                                   scale=inv_median,
-                                  sigma_clip=True, sigma_clip_low_thresh=5,
-                                  sigma_clip_high_thresh=5,
+                                  minmax_clip=True,
+                                  minmax_clip_min=0.9,
+                                  minmax_clip_max=1.05,
+                                  sigma_clip=True, sigma_clip_low_thresh=3,
+                                  sigma_clip_high_thresh=3,
                                   sigma_clip_func=np.ma.median,
                                   sigma_clip_dev_func=mad_std,
                                   dtype='float32')

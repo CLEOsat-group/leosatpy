@@ -226,6 +226,8 @@ def auto_build_source_catalog(data,
     if fwhm is not None:
         init_fwhm = fwhm
 
+    # data[data < 0] = 0.
+
     init_r2 = 0.7
 
     # decrease
@@ -332,7 +334,7 @@ def auto_build_source_catalog(data,
         if check and len(sources) >= 10 and not using_catalog_sources:
             pass
 
-        elif check and len(sources) > check_len:
+        elif check and len(sources) > check_len and not using_catalog_sources:
             if not silent:
                 log.info('    More sources found - trying again')
 
@@ -413,8 +415,8 @@ def auto_build_source_catalog(data,
                 continue
             else:
 
-                new_r_squared_guess = [math.floor(a*100) / 100 for a in new_r_squared_guess]
-                new_r_squared_guess = [math.floor(a*10) / 10 for a in new_r_squared_guess]
+                new_r_squared_guess = [math.floor(a * 100) / 100 for a in new_r_squared_guess]
+                new_r_squared_guess = [math.floor(a * 10) / 10 for a in new_r_squared_guess]
                 new_r_squared_guess = np.array(new_r_squared_guess)
                 new_r_squared_guess = new_r_squared_guess[new_r_squared_guess > 0.5]
 
@@ -613,7 +615,7 @@ def auto_build_source_catalog(data,
             else:
                 fwhm_array = isolated_sources[~FWHM_mask.mask]['fwhm'].values
                 isolated_sources['include_fwhm'] = ~FWHM_mask.mask
-                log.info('    Removed %d FWHM outliers' % (np.sum(FWHM_mask.mask)))
+                # log.info('    Removed %d FWHM outliers' % (np.sum(FWHM_mask.mask)))
 
             median_mask = sigma_clip(isolated_sources['median'].values,
                                      sigma=3.,
@@ -628,7 +630,7 @@ def auto_build_source_catalog(data,
 
             else:
                 isolated_sources['include_median'] = ~median_mask.mask
-                log.info('    Removed %d median outliers' % (np.sum(median_mask.mask)))
+                # log.info('    Removed %d median outliers' % (np.sum(median_mask.mask)))
 
             if not silent:
                 log.info('    Usable sources found [ %d sigma ]: %d' % (threshold_value,
@@ -657,7 +659,7 @@ def auto_build_source_catalog(data,
                                                               (isolate_sources_fwhm_sep * image_fwhm)))
         break
 
-    isolated_sources = isolated_sources.dropna(subset=['fwhm', 'fwhm_err'], inplace=False)
+    # isolated_sources = isolated_sources.dropna(subset=['fwhm', 'fwhm_err'], inplace=False)
     FWHM_mask = sigma_clip(isolated_sources['fwhm'].values,
                            sigma=sigmaclip_FWHM_sigma,
                            masked=True,
@@ -789,7 +791,7 @@ def clean_catalog_distance(in_cat: pandas.DataFrame,
 
 
 def compute_2d_background(imgarr, mask, box_size, win_size,
-                          bkg_estimator=SExtractorBackground,
+                          bkg_estimator=MMMBackground,
                           rms_estimator=MADStdBackgroundRMS,
                           estimate_bkg=True, bkg_fname=Optional[list], silent=False):
     """Compute a 2D background for the input array.
@@ -862,7 +864,7 @@ def compute_2d_background(imgarr, mask, box_size, win_size,
     imgarr[np.isnan(imgarr)] = 0.
 
     bkg = None
-    exclude_percentiles = [10, 25, 50, 75]
+    exclude_percentiles = [1, 5, 10, 25, 50, 75]
     for percentile in exclude_percentiles:
         if not silent:
             log.info(f"    Percentile in use: {percentile}")
@@ -870,10 +872,15 @@ def compute_2d_background(imgarr, mask, box_size, win_size,
         try:
 
             # create a simple source mask
-            threshold = detect_threshold(imgarr, nsigma=2.,
-                                         sigma_clip=SigmaClip(sigma=3.0, maxiters=10))
-            segment_img = detect_sources(imgarr, threshold, npixels=9)
-            src_mask = segment_img.make_source_mask(footprint=None)
+            threshold = detect_threshold(imgarr, nsigma=2., mask=mask,
+                                         sigma_clip=SigmaClip(sigma=3.0, maxiters=None))
+
+            segment_img = detect_sources(imgarr, threshold, mask=mask,
+                                         npixels=9, connectivity=8)
+
+            # footprint = circular_footprint(5)
+            footprint = None
+            src_mask = segment_img.make_source_mask(footprint=footprint)
 
             if mask is not None:
                 src_mask |= mask
@@ -887,25 +894,12 @@ def compute_2d_background(imgarr, mask, box_size, win_size,
                                 bkg_estimator=bkg_estimator,
                                 bkgrms_estimator=rms_estimator,
                                 edge_method="pad")
-
-            # create a simple source mask
-            threshold = detect_threshold(imgarr - bkg.background.astype('float32'),
-                                         nsigma=2.,
-                                         sigma_clip=SigmaClip(sigma=3.0, maxiters=10))
-            segment_img = detect_sources(imgarr - bkg.background.astype('float32'), threshold, npixels=9)
-            src_mask = segment_img.make_source_mask(footprint=None)
-
-            if mask is not None:
-                src_mask |= mask
-
-            # estimate the background
-            bkg = my_background(imgarr, mask=src_mask,
-                                box_size=(7, 7),
-                                # filter_size=(win_size, win_size),
-                                exclude_percentile=10,
-                                bkg_estimator=bkg_estimator,
-                                bkgrms_estimator=rms_estimator,
-                                edge_method="pad")
+            # plt.figure()
+            # norm = ImageNormalize(stretch=LinearStretch())
+            # plt.imshow(imgarr-bkg.background, origin='lower', cmap='Greys_r', norm=norm,
+            #            interpolation='nearest')
+            # bkg.plot_meshes(outlines=True, marker='.', color='cyan', alpha=0.3)
+            # plt.show()
 
         except Exception:
             bkg = None
@@ -956,11 +950,13 @@ def compute_2d_background(imgarr, mask, box_size, win_size,
     hdu2 = fits.ImageHDU(data=bkg_rms)
     new_hdul = fits.HDUList([hdu1, hdu2])
     new_hdul.writeto(f'{bkg_fname[0]}.fits', output_verify='ignore', overwrite=True)
+    # plt.figure()
     # plt.imshow(bkg_background)
     # plt.show()
     del imgarr, hdu1, hdu2, new_hdul
     gc.collect()
     # sys.exit()
+
     return bkg_background, bkg_median, bkg_rms, bkg_rms_median
 
 
@@ -1439,7 +1435,7 @@ def get_photometric_catalog(fname, loc, imgarr, hdr, wcsprm,
                                        full_catalog=True, silent=silent)
 
         # add positions to table
-        pos_on_det = wcsprm.s2p(ref_tbl_photo[["RA", "DEC"]].values, 1)['pixcrd']
+        pos_on_det = wcsprm.s2p(ref_tbl_photo[["RA", "DEC"]].values, 0)['pixcrd']
         ref_tbl_photo["xcentroid"] = pos_on_det[:, 0]
         ref_tbl_photo["ycentroid"] = pos_on_det[:, 1]
 
@@ -1566,9 +1562,7 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
         if not silent:
             log.info("> Load source catalog from file")
         src_tbl, kernel_fwhm, _ = read_catalog(src_cat_fname)
-
     else:
-
         # detect sources in image and get positions
         src_tbl, segmap, segmap_thld, kernel, kernel_fwhm, state = \
             extract_source_catalog(imgarr=imgarr,
@@ -1581,83 +1575,52 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
             gc.collect()
             return (None for _ in range(12)), False
 
-        # add positions to table
-        pos_on_sky = WCS(hdr).wcs_pix2world(src_tbl[["xcentroid", "ycentroid"]], 1)
-        src_tbl["RA"] = pos_on_sky[:, 0]
-        src_tbl["DEC"] = pos_on_sky[:, 1]
+        # # add positions to table
+        # pos_on_sky = WCS(hdr).wcs_pix2world(src_tbl[["xcentroid", "ycentroid"]], 0)
+        # src_tbl["RA"] = pos_on_sky[:, 0]
+        # src_tbl["DEC"] = pos_on_sky[:, 1]
+        #
+        # del pos_on_sky
 
-        del pos_on_sky
+        if not silent:
+            log.info("> Save source catalog.")
+        save_catalog(cat=src_tbl, wcsprm=wcsprm, out_name=src_cat_fname,
+                     kernel_fwhm=kernel_fwhm)
 
-        if mode == 'photo' and save_cat:
-            if not silent:
-                log.info("> Save source catalog.")
-            save_catalog(cat=src_tbl, wcsprm=wcsprm, out_name=src_cat_fname,
-                         kernel_fwhm=kernel_fwhm)
-    if mode != 'photo':
-        # get astrometric reference catalog
-        if read_ref_cat_astro:
-            # get reference catalog for precise positions from file
-            log.info("> Load astrometric reference source catalog from file")
-            ref_tbl_astro, _, ref_catalog_astro = read_catalog(astro_ref_cat_fname)
-        else:
-            # get reference catalog for precise positions from the web
-            ref_tbl_astro, ref_catalog_astro = \
-                get_reference_catalog_astro(ra=ra, dec=dec, sr=fov_radius,
-                                            epoch=epoch,
-                                            catalog='GAIAdr3',
-                                            silent=silent)
-            # add positions to table
-            pos_on_det = wcsprm.s2p(ref_tbl_astro[["RA", "DEC"]].values, 1)['pixcrd']
-            ref_tbl_astro["xcentroid"] = pos_on_det[:, 0]
-            ref_tbl_astro["ycentroid"] = pos_on_det[:, 1]
+    # get astrometric reference catalog
+    if read_ref_cat_astro:
+        # get reference catalog for precise positions from file
+        log.info("> Load astrometric reference source catalog from file")
+        ref_tbl_astro, _, ref_catalog_astro = read_catalog(astro_ref_cat_fname)
 
-            del pos_on_det
+    else:
+        # get reference catalog for precise positions from the web
+        ref_tbl_astro, ref_catalog_astro = \
+            get_reference_catalog_astro(ra=ra, dec=dec, sr=fov_radius,
+                                        epoch=epoch,
+                                        catalog='GAIAdr3',
+                                        silent=silent)
+        # # add positions to table
+        # pos_on_det = wcsprm.s2p(ref_tbl_astro[["RA", "DEC"]].values, 0)['pixcrd']
+        # ref_tbl_astro["xcentroid"] = pos_on_det[:, 0]
+        # ref_tbl_astro["ycentroid"] = pos_on_det[:, 1]
+        #
+        # del pos_on_det
 
-            if save_cat:
-                if not silent:
-                    log.info("> Save astrometric reference catalog.")
-                    save_catalog(cat=ref_tbl_astro, wcsprm=wcsprm,
-                                 out_name=astro_ref_cat_fname,
-                                 mode='ref_astro', catalog=ref_catalog_astro)
+        if not silent:
+            log.info("> Save astrometric reference catalog.")
+            save_catalog(cat=ref_tbl_astro, wcsprm=wcsprm,
+                         out_name=astro_ref_cat_fname,
+                         mode='ref_astro', catalog=ref_catalog_astro)
 
-    if mode == 'photo' and has_trail:
-        # get photometric reference catalog
-        if read_ref_cat_photo:
-            log.info("> Load photometric reference source catalog from file")
-            ref_tbl_photo, _, ref_catalog_photo = read_catalog(photo_ref_cat_fname)
-        else:
-            # get reference catalog
-            ref_tbl_photo, ref_catalog_photo = \
-                get_reference_catalog_phot(ra=ra, dec=dec, sr=fov_radius,
-                                           epoch=epoch.decimalyear,  # num_sources=_base_conf.NUM_SOURCES_MAX,
-                                           catalog=catalog,
-                                           full_catalog=True, silent=silent)
-
-            # add positions to table
-            pos_on_det = wcsprm.s2p(ref_tbl_photo[["RA", "DEC"]].values, 1)['pixcrd']
-            ref_tbl_photo["xcentroid"] = pos_on_det[:, 0]
-            ref_tbl_photo["ycentroid"] = pos_on_det[:, 1]
-
-            # remove non-stars from catalog
-            if 'classification' in ref_tbl_photo:
-                ref_tbl_photo = ref_tbl_photo[ref_tbl_photo.classification == 0]
-
-            # mask positions outside the image boundaries
-            mask = (ref_tbl_photo["xcentroid"] > 0) & \
-                   (ref_tbl_photo["xcentroid"] < hdr['NAXIS1']) & \
-                   (ref_tbl_photo["ycentroid"] > 0) & \
-                   (ref_tbl_photo["ycentroid"] < hdr['NAXIS2'])
-            ref_tbl_photo = ref_tbl_photo[mask]
-
-            # ref_tbl_photo.reset_index()
-
-            del pos_on_det
-
-            if not silent:
-                log.info("> Save photometry reference catalog.")
-            save_catalog(cat=ref_tbl_photo, wcsprm=wcsprm, out_name=photo_ref_cat_fname,
-                         mode='ref_photo', catalog=ref_catalog_photo)
     del imgarr
+
+    # add positions to table
+    pos_on_det = wcsprm.s2p(ref_tbl_astro[["RA", "DEC"]].values, 0)['pixcrd']
+    ref_tbl_astro["xcentroid"] = pos_on_det[:, 0]
+    ref_tbl_astro["ycentroid"] = pos_on_det[:, 1]
+
+    del pos_on_det
 
     return (src_tbl, ref_tbl_astro, ref_catalog_astro, ref_tbl_photo, ref_catalog_photo,
             src_cat_fname, astro_ref_cat_fname, photo_ref_cat_fname,
@@ -1851,7 +1814,7 @@ def save_catalog(cat: pandas.DataFrame,
 
     else:
         # get position on the detector
-        pos_on_det = wcsprm.s2p(cat[["RA", "DEC"]].values, 1)['pixcrd']
+        pos_on_det = wcsprm.s2p(cat[["RA", "DEC"]].values, 0)['pixcrd']
         cat_out["xcentroid"] = pos_on_det[:, 0]
         cat_out["ycentroid"] = pos_on_det[:, 1]
         cols = ['RA', 'DEC', 'xcentroid', 'ycentroid', 'mag', 'objID']
