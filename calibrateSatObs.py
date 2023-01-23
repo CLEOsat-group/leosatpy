@@ -718,7 +718,7 @@ class CalibrateObsWCS(object):
                     fine_transformation_success = True
 
             pass_str = _base_conf.BCOLORS.PASS + "PASS" + _base_conf.BCOLORS.ENDC
-            fail_str = _base_conf.BCOLORS.FAIL + "FAIL (result will be discarded)" + _base_conf.BCOLORS.ENDC
+            fail_str = _base_conf.BCOLORS.FAIL + "FAIL" + _base_conf.BCOLORS.ENDC
             if not fine_transformation_success:
                 if not self._silent:
                     self._log.info("    Status: " + fail_str)

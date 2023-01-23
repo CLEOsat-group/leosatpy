@@ -762,15 +762,16 @@ class AnalyseSatObs(object):
                 ref_img_bkg_sub[img_mask] = ref_bkg_rms
             ref_img_bkg_sub[ref_img_bkg_sub < 0.] = ref_bkg_rms
 
+            # match the trail and the reference image; consider making it adaptive like the fwhm
             try:
                 T, _ = astroalign.find_transform(img_bkg_sub, ref_img_bkg_sub,
                                                  detection_sigma=3.,
                                                  max_control_points=100,
                                                  min_area=9)
             except (TypeError, astroalign.MaxIterError):
-                T, _ = astroalign.find_transform(nd.gaussian_filter(img_bkg_sub, 2.),
-                                                 nd.gaussian_filter(ref_img_bkg_sub, 2.),
-                                                 detection_sigma=5.,
+                T, _ = astroalign.find_transform(nd.gaussian_filter(img_bkg_sub, fwhm),
+                                                 nd.gaussian_filter(ref_img_bkg_sub, fwhm),
+                                                 detection_sigma=70.,
                                                  max_control_points=100,
                                                  min_area=9)
 
@@ -826,10 +827,13 @@ class AnalyseSatObs(object):
 
             if not self._silent:
                 self._log.info(f'  > Measure photometry for satellite trail.')
-
+            # mask unwanted pixel
+            mask = (imgarr < 0)
+            if src_mask is not None:
+                mask |= src_mask
             _, _, sat_phot, _, _ = phot.get_aper_photometry(image=imgarr,
                                                             src_pos=src_pos[0],
-                                                            mask=src_mask,
+                                                            mask=mask,
                                                             aper_mode='rect',
                                                             width=width, height=optimum_apheight,
                                                             w_in=w_in, w_out=w_out,
@@ -950,6 +954,7 @@ class AnalyseSatObs(object):
         """
 
         config = self._config
+        config['img_mask'] = data['img_mask']
         obspar = self._obsparams
         imgarr = data['imgarr']
         hdr = data['hdr']
@@ -1042,7 +1047,7 @@ class AnalyseSatObs(object):
         corrections = np.array([-2.5 * np.log10(i) if i > 0.0 else np.nan for i in flux_ratios])
         corrections = corrections[~np.isnan(corrections)]
         mask = np.array(~sigma_clip(corrections, sigma=3.,
-                                    maxiters=None, cenfunc=np.nanmedian, stdfunc=mad_std).mask)
+                                    cenfunc=np.nanmedian).mask)
         corrections_cleaned = corrections[mask]
 
         aper_correction = np.nanmedian(corrections_cleaned, axis=None)
@@ -1053,17 +1058,21 @@ class AnalyseSatObs(object):
         ax = fig.add_subplot(gs[0, 0])
 
         # the histogram of the data
-        n, bins, patches = ax.hist(corrections_cleaned, bins='auto',
-                                   density=True, facecolor='b', alpha=0.75,
-                                   label='Aperture Correction', rwidth=0.9)
+        ax.hist(corrections_cleaned, bins='auto',
+                density=True, facecolor='b',
+                alpha=0.75,
+                label='Aperture Correction')
 
-        xmin, xmax = plt.xlim()
+        xmin, xmax = ax.get_xlim()
         x = np.linspace(xmin, xmax, 500)
 
-        mu, sigma = norm.fit(bins)
+        mu, sigma = norm.fit(corrections_cleaned)
         best_fit_line = norm.pdf(x, mu, sigma)
 
         ax.plot(x, best_fit_line, 'r-', label='PDF')
+
+        ax.axvline(x=aper_correction, color='k')
+
         ax.legend(numpoints=2, loc='upper right', frameon=False)
 
         ax.set_xlabel("Correction (mag)")
@@ -1205,16 +1214,16 @@ class AnalyseSatObs(object):
                                                                                         silent=self._silent,
                                                                                         **config)
 
-        res_keys = ['imgarr', 'hdr', 'fname', 'loc', 'cat', 'band', 'src_tbl', 'kernel_fwhm',
+        res_keys = ['imgarr', 'img_mask', 'hdr', 'fname', 'loc', 'cat', 'band', 'src_tbl', 'kernel_fwhm',
                     'trail_data', 'bkg_data', 'std_fkeys', 'mag_conv']
 
-        res_vals = [imgarr, hdr, file_name, location, catalog, band,
+        res_vals = [imgarr, img_mask, hdr, file_name, location, catalog, band,
                     src_tbl, kernel_fwhm, trail_data,
                     bkg_data, std_fkeys, mag_conv]
 
         result = dict(zip(res_keys, res_vals))
 
-        return result
+        return result, state
 
     def _identify_trails(self, files: list):
         """Identify image with the satellite trail(s) and collect image info and trail parameters."""
@@ -1280,6 +1289,19 @@ class AnalyseSatObs(object):
             self._cat_path = cat_path
             self._plt_path = plt_path_final
 
+            ccd_mask_dict = {'CTIO 0.9 meter telescope': [[1405, 1791, 1920, 1957],
+                                                          [1405, 1791, 1900, 1957]],
+                             'CBNUO-JC': [[225, 227, 1336, 2048]]}
+            detect_mask = None
+            if self._telescope in ['CTIO 0.9 meter telescope', 'CBNUO-JC']:
+                detect_mask = np.zeros(imgarr.shape)
+                ccd_mask_list = ccd_mask_dict[self._telescope]
+                for yx in ccd_mask_list:
+                    detect_mask[yx[0]:yx[1], yx[2]:yx[3]] = 1
+                detect_mask = np.where(detect_mask == 1, True, False)
+            if detect_mask is not None:
+                img_mask |= detect_mask
+
             # set background file name and create folder
             bkg_fname_short = file_name.replace('_cal', '_bkg')
             bkg_fname = os.path.join(aux_path, bkg_fname_short)
@@ -1312,18 +1334,19 @@ class AnalyseSatObs(object):
                 if img_mask is not None:
                     img[img_mask] = 0
 
-                ccd_mask_dict = {'CTIO': [[1405, 1791, 1920, 1957]],
+                ccd_mask_dict = {'CTIO 0.9 meter telescope': [[1405, 1791, 1920, 1957],
+                                                              [1405, 1791, 1900, 1957]],
                                  'CBNUO-JC': [[225, 227, 1336, 2048]]}
                 detect_mask = None
-                if self._telescope in ['CTIO', 'CBNUO-JC']:
+                if self._telescope in ['CTIO 0.9 meter telescope', 'CBNUO-JC']:
                     detect_mask = np.zeros(img.shape)
                     ccd_mask_list = ccd_mask_dict[self._telescope]
                     for yx in ccd_mask_list:
                         detect_mask[yx[0]:yx[1], yx[2]:yx[3]] = 1
                     detect_mask = np.where(detect_mask == 1, True, False)
-                roi_img = img.copy()
 
                 # extract region of interest for detection
+                roi_img = img.copy()
                 self._obsTable.get_roi(file_name_clean)
                 roi_info = self._obsTable.roi_data
                 _config['roi_offset'] = None
@@ -1335,6 +1358,9 @@ class AnalyseSatObs(object):
 
                 if not self._silent:
                     self._log.info(f"> Find satellite trail(s) in image: {file_name_clean}")
+                _config['use_sat_mask'] = False
+                if file_name_clean == 'n2_028':
+                    _config['use_sat_mask'] = True
 
                 # extract satellite trails from the image and create mask
                 masks_dict, has_trail = sats.detect_sat_trails(image=roi_img,
@@ -1999,7 +2025,7 @@ class AnalyseSatObs(object):
             ax2.plot(rapers, fluxes[:, r, 0] / np.nanmax(fluxes[:, r, 0]),
                      color=color, ls='--', alpha=0.25)
 
-        ax1.plot(rapers, snr_med, 'r-', lw=2, label='Median COG')
+        ax1.plot(rapers, snr_med, 'r-', lw=2, label='Mean COG')
         # indicate optimum aperture
         ax1.axvline(x=opt_aprad, c='b', ls='--')
         ax2.axvline(x=opt_aprad, c='b', ls='--',

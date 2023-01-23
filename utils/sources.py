@@ -361,7 +361,7 @@ def auto_build_source_catalog(data,
             new_r_squared_guess = []
             src_tmp = sources.copy()
             src_tmp = src_tmp.head(25)
-            no_sources = 10 if len(src_tmp.index.values) > 10 else len(src_tmp.index.values)
+            no_sources = 11 if len(src_tmp.index.values) > 11 else len(src_tmp.index.values)
 
             for i in sample(list(src_tmp.index.values), no_sources):
                 try:
@@ -388,7 +388,7 @@ def auto_build_source_catalog(data,
                                             method=fitting_method,
                                             params=fit_params,
                                             calc_covar=True, scale_covar=True,
-                                            nan_policy='omit')
+                                            nan_policy='omit', max_nfev=100)
 
                     fwhm_fit = 2. * result.params['alpha'] * np.sqrt((2. ** (1. / result.params['beta'])) - 1.)
                     if (max_good_fwhm <= fwhm_fit <= min_good_fwhm) \
@@ -530,9 +530,10 @@ def auto_build_source_catalog(data,
                 result = model_func.fit(data=stars, x=xx, y=yy,
                                         method=fitting_method,
                                         params=fit_params, calc_covar=True, scale_covar=True,
-                                        nan_policy='omit')
+                                        nan_policy='omit', max_nfev=100)
 
-                fwhm_fit = 2. * result.params['alpha'] * np.sqrt((2. ** (1. / result.params['beta'])) - 1.)
+                fwhm_fit = 2. * result.params['alpha'] \
+                              * np.sqrt((2. ** (1. / result.params['beta'])) - 1.)
                 fwhm_fit_err = result.params['fwhm'].stderr
 
                 A = result.params['amp'].value
@@ -1383,10 +1384,7 @@ def get_photometric_catalog(fname, loc, imgarr, hdr, wcsprm,
     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
 
     fwhm = hdr['FWHM']
-    ref_tbl_photo = None
-    ref_catalog_photo = None
 
-    src_cat_fname = f'{loc}/{fname}_src_cat'
     photo_ref_cat_fname = f'{loc}/{fname}_trail_img_photo_ref_cat'
 
     if catalog.upper() not in _base_conf.SUPPORTED_CATALOGS:
@@ -1458,11 +1456,14 @@ def get_photometric_catalog(fname, loc, imgarr, hdr, wcsprm,
     # todo: make it so that if not enough stars remain after extraction in the original filter
     #  the alternative mag data are used.
     #  calculate conversion for all and separate those which have both mags, original and converted
-    df, std_fkeys, mag_conv = select_std_stars(ref_tbl_photo,
-                                               ref_catalog_photo,
-                                               config['_filter_val'],
-                                               num_std_max=config['NUM_STD_MAX'],
-                                               num_std_min=config['NUM_STD_MIN'])
+    df, std_fkeys, mag_conv, exec_state = select_std_stars(ref_tbl_photo,
+                                                           ref_catalog_photo,
+                                                           config['_filter_val'],
+                                                           num_std_max=config['NUM_STD_MAX'],
+                                                           num_std_min=config['NUM_STD_MIN'])
+
+    if not exec_state:
+        return None, None, None, None, False
 
     src_tbl, _, _, _, kernel_fwhm, state = \
         extract_source_catalog(imgarr=imgarr,
@@ -1472,6 +1473,9 @@ def get_photometric_catalog(fname, loc, imgarr, hdr, wcsprm,
                                vignette_rectangular=config["_vignette_rectangular"],
                                cutouts=config["_cutouts"],
                                silent=silent, **config)
+    if not state:
+        return None, None, None, None, False
+
     return src_tbl, std_fkeys, mag_conv, kernel_fwhm, state
 
 
@@ -1959,7 +1963,7 @@ def select_std_stars(ref_cat: pd.DataFrame,
             log.critical("Insufficient data for magnitude conversion.")
             del ref_cat, cat_srt, df, alt_cat
             gc.collect()
-            return None, filter_keys, has_mag_conv
+            return None, filter_keys, has_mag_conv, False
 
         # convert band from catalog to observation
         alt_mags, alt_mags_err = phot.convert_ssds_to_bvri(f=filter_keys[0],
@@ -1983,7 +1987,7 @@ def select_std_stars(ref_cat: pd.DataFrame,
             log.critical("Insufficient data for magnitude conversion.")
             del ref_cat, cat_srt, df, alt_cat
             gc.collect()
-            return None, filter_keys, has_mag_conv
+            return None, filter_keys, has_mag_conv, False
 
         alt_mags = x2[:, 0] + 0.23 * (x1[:, 0] - x2[:, 0])
         alt_mags_err = np.sqrt((0.23 * x1[:, 1]) ** 2 + (0.77 * x2[:, 1]) ** 2)
@@ -2002,7 +2006,7 @@ def select_std_stars(ref_cat: pd.DataFrame,
         log.critical("No sources with uncertainties!!!")
         del ref_cat, cat_srt, df, alt_cat
         gc.collect()
-        return None, filter_keys, has_mag_conv
+        return None, filter_keys, has_mag_conv, False
 
     # select the std stars by number
     if num_std_max is not None:
@@ -2020,7 +2024,7 @@ def select_std_stars(ref_cat: pd.DataFrame,
     del ref_cat, cat_srt
     gc.collect()
 
-    return df, filter_keys, has_mag_conv
+    return df, filter_keys, has_mag_conv, True
 
 
 def sigma_clipped_bkg(arr: np.array, sigma: float = 3.0,
