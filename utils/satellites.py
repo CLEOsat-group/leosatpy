@@ -141,22 +141,17 @@ def get_average_magnitude(flux, flux_err, std_fluxes, std_mags, mag_corr, mag_sc
     mag = mag + mag_scale if mag_scale is not None else mag
     mag_err = np.sqrt(diff_mag_err ** 2 + std_mags[:, 1] ** 2 + mag_corr[1] ** 2)
 
-    mask_mag = np.array(sigma_clip(mag,
-                                   sigma=3.,
-                                   maxiters=None,
-                                   cenfunc=np.nanmedian,
-                                   stdfunc=mad_std).mask)
-    mask_mag_err = np.array(sigma_clip(mag_err,
-                                       sigma=3.,
-                                       maxiters=None,
-                                       cenfunc=np.nanmedian,
-                                       stdfunc=mad_std).mask)
+    mask = np.array(sigma_clip(mag,
+                               sigma=3.,
+                               maxiters=10,
+                               cenfunc=np.nanmedian,
+                               stdfunc=mad_std).mask)
 
-    mask = np.ma.mask_or(mask_mag, mask_mag_err)
     mag_cleaned = mag[~mask]
     mag_err_cleaned = mag_err[~mask]
 
-    mag_avg_w = np.average(mag_cleaned, weights=1. / mag_err_cleaned ** 2)
+    # mag_avg_w = np.average(mag_cleaned, weights=1. / mag_err_cleaned ** 2)
+    mag_avg_w = np.nanmean(mag_cleaned)
     mag_avg_err = np.nanmean(mag_err_cleaned)
 
     del flux, flux_err, std_fluxes, std_mags, mag_corr
@@ -675,6 +670,8 @@ def detect_sat_trails(image: np.ndarray,
     if mask is not None:
         m = np.where(mask, 0, 1)
         image *= m
+    plt.figure()
+    plt.imshow(image)
 
     blurred_f = nd.gaussian_filter(image, 2.)
     filter_blurred_f = nd.gaussian_filter(blurred_f, sigma_blurr)
@@ -687,6 +684,24 @@ def detect_sat_trails(image: np.ndarray,
     sources = detect_sources(sharpened, threshold=threshold,
                              npixels=9, connectivity=8, mask=mask)
     segm = SegmentationImage(sources.data)
+
+    # only for CTIO BW3 2022-11-10
+    if config['use_sat_mask']:
+        from astropy import units as u
+        from astropy.coordinates import (Angle, SkyCoord, EarthLocation)
+        from photutils.aperture import (RectangularAperture, RectangularAnnulus, CircularAperture)
+
+        raper = RectangularAperture([[959.63, 1027.3], [903.93, 1073.75]],
+                                    w=2755,
+                                    h=10, theta=Angle(47.1, u.degree))
+        m = raper.to_mask('center')
+        m0 = m[0].to_image(segm.shape)
+        m1 = m[1].to_image(segm.shape)
+        m1[m1 > 0] = 2
+        m0 += m1
+
+        segm = SegmentationImage(m0.astype(int))
+
     segm_init = segm.copy()
 
     # create regions

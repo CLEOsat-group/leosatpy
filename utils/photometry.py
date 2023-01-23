@@ -56,7 +56,7 @@ else:
     matplotlib.rc('text.latex', preamble=r'\usepackage{sfmath}')
 
 from astropy.coordinates import Angle
-from astropy.stats import SigmaClip
+from astropy.stats import (SigmaClip, mad_std)
 
 from photutils.utils import calc_total_error
 from photutils.centroids import (centroid_sources, centroid_2dg)
@@ -140,7 +140,11 @@ def get_optimum_aper_rad(image: np.ndarray,
     # Initialize logging for this user-callable function
     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
 
-    image[image < 0.] = 0
+    # mask unwanted pixel
+    mask = (image < 0)
+    img_mask = config['img_mask']
+    if img_mask is not None:
+        mask |= img_mask
 
     dstep = config['APER_STEP_SIZE']
     start = config['APER_START']
@@ -158,7 +162,7 @@ def get_optimum_aper_rad(image: np.ndarray,
 
     for i, r_aper in enumerate(rapers):
 
-        phot_res = get_aper_photometry(image, src_pos,
+        phot_res = get_aper_photometry(image, src_pos, mask=mask,
                                        r_aper=r_aper * fwhm,
                                        r_in=r_in * fwhm,
                                        r_out=r_out * fwhm)
@@ -177,7 +181,16 @@ def get_optimum_aper_rad(image: np.ndarray,
         output[i, :, 2] = snr
         output[i, :, 3] = snr_err
 
-    max_snr_idx = np.nanargmax(np.nanmedian(output[:, :, 2], axis=1))
+    # if there are more than 5 sources
+    if output.shape[1] > config['NUM_STD_MIN']:
+        x = np.nanmax(output[:, :, 2], axis=0)
+        idx = np.where(x >= np.nanmean(x))[0]
+        if len(idx) <= config['NUM_STD_MIN']:
+            output = output[:, :int(config['NUM_STD_MIN']+1), :]
+        else:
+            output = output[:, idx, :]
+
+    max_snr_idx = np.nanargmax(np.nanmean(output[:, :, 2], axis=1))
     max_snr_aprad = rapers[max_snr_idx]
     optimum_aprad = max_snr_aprad * 1.25
     qlf_aprad = True
@@ -238,7 +251,8 @@ def get_aper_photometry(image: np.ndarray,
                         gain: float = 1.):
     """Measure aperture photometry"""
 
-    sigclip = SigmaClip(sigma=bkg_sigma, maxiters=None, cenfunc=np.nanmedian)
+    sigclip = SigmaClip(sigma=bkg_sigma, maxiters=None,
+                        cenfunc=np.nanmedian, stdfunc=mad_std)
 
     if aper_mode == 'circ':
         annulus_aperture = CircularAnnulus(src_pos, r_in=r_in, r_out=r_out)
@@ -268,7 +282,6 @@ def get_aper_photometry(image: np.ndarray,
         # mean = np.median(image, axis=None)
         error = np.sqrt(image)
 
-    #
     aperture_area = aper_stats.sum_aper_area.value  # aperture.area
     annulus_area = bkg_stats.sum_aper_area.value
 
@@ -306,9 +319,13 @@ def get_std_photometry(image, std_cat, src_pos, fwhm, config):
     res_cat = std_cat.copy()
     aper_dict = dict(aper=config['APER_RAD'] * fwhm,
                      inf_aper=config['INF_APER_RAD'] * fwhm)
-
+    # mask unwanted pixel
+    mask = (image < 0)
+    img_mask = config['img_mask']
+    if img_mask is not None:
+        mask |= img_mask
     for key, val in aper_dict.items():
-        phot_res = get_aper_photometry(image, src_pos,
+        phot_res = get_aper_photometry(image, src_pos, mask=mask,
                                        r_aper=val,
                                        r_in=config['RSKYIN'] * fwhm,
                                        r_out=config['RSKYOUT'] * fwhm)

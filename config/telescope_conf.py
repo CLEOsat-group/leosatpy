@@ -489,7 +489,6 @@ ctio_params = {
 
     # ccd mask for regions to exclude from all processes
     'ccd_mask': {'1x1': [[0, 2046, 1957, 1959],
-                         # [1405, 1791, 1920, 1957],
                          [316, 1023, 100, 101],
                          [1010, 1023, 437, 438],
                          [1023, 1061, 482, 483],
