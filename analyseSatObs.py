@@ -386,7 +386,7 @@ class AnalyseSatObs(object):
 
         # collect information on the satellite image
         trail_img_idx = data_dict['trail_img_idx'][0]
-        trail_img_dict = self._get_img_dict(data_dict, trail_img_idx, obsparams)
+        trail_img_dict, state = self._get_img_dict(data_dict, trail_img_idx, obsparams)
 
         # get catalogs excluding the trail area and including it
         trail_img_dict, state, fail_msg = self._filter_catalog(data=trail_img_dict)
