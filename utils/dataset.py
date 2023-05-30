@@ -49,13 +49,13 @@ import config.base_conf as _base_conf
 
 """ Meta-info """
 __author__ = "Christian Adam"
-__copyright__ = 'Copyright 2021, UA, LEOSat observations'
-__credits__ = ["Christian Adam, Eduardo Unda-Sanzana, Jeremy Tregloan-Reed"]
-__license__ = "Free"
-__version__ = "0.1.2"
+__copyright__ = 'Copyright 2021-2023, CLEOSat group'
+__credits__ = ["Eduardo Unda-Sanzana, Jeremy Tregloan-Reed, Christian Adam"]
+__license__ = "GPL-3.0 license"
 __maintainer__ = "Christian Adam"
 __email__ = "christian.adam84@gmail.com"
 __status__ = "Production"
+
 # -----------------------------------------------------------------------------
 # changelog
 # version 0.1.0 added first method's
