@@ -24,23 +24,16 @@ import gc
 import os
 import inspect
 import logging
-import sys
 
 import astropy.table
-from astropy.stats import sigma_clip
 import numpy as np
-
-import pandas as pd
-import multiprocessing
-from multiprocessing import Pool as ThreadPool
-from functools import partial
 
 try:
     import matplotlib
     from matplotlib import pyplot as plt
     import matplotlib.lines as mlines
 
-except Exception:
+except ImportError:
     plt = None
 else:
     import matplotlib.gridspec as gridspec  # GRIDSPEC !
@@ -55,11 +48,7 @@ else:
     matplotlib.rc('figure', dpi=150, facecolor='w', edgecolor='k')
     matplotlib.rc('text.latex', preamble=r'\usepackage{sfmath}')
 
-from astropy.coordinates import Angle
 from astropy.stats import (SigmaClip, mad_std)
-
-from photutils.utils import calc_total_error
-from photutils.centroids import (centroid_sources, centroid_2dg)
 from photutils.aperture import (aperture_photometry,
                                 ApertureStats,
                                 CircularAperture,
@@ -74,13 +63,13 @@ import config.base_conf as _base_conf
 
 """ Meta-info """
 __author__ = "Christian Adam"
-__copyright__ = 'Copyright 2021, UA, LEOSat observations'
-__credits__ = ["Christian Adam, Eduardo Unda-Sanzana, Jeremy Tregloan-Reed"]
-__license__ = "Free"
-__version__ = "0.1.0"
+__copyright__ = 'Copyright 2021-2023, CLEOSat group'
+__credits__ = ["Eduardo Unda-Sanzana, Jeremy Tregloan-Reed, Christian Adam"]
+__license__ = "GPL-3.0 license"
 __maintainer__ = "Christian Adam"
 __email__ = "christian.adam84@gmail.com"
 __status__ = "Production"
+
 
 __taskname__ = 'photometry'
 # -----------------------------------------------------------------------------
