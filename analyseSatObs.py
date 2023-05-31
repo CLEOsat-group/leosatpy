@@ -28,8 +28,6 @@
 # STDLIB
 import argparse
 import gc
-import itertools
-import operator
 import os
 import logging
 import sys
@@ -38,36 +36,36 @@ import time
 import configparser
 import collections
 from datetime import (timedelta, datetime, timezone)
-
 from pathlib import Path
 
 # THIRD PARTY
 import pandas as pd
 import numpy as np
 import astroalign
+import ephem
+from skimage.draw import disk
 
 # astropy
 import astropy.table
 from astropy.io import fits
 from astropy import units as u
 from astropy.stats import sigma_clip
-from astropy.utils.exceptions import (AstropyUserWarning, AstropyWarning)
+from astropy.utils.exceptions import AstropyUserWarning
 from astropy.wcs import WCS
 from astropy.visualization import (LinearStretch, LogStretch, SqrtStretch)
 from astropy.visualization.mpl_normalize import ImageNormalize
 from astropy.coordinates import (Angle, SkyCoord, EarthLocation)
-from astropy.stats import (sigma_clipped_stats, mad_std)
-from skimage.draw import disk
-from skimage.measure import label
+from astropy.stats import sigma_clipped_stats
 
+# photutils
 from photutils.aperture import (RectangularAperture, RectangularAnnulus, CircularAperture)
-from photutils.centroids import (centroid_sources, centroid_2dg, centroid_com)
 from photutils.segmentation import (SegmentationImage, detect_sources, detect_threshold)
 
-import ephem
-import pyorbital
+# pyorbital
 from pyorbital.orbital import Orbital
+from pyorbital.astronomy import (sun_ra_dec, sun_zenith_angle)
 
+# scipy
 from scipy.stats import norm
 from scipy import ndimage as nd
 
@@ -95,16 +93,16 @@ else:
     mpl.rc("lines", linewidth=1.2)
     mpl.rcParams['pdf.fonttype'] = 42
     mpl.rcParams['ps.fonttype'] = 42
-
     mpl.rc('figure', dpi=300, facecolor='w', edgecolor='k')
     mpl.rc('text.latex', preamble=r'\usepackage{sfmath}')
 
+# Project modules
+from version import __version__
 from utils.arguments import ParseArguments
 from utils.dataset import DataSet
 from utils.tables import ObsTables
 import utils.sources as sext
 import utils.satellites as sats
-import utils.transformations as imtrans
 import utils.photometry as phot
 import config.base_conf as _base_conf
 
@@ -112,13 +110,15 @@ import config.base_conf as _base_conf
 
 """ Meta-info """
 __author__ = "Christian Adam"
-__copyright__ = 'Copyright 2021, UA, LEOSat observations'
-__credits__ = ["Christian Adam, Eduardo Unda-Sanzana, Jeremy Tregloan-Reed"]
-__license__ = "Free"
-__version__ = "0.4.2"
+__copyright__ = 'Copyright 2021-2023, CLEOSat group'
+__credits__ = ["Eduardo Unda-Sanzana, Jeremy Tregloan-Reed, Christian Adam"]
+__license__ = "GPL-3.0 license"
+__version__ = __version__
 __maintainer__ = "Christian Adam"
 __email__ = "christian.adam84@gmail.com"
 __status__ = "Production"
+
+__taskname__ = 'analyseSatObs'
 
 # -----------------------------------------------------------------------------
 
@@ -132,12 +132,6 @@ stream.setFormatter(_base_conf.FORMATTER)
 _log.addHandler(stream)
 _log_level = _log.level
 
-# Warnings
-# np.seterr(divide='ignore', invalid='ignore')
-# np.errstate(invalid='ignore')
-# warnings.simplefilter('ignore', category=AstropyWarning)
-
-__taskname__ = 'analyseSatObs'
 
 # figure size
 figsize = (10, 6)
@@ -146,7 +140,6 @@ pass_str = _base_conf.BCOLORS.PASS + "SUCCESSFUL" + _base_conf.BCOLORS.ENDC
 fail_str = _base_conf.BCOLORS.FAIL + "FAILED" + _base_conf.BCOLORS.ENDC
 
 frmt = "%Y-%m-%dT%H:%M:%S.%f"
-
 
 # todo: rethink the config structure!!!
 # -----------------------------------------------------------------------------
@@ -231,7 +224,7 @@ class AnalyseSatObs(object):
     def _run_trail_analysis(self):
         """Prepare and run satellite trail photometry"""
 
-        StartTime = time.perf_counter()
+        starttime = time.perf_counter()
         self._log.info('====> Analyse satellite trail init <====')
         self._load_config()
         self._obsTable = ObsTables(config=self._config)
@@ -255,14 +248,14 @@ class AnalyseSatObs(object):
         # set variables for use
         inst_list = ds.instruments_list
         inst_data = ds.instruments
-        N_inst = len(inst_list)
+        n_inst = len(inst_list)
 
         fails = []
         pass_counter = 0
         time_stamp = self.get_time_stamp()
 
         # loop telescopes
-        for i in range(N_inst):
+        for i in range(n_inst):
             inst = inst_list[i]
             self._instrument = inst
             self._telescope = inst_data[inst]['telescope']
@@ -272,7 +265,7 @@ class AnalyseSatObs(object):
             # loop over groups and run reduction for each group
             for obj_pointing, file_list in self._dataset_object:
                 files = file_list['file'].values
-                N_files = len(file_list)
+                n_files = len(file_list)
 
                 unique_obj = np.unique(np.array([self._obsTable.get_satellite_id(f)[0]
                                                  for f in file_list['object'].values]))
@@ -290,7 +283,7 @@ class AnalyseSatObs(object):
                 if not self._silent:
                     self._log.info("====> Analyse satellite trail run <====")
                     self._log.info(
-                        f"> Analysing {N_files} fits files for {sat_name} with pointing "
+                        f"> Analysing {n_files} fits files for {sat_name} with pointing "
                         f"RA={obj_pointing[0]}, DEC={obj_pointing[1]} "
                         f"observed with the {self._telescope} telescope")
 
@@ -329,8 +322,8 @@ class AnalyseSatObs(object):
                                       'SatID', 'ErrorMsg', 'Cause', 'Hint']) + '\n')
                 [file.write('\t'.join(f) + '\n') for f in fails]
 
-        EndTime = time.perf_counter()
-        dt = EndTime - StartTime
+        endtime = time.perf_counter()
+        dt = endtime - starttime
         td = timedelta(seconds=dt)
 
         if not self._silent:
@@ -713,7 +706,7 @@ class AnalyseSatObs(object):
         # choose reference image if available (!!! only first at the moment !!!)
         ref_img_idx = None
         has_ref = False
-        N_ref = None
+        n_ref = None
         if list(data_dict['ref_img_idx']):
             idx_list = data_dict['ref_img_idx']
             ref_img_idx = data_dict['ref_img_idx'][0]
@@ -722,7 +715,7 @@ class AnalyseSatObs(object):
                 _, idx = self._dataset_all.select_file_from_list(data=np.array(data_dict['file_names'])[idx_list])
                 ref_img_idx = data_dict['ref_img_idx'][np.array(idx)]
             has_ref = True
-            N_ref = len(data_dict['ref_img_idx'])
+            n_ref = len(data_dict['ref_img_idx'])
 
         src_mask = None
         df = img_dict['cats_cleaned_rem']['ref_cat_cleaned']
@@ -762,24 +755,25 @@ class AnalyseSatObs(object):
                 ref_img_bkg_sub[img_mask] = ref_bkg_rms
             ref_img_bkg_sub[ref_img_bkg_sub < 0.] = ref_bkg_rms
 
+            # todo: replace this with the auto_build_catalog function maybe?
             # match the trail and the reference image; consider making it adaptive like the fwhm
             try:
-                T, _ = astroalign.find_transform(img_bkg_sub, ref_img_bkg_sub,
-                                                 detection_sigma=3.,
-                                                 max_control_points=100,
-                                                 min_area=9)
+                transform, _ = astroalign.find_transform(img_bkg_sub, ref_img_bkg_sub,
+                                                         detection_sigma=3,
+                                                         max_control_points=100,
+                                                         min_area=9)
             except (TypeError, astroalign.MaxIterError):
-                T, _ = astroalign.find_transform(nd.gaussian_filter(img_bkg_sub, fwhm),
-                                                 nd.gaussian_filter(ref_img_bkg_sub, fwhm),
-                                                 detection_sigma=70.,
-                                                 max_control_points=100,
-                                                 min_area=9)
+                transform, _ = astroalign.find_transform(nd.gaussian_filter(img_bkg_sub, fwhm),
+                                                         nd.gaussian_filter(ref_img_bkg_sub, fwhm),
+                                                         detection_sigma=70,
+                                                         max_control_points=100,
+                                                         min_area=9)
 
-            ref_img_warped, footprint = astroalign.apply_transform(T,
+            ref_img_warped, footprint = astroalign.apply_transform(transform,
                                                                    ref_imgarr,
                                                                    imgarr,
                                                                    propagate_mask=True)
-            ref_bkg_warped, footprint = astroalign.apply_transform(T,
+            ref_bkg_warped, footprint = astroalign.apply_transform(transform,
                                                                    ref_bkg,
                                                                    img_bkg,
                                                                    propagate_mask=True)
@@ -802,9 +796,9 @@ class AnalyseSatObs(object):
                 sharpened = blurred_f + alpha * (blurred_f - filter_blurred_f)
 
                 mean, _, std = sigma_clipped_stats(sharpened, grow=False)
-                sharpened -= mean
+                # sharpened -= mean
 
-                threshold = detect_threshold(sharpened, 1.5, mean, std)
+                threshold = detect_threshold(sharpened, 1.5)
                 sources = detect_sources(sharpened,
                                          threshold=threshold,
                                          npixels=5, connectivity=8)
@@ -905,7 +899,7 @@ class AnalyseSatObs(object):
                       'TrailANG': reg_info['orient_deg'],  # in deg
                       'e_TrailANG': reg_info['e_orient_deg'],  # in deg
                       'OptAperHeight': '%3.2f' % optimum_apheight,
-                      'HasRef': 'T' if has_ref else 'F', 'NRef': N_ref,
+                      'HasRef': 'T' if has_ref else 'F', 'NRef': n_ref,
                       'QlfAperRad': 'T' if qlf_aprad else 'F'}  # in px
 
             self._obsTable.update_obs_table(file=file, kwargs=kwargs,
@@ -1023,7 +1017,7 @@ class AnalyseSatObs(object):
         mag_corr = self._get_magnitude_correction(df=std_cat,
                                                   file_base=file_name)
         if not mag_corr:
-            del data, imgarr, catalog, std_cat, result, fluxes
+            del data, imgarr, std_cat, result, fluxes
             gc.collect()
 
             return None, None, None, None, None, None, False, ['MagCorrectError',
@@ -1480,7 +1474,7 @@ class AnalyseSatObs(object):
         positions = np.empty((len(pos_times), 17), object)
 
         for t, val in enumerate(pos_times):
-            sun_coordinates = pyorbital.astronomy.sun_ra_dec(val)
+            sun_coordinates = sun_ra_dec(val)
 
             sat_az, sat_elev = satellite.get_observer_look(utc_time=val,
                                                            lon=obs_lon,
@@ -1490,7 +1484,7 @@ class AnalyseSatObs(object):
             radec = SkyCoord(alt=sat_elev * u.deg, az=sat_az * u.deg,
                              obstime=val, frame='altaz', location=loc)
             pix_coords = radec.to_pixel(wcs)
-            sun_zenith = pyorbital.astronomy.sun_zenith_angle(val, obs_lon, obs_lat)
+            sun_zenith = sun_zenith_angle(val, obs_lon, obs_lat)
             sun_ra_hms = Angle(sun_coordinates[0], u.rad).hour
             sun_dec_dms = Angle(sun_coordinates[1], u.rad).degree
             sat_lon, sat_lat, sat_alt = satellite.get_lonlatalt(val)
@@ -1570,20 +1564,20 @@ class AnalyseSatObs(object):
             self._plot_trail_detection(param_dict=trail_imgs_dict, fname=fname_trail_det)
 
             # plot hough space
-            fname_houg_space = f"plot.satellite.hough.space_{file_base}_T{i + 1:02d}"
-            self._plot_hough_space(param_dict=param_fit_dict, fname=fname_houg_space)
+            fname_hough_space = f"plot.satellite.hough.space_{file_base}_T{i + 1:02d}"
+            self._plot_hough_space(param_dict=param_fit_dict, fname=fname_hough_space)
 
             # plot quadratic fit result
-            fname_houg_quad_fit = f"plot.satellite.hough.parameter_{file_base}_T{i + 1:02d}"
+            fname_hough_quad_fit = f"plot.satellite.hough.parameter_{file_base}_T{i + 1:02d}"
             self._plot_voting_variance(fit_results=param_fit_dict,
                                        reg_data=reg_data,
-                                       fname=fname_houg_quad_fit)
+                                       fname=fname_hough_quad_fit)
 
             # plot linear fit result
-            fname_houg_lin_fit = f"plot.satellite.hough.centroidxy_{file_base}_T{i + 1:02d}"
+            fname_hough_lin_fit = f"plot.satellite.hough.centroidxy_{file_base}_T{i + 1:02d}"
             self._plot_centroid_fit(fit_results=param_fit_dict,
                                     reg_data=reg_data,
-                                    fname=fname_houg_lin_fit)
+                                    fname=fname_hough_lin_fit)
 
             del trail_imgs_dict, param_fit_dict, reg_data
             gc.collect()
@@ -1643,11 +1637,11 @@ class AnalyseSatObs(object):
             ax.set_xlim(0, img.shape[1])
             ax.set_ylim(0, img.shape[0])
 
-            minorLocatorx = AutoMinorLocator(5)
-            minorLocatory = AutoMinorLocator(5)
+            minorlocatorx = AutoMinorLocator(5)
+            minorlocatory = AutoMinorLocator(5)
 
-            ax.xaxis.set_minor_locator(minorLocatorx)
-            ax.yaxis.set_minor_locator(minorLocatory)
+            ax.xaxis.set_minor_locator(minorlocatorx)
+            ax.yaxis.set_minor_locator(minorlocatory)
 
             ax.tick_params(
                 axis='both',  # changes apply to the x-axis
@@ -1718,11 +1712,11 @@ class AnalyseSatObs(object):
             color='k'  # tick color
         )
 
-        minorLocatorx = AutoMinorLocator(5)
-        minorLocatory = AutoMinorLocator(5)
+        minorlocatorx = AutoMinorLocator(5)
+        minorlocatory = AutoMinorLocator(5)
 
-        ax.xaxis.set_minor_locator(minorLocatorx)
-        ax.yaxis.set_minor_locator(minorLocatory)
+        ax.xaxis.set_minor_locator(minorlocatorx)
+        ax.yaxis.set_minor_locator(minorlocatory)
 
         x_str = r'$\tan(\theta)$'
         if 'sin' in fit_results['lin_y_label']:
@@ -1798,11 +1792,11 @@ class AnalyseSatObs(object):
             color='k'  # tick color
         )
 
-        minorLocatorx = AutoMinorLocator(5)
-        minorLocatory = AutoMinorLocator(5)
+        minorlocatorx = AutoMinorLocator(5)
+        minorlocatory = AutoMinorLocator(5)
 
-        ax.xaxis.set_minor_locator(minorLocatorx)
-        ax.yaxis.set_minor_locator(minorLocatory)
+        ax.xaxis.set_minor_locator(minorlocatorx)
+        ax.yaxis.set_minor_locator(minorlocatory)
 
         ax.set_xlabel(r'$\theta$ (deg)')
         ax.set_ylabel(r'$\sigma^{2}$ (pixel$^{2}$)')
@@ -1884,11 +1878,11 @@ class AnalyseSatObs(object):
             color='k'  # tick color
         )
 
-        minorLocatorx = AutoMinorLocator(5)
-        minorLocatory = AutoMinorLocator(5)
+        minorlocatorx = AutoMinorLocator(5)
+        minorlocatory = AutoMinorLocator(5)
 
-        ax.xaxis.set_minor_locator(minorLocatorx)
-        ax.yaxis.set_minor_locator(minorLocatory)
+        ax.xaxis.set_minor_locator(minorlocatorx)
+        ax.yaxis.set_minor_locator(minorlocatory)
 
         ax.set_xlabel(r'$\theta$ (deg)')
         ax.set_ylabel(r'$\rho$ (pixel)')
@@ -1966,11 +1960,11 @@ class AnalyseSatObs(object):
                 color='k'  # tick color
             )
 
-            minorLocatorx = AutoMinorLocator(5)
-            minorLocatory = AutoMinorLocator(5)
+            minorlocatorx = AutoMinorLocator(5)
+            minorlocatory = AutoMinorLocator(5)
 
-            ax.xaxis.set_minor_locator(minorLocatorx)
-            ax.yaxis.set_minor_locator(minorLocatory)
+            ax.xaxis.set_minor_locator(minorlocatorx)
+            ax.yaxis.set_minor_locator(minorlocatory)
 
             if i == 0:
                 ax.set_ylabel(r'Normalized Flux$_{\mathrm{aper}}$')
@@ -2079,11 +2073,11 @@ class AnalyseSatObs(object):
                 color='k'  # tick color
             )
 
-            minorLocatorx = AutoMinorLocator(4)
-            minorLocatory = AutoMinorLocator(4)
+            minorlocatorx = AutoMinorLocator(4)
+            minorlocatory = AutoMinorLocator(4)
 
-            ax.xaxis.set_minor_locator(minorLocatorx)
-            ax.yaxis.set_minor_locator(minorLocatory)
+            ax.xaxis.set_minor_locator(minorlocatorx)
+            ax.yaxis.set_minor_locator(minorlocatory)
 
             if i == 0:
                 ax.set_ylabel(r'SNR (normalized)')
@@ -2124,17 +2118,12 @@ class AnalyseSatObs(object):
         wcsprm = WCS(hdr).wcs
         obsparams = self._obsparams
 
-        # label_img = np.where(mask, 1, np.nan)
-        # label_img = SegmentationImage(label(src_mask))
-        # label_img.relabel_consecutive(start_label=1)
-
         image = img - bkg  # subtract background
         image[image < 0.] = 0.
 
         # get the scale and angle
-        scale = wcsprm.cdelt[0]
+        scale = np.abs(wcsprm.cdelt[0])
         angle = np.arccos(wcsprm.pc[0][0])
-
         theta = angle / 2. / np.pi * 360.
         if wcsprm.pc[0][0] < 0.:
             theta *= -1.
@@ -2168,8 +2157,11 @@ class AnalyseSatObs(object):
         trail_w = reg_data['width']
         trail_h = float(self._obj_info['OptAperHeight'])
 
-        sat_aper = RectangularAperture(sat_pos, w=trail_w, h=trail_h, theta=sat_ang)
-        std_apers = CircularAperture(std_pos, r=12.)
+        adjusted_sat_pos = [(x + 0.5, y + 0.5) for x, y in [sat_pos]]
+        adjusted_std_pos = [(x + 0.5, y + 0.5) for x, y in std_pos]
+
+        sat_aper = RectangularAperture(adjusted_sat_pos, w=trail_w, h=trail_h, theta=sat_ang)
+        std_apers = CircularAperture(adjusted_std_pos, r=12.)
 
         # Define normalization and the colormap
         vmin = np.percentile(image, 5)
@@ -2251,11 +2243,11 @@ class AnalyseSatObs(object):
             color='k'  # tick color
         )
 
-        minorLocatorx = AutoMinorLocator(5)
-        minorLocatory = AutoMinorLocator(5)
+        minorlocatorx = AutoMinorLocator(5)
+        minorlocatory = AutoMinorLocator(5)
 
-        ax.xaxis.set_minor_locator(minorLocatorx)
-        ax.yaxis.set_minor_locator(minorLocatory)
+        ax.xaxis.set_minor_locator(minorlocatorx)
+        ax.yaxis.set_minor_locator(minorlocatory)
 
         ax.set_ylabel(r'Pixel y direction')
         ax.set_xlabel(r'Pixel x direction')
