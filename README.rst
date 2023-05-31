@@ -51,7 +51,7 @@ Supported Telescopes
 
 Observations from the following telescopes are currently supported:
 
-* 0.6-metre Chakana telescope at the Ckoirama Observatory of the Universidad de Antofagasta, Antofagasta, Chile.
+* 0.6-metre Chakana telescope at the `Ckoirama Observatory`__ of the Universidad de Antofagasta, Antofagasta, Chile.
 * 0.9-metre Small and Moderate Aperture Research Telescope System (SMARTS) telescope
   at Cerro Tololo Inter-american Observatory (CTIO), Chile.
 * 1.54-metre Danish telescope at the La Silla Observatory, Chile.
@@ -61,7 +61,16 @@ Observations from the following telescopes are currently supported:
 * 0.6-metre telescope of the Chungbuk National University Observatory in Jincheon, South Korea.
 * 1.23-metre telescope at the Calar Alto Observatory, Spain.
 
+.. _Ckoirama: https://www.astro.uantof.cl/research/observatorios/ckoirama-observatory/
+
+__ Ckoirama_
+
 .. put links to telescopes
+
+.. note::
+
+    If you want your telescope added to the list, please contact
+    `Jeremy Tregloan-Reed <jeremy.tregloan-reed@uda.cl>`_.
 
 The positions of reference stars for astrometric calibration where obtained from the GAIA DR3 catalog via
 `astroquery <https://astroquery.readthedocs.io/en/latest/#>`_
@@ -278,9 +287,9 @@ To run the satellite detection and analysis on all files in the input type:
 ToDo
 ----
 
-.. * Memory and speed optimizations
 * Add full pre-processing check of files in input path before reduction
 * Add align and combine to reduction to make it more general
+* Memory and speed optimizations
 
 
 ---------------
@@ -293,18 +302,47 @@ When publishing data processed and analysed with LEOSatpy, please cite `TBW`
 Acknowledgements
 ----------------
 
-* funding
-* used code sources
-* etc.
+Alongside the packages listed in the `requirements.txt`, this project uses workflows and code adopted from the following packages:
+
+* `Astrometry v1.5 <https://github.com/lukaswenzl/astrometry>`_ under the GPLv3 License, Lukas Wenzl (2022), `Zenodo <https://doi.org/10.5281/zenodo.6462441>`_
+* `AutoPhOT <https://github.com/Astro-Sean/autophot>`_ under the GPLv3 License, Brennan & Fraser (2022) `NASA ADS <https://ui.adsabs.harvard.edu/abs/2022A%26A...667A..62B/abstract>`_
+.. * `reduceccd <https://github.com/rgbIAA/reduceccd/tree/master>`_ under the BSD-3-Clause license
+.. * `wht_reduction_scripts <https://github.com/crawfordsm/wht_reduction_scripts>`_ under the BSD-3-Clause license
+
+The authors of these packages and code are gratefully acknowledged.
+
+Special thanks go out to the following people for their ideas and contributions to the development
+of the **LEOSat** Python package:
+
+* `Jeremy Tregloan-Reed <jeremy.tregloan-reed@uda.cl>`_, Universidad de Atacama
+* `Eduardo Unda-Sanzana <eduardo.unda@uamail.cl>`_, Universidad de Antofagasta
+* `Edgar Ortiz <ed.ortizm@gmail.com>`_, Universidad de Antofagasta
+* `Maria Isabel Romero Colmenares <maria.romero.21@alumnos.uda.cl>`_, Universidad de Atacama
+* `Sangeetha Nandakumar <sangeetha.nandakumar@postgrados.uda.cl>`_, Universidad de Atacama
+
+The project would not have been possible without the help of everyone who contributed.
+
 
 ------------------------------
 Feedback, comments, questions?
 ------------------------------
 
-Please send an e-mail to: `CLEOSat-Group <christian.adam84@gmail.com>`_.
+**LEOSatpy** is under active development and help with the development of new functionalities
+and fixing bugs is very much appreciated.
+In case you would like to contribute, feel free to fork the
+`GitHub repository <https://github.com/CLEOsat-group/leosatpy>`_ and to create a pull request.
+
+If you encounter a bug or problem, please `submit a new issue on the GitHub repository
+<https://github.com/CLEOsat-group/leosatpy/issues>`_. Provide as much
+detail as possible (error message, operating system, Python version, etc.).
+
+If you have further feedback, questions or comments you can also send an e-mail to
+`Jeremy Tregloan-Reed <jeremy.tregloan-reed@uda.cl>`_, or `Christian Adam <christian.adam84@gmail.com>`_.
 
 ^^^^^^
 Author
 ^^^^^^
 
-Christian Adam
+`Christian Adam <christian.adam84@gmail.com>`_,
+Centro de Investigación, Tecnología, Educación y Vinculación Astronómica (CITEVA), Universidad de Antofagasta,
+Antofagasta, Chile
