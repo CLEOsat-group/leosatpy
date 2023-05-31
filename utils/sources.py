@@ -20,17 +20,15 @@
 # - file created and basic methods
 #
 # -----------------------------------------------------------------------------
+
+""" Modules """
 from __future__ import annotations
 
 import gc
-import math
-
-""" Modules """
 import os
 import sys
 from typing import Optional
 
-import astropy.wcs
 import numpy as np
 import pandas as pd
 
@@ -38,6 +36,7 @@ import inspect
 import logging
 import requests
 
+import astropy.wcs
 from astropy import units as u
 from astropy.table import (
     Table, Column)
@@ -46,65 +45,31 @@ from astropy.wcs import WCS
 from astropy.time import Time
 from astropy.io import (
     ascii, fits)
-from astropy import stats as astrostats
-from astropy.stats import (
-    gaussian_fwhm_to_sigma,
-    gaussian_sigma_to_fwhm,
-    sigma_clipped_stats, mad_std, sigma_clip, SigmaClip)
+from astropy.stats import (sigma_clipped_stats,
+                           mad_std, sigma_clip, SigmaClip)
 
 from astropy.convolution import (
     convolve, Tophat2DKernel,
     Gaussian2DKernel)
-
-from astropy.modeling.fitting import LevMarLSQFitter, LMLSQFitter
-from astropy.modeling import models, fitting
 from astropy.nddata import NDData
-from astropy.visualization import simple_norm
 
-from packaging.version import Version
+from astroquery.gaia import Gaia
 
 from lmfit import Model
-import lmfit
 
-import astroquery
-from astroquery.gaia import Gaia
-from astroquery.vizier import Vizier
-
-import photutils  # needed to check the version
-
-if Version(photutils.__version__) < Version('1.1.0'):
-    OLD_PHOTUTILS = True
-    from photutils.segmentation import (
-        detect_sources, detect_threshold,
-        deblend_sources, make_source_mask)
-    # noinspection PyPep8Naming
-    from photutils.segmentation import source_properties as SourceCatalog
-else:
-    OLD_PHOTUTILS = False
-    from photutils.segmentation import (
-        detect_sources, SourceCatalog,
-        deblend_sources, make_source_mask, detect_threshold,
-        SegmentationImage)
-
+from photutils.segmentation import (
+    detect_sources, detect_threshold)
 from photutils.detection import (
-    DAOStarFinder, find_peaks)
-from photutils.psf import (
-    IntegratedGaussianPRF, DAOGroup,
-    IterativelySubtractedPSFPhotometry, extract_stars)
-
+    DAOStarFinder)
+from photutils.psf import extract_stars
 from photutils.background import (
     Background2D,  # For estimating the background
     SExtractorBackground, StdBackgroundRMS, MMMBackground, MADStdBackgroundRMS,
     BkgZoomInterpolator)
-
 from photutils.aperture import CircularAperture
-from photutils.utils import circular_footprint
 
-from random import sample
-from skimage.draw import disk
 import scipy.spatial as spsp
-from scipy.signal import argrelextrema, argrelmax
-from scipy import ndimage as nd
+from scipy.spatial import KDTree
 from sklearn.metrics.pairwise import euclidean_distances
 
 try:
@@ -141,15 +106,15 @@ import config.base_conf as _base_conf
 
 """ Meta-info """
 __author__ = "Christian Adam"
-__copyright__ = 'Copyright 2021, UA, LEOSat observations'
-__credits__ = ["Christian Adam, Eduardo Unda-Sanzana, Jeremy Tregloan-Reed"]
-__license__ = "Free"
-__version__ = "0.1.0"
+__copyright__ = 'Copyright 2021-2023, CLEOSat group'
+__credits__ = ["Eduardo Unda-Sanzana, Jeremy Tregloan-Reed, Christian Adam"]
+__license__ = "GPL-3.0 license"
 __maintainer__ = "Christian Adam"
 __email__ = "christian.adam84@gmail.com"
 __status__ = "Production"
 
 __taskname__ = 'sources'
+
 # -----------------------------------------------------------------------------
 
 """ Parameter used in the script """
@@ -162,32 +127,38 @@ MODULE_PATH = os.path.dirname(inspect.getfile(inspect.currentframe()))
 
 
 def moffat2d(x, y, amp, xc, yc, alpha, beta, sky):
-    """"""
+    """2D Moffat function"""
 
     M = amp * (1. + ((x - xc) ** 2 + (y - yc) ** 2) / alpha ** 2) ** -beta + sky
 
     return M
 
 
-from scipy.spatial import KDTree
-
-
-def distance(point1, point2):
-    """"""
-    return np.linalg.norm(point1 - point2)
+def resid_func(x, y, amp, xc, yc, alpha, beta, sky):
+    """ Residual function for Moffat"""
+    M = moffat2d(x, y, amp, xc, yc, alpha, beta, sky)
+    return M
 
 
 def remove_close_elements(df, distance_threshold):
-    """"""
-    points = df[['xcentroid', 'ycentroid']].to_numpy()
+    """Remove elements within a given radius around each point"""
+
+    # make sure the faintest objects are first
+    df_sorted = df.sort_values(by=df.columns[5], ascending=False)
+
+    points = df_sorted[['xcentroid', 'ycentroid']].to_numpy()
+
     tree = KDTree(points)
     close_points = tree.query_ball_point(points, distance_threshold)
-    mask = np.ones(len(df), dtype=bool)
+    mask = np.ones(len(df_sorted), dtype=bool)
     for i, point in enumerate(close_points):
         if len(point) > 1:
             mask[i] = False
-    df = df[mask]
-    return df
+
+    df_masked = df_sorted[mask]
+    df_masked = df_masked.sort_values(by=df.columns[5], ascending=True)
+
+    return df_masked
 
 
 def auto_build_source_catalog(data,
@@ -205,12 +176,14 @@ def auto_build_source_catalog(data,
                               default_moff_beta=4.765,
                               min_good_fwhm=1,
                               max_good_fwhm=30,
-                              sigmaclip_FWHM_sigma=3.,
+                              sigmaclip_fwhm_sigma=3.,
                               isolate_sources_fwhm_sep=5., init_iso_dist=25.,
                               sat_lim=65536.,
                               silent=False):
-    """
+    """ Automatically detect and extract sources.
+
     Credit:  https://github.com/Astro-Sean/autophot/blob/master/autophot/packages/find.py
+
     """
 
     # Initialize logging for this user-callable function
@@ -226,8 +199,7 @@ def auto_build_source_catalog(data,
     if fwhm is not None:
         init_fwhm = fwhm
 
-    # data[data < 0] = 0.
-
+    # initial r_squared
     init_r2 = 0.7
 
     # decrease
@@ -236,10 +208,10 @@ def auto_build_source_catalog(data,
     # increase
     n = 0
 
+    decrease_increment = False
+
     # backstop
     failsafe = 0
-
-    decrease_increment = False
 
     # check if we can find a few more sources
     check = False
@@ -251,11 +223,6 @@ def auto_build_source_catalog(data,
     x_pix = np.arange(0, source_box_size)
     y_pix = np.arange(0, source_box_size)
     xx, yy = np.meshgrid(x_pix, y_pix)
-
-    def resid_func(x, y, amp, xc, yc, alpha, beta, sky):
-        """"""
-        M = moffat2d(x, y, amp, xc, yc, alpha, beta, sky)
-        return M
 
     model_func = Model(resid_func, independent_vars=('x', 'y'))
 
@@ -313,14 +280,15 @@ def auto_build_source_catalog(data,
                                     exclude_border=True,
                                     peakmax=sat_lim,
                                     brightest=brightest)
+
             sources = daofind(data)
             if sources is None:
                 log.warning('    Sources == None at %.1f sigma - decreasing threshold' % threshold_value)
                 m = fudge_factor
                 continue
 
-            # Sort based on peak_value to identify the brightest sources for use as a kernel
-            sources.sort('peak', reverse=True)
+            # Sort based on flux to identify the brightest sources for use as a kernel
+            sources.sort('flux', reverse=True)
             sources = sources.to_pandas()
 
         if not silent:
@@ -360,10 +328,11 @@ def auto_build_source_catalog(data,
             new_fwhm_guess = []
             new_r_squared_guess = []
             src_tmp = sources.copy()
-            src_tmp = src_tmp.head(25)
             no_sources = 11 if len(src_tmp.index.values) > 11 else len(src_tmp.index.values)
+            src_tmp = src_tmp.head(no_sources)
 
-            for i in sample(list(src_tmp.index.values), no_sources):
+            # for i in sample(list(src_tmp.index.values), no_sources):
+            for i in list(src_tmp.index.values):
                 try:
 
                     idx = src_tmp.index.values[i]
@@ -373,6 +342,7 @@ def auto_build_source_catalog(data,
                     stars_tbl['y'] = src_tmp['ycentroid'].loc[[idx]]
                     stars = extract_stars(nddata, stars_tbl, size=source_box_size)
                     stars = stars.data
+
                     snr_stars = np.nansum(stars) / np.sqrt(np.nanstd(stars) * source_box_size ** 2
                                                            + ((1. / 2.) ** 2) * source_box_size ** 2)
 
@@ -391,6 +361,7 @@ def auto_build_source_catalog(data,
                                             nan_policy='omit', max_nfev=100)
 
                     fwhm_fit = 2. * result.params['alpha'] * np.sqrt((2. ** (1. / result.params['beta'])) - 1.)
+
                     if (max_good_fwhm <= fwhm_fit <= min_good_fwhm) \
                             or (result.params['fwhm'].value is None) \
                             or (result.params['amp'] >= sat_lim) \
@@ -402,11 +373,11 @@ def auto_build_source_catalog(data,
                     new_fwhm_guess.append(fwhm_fit)
                     m = 0
 
-                except Exception as e:
-                    # log.warning("    ERROR : {} ".format(e))
+                except Exception:
                     pass
 
             new_r_squared_guess = np.array(new_r_squared_guess)
+
             new_fwhm_guess = np.array(new_fwhm_guess)
             all_nan_check = (np.where(new_fwhm_guess == np.nan, True, False)).all()
             if all_nan_check and not decrease_increment and not using_catalog_sources:
@@ -415,17 +386,14 @@ def auto_build_source_catalog(data,
                 continue
             else:
 
-                new_r_squared_guess = [math.floor(a * 100) / 100 for a in new_r_squared_guess]
-                new_r_squared_guess = [math.floor(a * 10) / 10 for a in new_r_squared_guess]
-                new_r_squared_guess = np.array(new_r_squared_guess)
-                new_r_squared_guess = new_r_squared_guess[new_r_squared_guess > 0.5]
+                init_fwhm = np.nanmedian(new_fwhm_guess)
 
-                # print(new_fwhm_guess)
-                int_fwhm = np.nanmedian(new_fwhm_guess)
-                if ~np.isnan(int_fwhm):  # and len(new_fwhm_guess[~np.isnan(new_fwhm_guess)]) >= 3:
+                if ~np.isnan(init_fwhm):  # and len(new_fwhm_guess[~np.isnan(new_fwhm_guess)]) >= 3:
                     if not silent:
-                        log.info('    Updated guess for FWHM: %.1f pixels ' % int_fwhm)
-                    init_r2 = np.nanmean(new_r_squared_guess)
+                        log.info('    Updated guess for FWHM: %.1f pixels ' % init_fwhm)
+
+                    init_r2 = np.nanpercentile(new_r_squared_guess, 50.,
+                                               method='median_unbiased')  # 84.135
 
                     if not silent:
                         log.info('    Updated limit for R-squared: %.3f' % init_r2)
@@ -479,6 +447,14 @@ def auto_build_source_catalog(data,
 
         isolated_sources = remove_close_elements(sources, init_iso_dist)
 
+        # src_positions = np.array(list(zip(sources['xcentroid'], sources['ycentroid'])))
+        # iso_src_positions = np.array(list(zip(isolated_sources['xcentroid'], isolated_sources['ycentroid'])))
+        # print(src_positions)
+        # plt.figure()
+        # plt.imshow(data)
+        # plt.scatter(src_positions[:,0], src_positions[:,1], c='r', alpha=0.5)
+        # plt.scatter(iso_src_positions[:,0], iso_src_positions[:,1], c='b', alpha=0.5)
+        # plt.show()
         if len(sources) - len(isolated_sources) > 0:
             log.info('    %d crowded sources removed' % (len(sources) - len(isolated_sources)))
 
@@ -514,6 +490,7 @@ def auto_build_source_catalog(data,
             stars_tbl = Table()
             stars_tbl['x'] = x0
             stars_tbl['y'] = y0
+
             stars = extract_stars(nddata, stars_tbl, size=source_box_size)
             stars = stars.data
 
@@ -525,6 +502,10 @@ def auto_build_source_catalog(data,
                 model_func.set_param_hint('amp', value=np.nanmax(stars),
                                           min=1e-3, max=1.5 * np.nanmax(stars))
                 model_func.set_param_hint('sky', value=np.nanmedian(stars))
+
+                alpha = init_fwhm / (2 * np.sqrt(2**(1 / default_moff_beta) - 1))
+                model_func.set_param_hint('alpha', value=alpha)
+
                 fit_params = model_func.make_params()
 
                 result = model_func.fit(data=stars, x=xx, y=yy,
@@ -552,7 +533,7 @@ def auto_build_source_catalog(data,
                     elif max_good_fwhm - 1 <= fwhm_fit <= min_good_fwhm:
                         to_add = nan_arr
                         high_fwhm += 1
-                    elif A <= A_err:
+                    elif A <= A_err or A_err is None:
                         to_add = nan_arr
                     elif result.rsquared < init_r2:
                         to_add = nan_arr
@@ -561,7 +542,7 @@ def auto_build_source_catalog(data,
                         isolated_sources['xcentroid'] = isolated_sources['xcentroid'].replace([x0], corrected_x)
                         isolated_sources['ycentroid'] = isolated_sources['ycentroid'].replace([y0], corrected_y)
 
-            except Exception as e:
+            except Exception:
                 to_add = nan_arr
 
             result_arr[i] = to_add
@@ -604,7 +585,7 @@ def auto_build_source_catalog(data,
                 continue
 
             FWHM_mask = sigma_clip(isolated_sources['fwhm'].values,
-                                   sigma=sigmaclip_FWHM_sigma,
+                                   sigma=sigmaclip_fwhm_sigma,
                                    masked=True,
                                    maxiters=10,
                                    cenfunc=np.nanmedian,
@@ -662,7 +643,7 @@ def auto_build_source_catalog(data,
 
     # isolated_sources = isolated_sources.dropna(subset=['fwhm', 'fwhm_err'], inplace=False)
     FWHM_mask = sigma_clip(isolated_sources['fwhm'].values,
-                           sigma=sigmaclip_FWHM_sigma,
+                           sigma=sigmaclip_fwhm_sigma,
                            masked=True,
                            maxiters=10,
                            cenfunc=np.nanmedian,
@@ -682,7 +663,6 @@ def auto_build_source_catalog(data,
     if not silent:
         log.info(f'    FWHM: {image_fwhm:.3f} +/- {image_fwhm_err:.3f} [ pixels ]')
     isolated_sources['cat_id'] = np.arange(1, len(isolated_sources) + 1)
-    # del isolated_sources['id']
 
     return (image_fwhm, image_fwhm_err), isolated_sources, True
 
@@ -723,7 +703,6 @@ def clean_catalog_trail(imgarr, mask, catalog, fwhm, r=5.):
 
     src_pos = np.array(list(zip(catalog['xcentroid'], catalog['ycentroid'])))
 
-    # loop over sources
     unwanted_indices = []
     for i in range(len(src_pos)):
         aperture = CircularAperture(src_pos[i], radius).to_mask(method='center')
@@ -750,7 +729,7 @@ def clean_catalog_trail(imgarr, mask, catalog, fwhm, r=5.):
         return catalog, pd.DataFrame()
 
 
-def clean_catalog_distance(in_cat: pandas.DataFrame,
+def clean_catalog_distance(in_cat: pd.DataFrame,
                            fwhm: float, r: float = 5.,
                            init_dist: float = None,
                            id_name: str = 'id') -> Table:
@@ -779,7 +758,7 @@ def clean_catalog_distance(in_cat: pandas.DataFrame,
     # FILTER FOR DISTANCES (0, r)
     unwanted_indices = melted_df[melted_df['dist_val'].between(0.,
                                                                radius,
-                                                               inclusive=False)].index
+                                                               inclusive='neither')].index
     in_cat_cln = in_cat.drop(unwanted_indices, axis=0)
 
     del in_cat, unwanted_indices, df, df_
@@ -879,7 +858,6 @@ def compute_2d_background(imgarr, mask, box_size, win_size,
             segment_img = detect_sources(imgarr, threshold, mask=mask,
                                          npixels=9, connectivity=8)
 
-            # footprint = circular_footprint(5)
             footprint = None
             src_mask = segment_img.make_source_mask(footprint=footprint)
 
@@ -1131,18 +1109,16 @@ def extract_source_catalog(imgarr,
     if img_mask is not None:
         imgarr_bkg_subtracted[img_mask] = bkg_rms_median
 
-    if not silent:
-        log.info("  > Mask image")
-
-    imgarr_bkg_subtracted = mask_image(imgarr_bkg_subtracted,
-                                       vignette=vignette,
-                                       vignette_rectangular=vignette_rectangular,
-                                       cutouts=cutouts,
-                                       only_rectangle=only_rectangle)
+    # if not silent:
+    #     log.info("  > Mask image")
+    # imgarr_bkg_subtracted = mask_image(imgarr_bkg_subtracted,
+    #                                    vignette=vignette,
+    #                                    vignette_rectangular=vignette_rectangular,
+    #                                    cutouts=cutouts,
+    #                                    only_rectangle=only_rectangle)
 
     if not silent:
         log.info("  > Auto build source catalog")
-
     fwhm, source_cat, state = auto_build_source_catalog(data=imgarr_bkg_subtracted,
                                                         img_std=bkg_rms_median,
                                                         use_catalog=use_catalog,
@@ -1160,7 +1136,7 @@ def extract_source_catalog(imgarr,
                                                         default_moff_beta=config['DEFAULT_MOFF_BETA'],
                                                         min_good_fwhm=config['FWHM_LIM_MIN'],
                                                         max_good_fwhm=config['FWHM_LIM_MAX'],
-                                                        sigmaclip_FWHM_sigma=config['SIGMACLIP_FWHM_SIGMA'],
+                                                        sigmaclip_fwhm_sigma=config['SIGMACLIP_FWHM_SIGMA'],
                                                         isolate_sources_fwhm_sep=config['ISOLATE_SOURCES_FWHM_SEP'],
                                                         init_iso_dist=config['ISOLATE_SOURCES_INIT_SEP'],
                                                         sat_lim=config['saturation_limit'])
@@ -1178,24 +1154,31 @@ def extract_source_catalog(imgarr,
 
 def find_worst_residual_near_center(resid: np.ndarray):
     """Find the pixel location of the worst residual, avoiding the edges"""
+
     yc, xc = resid.shape[0] / 2., resid.shape[1] / 2.
     radius = resid.shape[0] / 3.
+
     y, x = np.mgrid[0:resid.shape[0], 0:resid.shape[1]]
+
     mask = np.sqrt((y - yc) ** 2 + (x - xc) ** 2) < radius
     rmasked = resid * mask
+
     return np.unravel_index(np.argmax(rmasked), resid.shape)
 
 
 def get_reference_catalog_astro(ra, dec, sr: float = 0.5,
                                 epoch: Time = None, catalog: str = 'GAIADR3',
-                                full_catalog: bool = False, silent: bool = False):
+                                mag_lim: float | int = -1, silent: bool = False):
     """ Extract reference catalog from VO web service.
     Queries the catalog available at the ``SERVICELOCATION`` specified
     for this module to get any available astrometric source catalog entries
     around the specified position in the sky based on a cone-search.
 
+    todo: update this!!!
+
     Parameters
     ----------
+    mag_lim
     ra: float
         Right Ascension (RA) of center of field-of-view (in decimal degrees)
     dec: float
@@ -1207,14 +1190,8 @@ def get_reference_catalog_astro(ra, dec, sr: float = 0.5,
         Catalog positions returned for this field-of-view will have their
         proper motions applied to represent their positions at this date, if
         a value is specified at all, for catalogs with proper motions.
-    # num_sources: int, None, optional
-    #     Maximum number of the brightest/faintest sources to return in catalog.
-    #     If `num_sources` is negative, return that number of the faintest
-    #     sources.  By default, all sources are returned.
     catalog: str, optional
         Name of catalog to query, as defined by web-service.  Default: 'GSC242'
-    full_catalog: bool, optional
-        Return the full set of columns provided by the web service.
     silent: bool, optional
         Set to True to suppress most console output
 
@@ -1226,27 +1203,34 @@ def get_reference_catalog_astro(ra, dec, sr: float = 0.5,
 
     # Initialize logging for this user-callable function
     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
+
     coord = SkyCoord(ra=ra, dec=dec, unit=(u.degree, u.degree), obstime=epoch)
     radius = u.Quantity(sr, u.deg)
 
     ref_table = None
     if 'GAIA' in catalog:
+
         Gaia.ROW_LIMIT = -1  # Ensure the default row limit.
 
         if not silent:
             log.info("> Get astrometric reference catalog via astroquery")
             log.info(f"  Downloading data... This may take a while!!! Don't panic")
 
+        mag_lim_str = f"""AND phot_g_mean_mag <= {mag_lim}"""
+        if mag_lim == -1:
+            mag_lim_str = """"""
+
         query = f"""SELECT *
             FROM {_base_conf.DEF_ASTROQUERY_CATALOGS[catalog.upper()]}
             WHERE 1 = CONTAINS(
                POINT({coord.ra.value}, {coord.dec.value}),
                CIRCLE(ra, dec, {radius.value}))
-            AND phot_g_mean_mag <= 18
             AND parallax IS NOT NULL
+            {mag_lim_str}
             ORDER BY phot_g_mean_mag ASC
         """
 
+        # run the query
         j = Gaia.launch_job_async(query)
         ref_table = j.get_results()
 
@@ -1257,16 +1241,15 @@ def get_reference_catalog_astro(ra, dec, sr: float = 0.5,
     # Convert a common set of columns into standardized column names
     ref_table = convert_astrometric_table(ref_table, catalog)
 
-    if not full_catalog:
-        ref_table = ref_table['RA', 'DEC', 'mag', 'objID']
-
     # sort table by magnitude, fainter to brightest
     ref_table.sort('mag', reverse=True)
 
-    return ref_table.to_pandas(), catalog
+    return ref_table[['RA', 'DEC', 'mag', 'objID']].to_pandas(), catalog
 
 
-def get_reference_catalog_phot(ra, dec, sr=0.1, epoch=None, num_sources=None, catalog='GSC243',
+def get_reference_catalog_phot(ra, dec, sr=0.1, epoch=None,
+                               num_sources=None,
+                               catalog='GSC243',
                                full_catalog=False, silent=False):
     """ Extract reference catalog from VO web service.
     Queries the catalog available at the ``SERVICELOCATION`` specified
@@ -1305,8 +1288,6 @@ def get_reference_catalog_phot(ra, dec, sr=0.1, epoch=None, num_sources=None, ca
 
     # Initialize logging for this user-callable function
     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
-
-    # sr = sr if sr < 1. else 0.95
 
     serviceType = 'vo/CatalogSearch.aspx'
     spec_str = 'RA={}&DEC={}&SR={}&FORMAT={}&CAT={}&MINDET=5&MAXOBJ=5000'
@@ -1402,7 +1383,7 @@ def get_photometric_catalog(fname, loc, imgarr, hdr, wcsprm,
                            format=_base_conf.FRMT, utc=False)
     epoch = Time(t)
 
-    # set ra and dec
+    # set RA and DEC
     wcs = WCS(wcsprm.to_header())
     ra, dec = wcs.wcs_pix2world(hdr['NAXIS1'] // 2,
                                 hdr['NAXIS2'] // 2, 0)
@@ -1480,7 +1461,7 @@ def get_photometric_catalog(fname, loc, imgarr, hdr, wcsprm,
 
 
 def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
-                         catalog, has_trail=False, mode='astro',
+                         catalog, mode='astro',
                          silent=False, **config):
     """Extract astrometric positions and photometric data for sources in the
             input images' field-of-view.
@@ -1489,6 +1470,9 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
 
     # Initialize logging for this user-callable function
     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
+    # todo: change the process so it only loads one ref catalog for multiple images with
+    #  same pointing.
+
     save_cat = True  # todo: remove this maybe?
     ref_tbl_photo = None
     ref_catalog_photo = None
@@ -1524,7 +1508,7 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
                            format=_base_conf.FRMT, utc=False)
     epoch = Time(t)
 
-    # set ra and dec
+    # set RA and DEC
     ra, dec = wcsprm.crval
     wcs = WCS(wcsprm.to_header())
 
@@ -1579,13 +1563,6 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
             gc.collect()
             return (None for _ in range(12)), False
 
-        # # add positions to table
-        # pos_on_sky = WCS(hdr).wcs_pix2world(src_tbl[["xcentroid", "ycentroid"]], 0)
-        # src_tbl["RA"] = pos_on_sky[:, 0]
-        # src_tbl["DEC"] = pos_on_sky[:, 1]
-        #
-        # del pos_on_sky
-
         if not silent:
             log.info("> Save source catalog.")
         save_catalog(cat=src_tbl, wcsprm=wcsprm, out_name=src_cat_fname,
@@ -1603,13 +1580,8 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
             get_reference_catalog_astro(ra=ra, dec=dec, sr=fov_radius,
                                         epoch=epoch,
                                         catalog='GAIAdr3',
+                                        mag_lim=config['ref_cat_mag_lim'],
                                         silent=silent)
-        # # add positions to table
-        # pos_on_det = wcsprm.s2p(ref_tbl_astro[["RA", "DEC"]].values, 0)['pixcrd']
-        # ref_tbl_astro["xcentroid"] = pos_on_det[:, 0]
-        # ref_tbl_astro["ycentroid"] = pos_on_det[:, 1]
-        #
-        # del pos_on_det
 
         if not silent:
             log.info("> Save astrometric reference catalog.")
@@ -1620,11 +1592,11 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
     del imgarr
 
     # add positions to table
-    pos_on_det = wcsprm.s2p(ref_tbl_astro[["RA", "DEC"]].values, 0)['pixcrd']
-    ref_tbl_astro["xcentroid"] = pos_on_det[:, 0]
-    ref_tbl_astro["ycentroid"] = pos_on_det[:, 1]
+    # pos_on_det = wcsprm.s2p(ref_tbl_astro[["RA", "DEC"]].values, 0)['pixcrd']
+    # ref_tbl_astro["xcentroid"] = pos_on_det[:, 0]
+    # ref_tbl_astro["ycentroid"] = pos_on_det[:, 1]
 
-    del pos_on_det
+    # del pos_on_det
 
     return (src_tbl, ref_tbl_astro, ref_catalog_astro, ref_tbl_photo, ref_catalog_photo,
             src_cat_fname, astro_ref_cat_fname, photo_ref_cat_fname,
@@ -1654,7 +1626,7 @@ def mask_image(image,
         vignette = vignette * sidelength / 2.
         mask = (x[np.newaxis, :] - sidelength / 2) ** 2 + \
                (y[:, np.newaxis] - sidelength / 2) ** 2 < vignette ** 2
-        imgarr[~mask] = 0
+        imgarr[~mask] = np.nan
 
     # ignore a fraction of the image at the corner
     if (0. < vignette_rectangular < 1.) & (vignette_rectangular != -1.):
@@ -1673,7 +1645,7 @@ def mask_image(image,
         bottom = y[:, np.newaxis] > cutoff_bottom
         top = y[:, np.newaxis] < cutoff_top
         mask = (left * bottom) * (right * top)
-        imgarr[~mask] = 0
+        imgarr[~mask] = np.nan
 
     # cut out rectangular regions of the image, [(xstart, xend, ystart, yend)]
     if cutouts is not None and all(isinstance(el, list) for el in cutouts):
@@ -1688,7 +1660,7 @@ def mask_image(image,
             bottom = y[:, np.newaxis] > cutout[2]
             top = y[:, np.newaxis] < cutout[3]
             mask = (left * bottom) * (right * top)
-            imgarr[mask] = 0
+            imgarr[mask] = np.nan
 
     # use only_rectangle within image format: (xstart, xend, ystart, yend)
     if only_rectangle is not None and isinstance(only_rectangle, tuple):
@@ -1702,7 +1674,7 @@ def mask_image(image,
         bottom = y[:, np.newaxis] > only_rectangle[2]
         top = y[:, np.newaxis] < only_rectangle[3]
         mask = (left * bottom) * (right * top)
-        imgarr[~mask] = 0
+        imgarr[~mask] = np.nan
 
     return imgarr
 
@@ -1796,7 +1768,7 @@ def read_catalog(cat_fname: str, tbl_format: str = "ecsv") -> tuple:
     return cat_df, fwhm, catalog
 
 
-def save_catalog(cat: pandas.DataFrame,
+def save_catalog(cat: pd.DataFrame,
                  wcsprm: astropy.wcs.Wcsprm,
                  out_name: str, kernel_fwhm: tuple = None,
                  catalog: str = None, mode: str = 'src', tbl_format: str = "ecsv"):
@@ -1809,7 +1781,7 @@ def save_catalog(cat: pandas.DataFrame,
 
     if mode == 'src':
         # get position on sky
-        pos_on_sky = wcs.wcs_pix2world(cat[["xcentroid", "ycentroid"]], 1)
+        pos_on_sky = wcs.wcs_pix2world(cat[["xcentroid", "ycentroid"]], 0)
         cat_out["RA"] = pos_on_sky[:, 0]
         cat_out["DEC"] = pos_on_sky[:, 1]
         cols = ['RA', 'DEC', 'xcentroid', 'ycentroid', 'mag', 'cat_id',
@@ -1822,10 +1794,6 @@ def save_catalog(cat: pandas.DataFrame,
         cat_out["xcentroid"] = pos_on_det[:, 0]
         cat_out["ycentroid"] = pos_on_det[:, 1]
         cols = ['RA', 'DEC', 'xcentroid', 'ycentroid', 'mag', 'objID']
-
-    # cat['xcentroid'].format = '.10f'
-    # cat['ycentroid'].format = '.10f'
-    # cat['flux'].format = '.10f'
 
     if mode == 'ref_astro':
         cat_out = cat_out[cols]
@@ -1932,6 +1900,7 @@ def select_std_stars(ref_cat: pd.DataFrame,
 
     # convert fits filter to catalog filter + error (if available)
     filter_keys = _base_conf.CATALOG_FILTER_EXT[catalog][band]['Prim']
+    alt_filter_key = _base_conf.CATALOG_FILTER_EXT[catalog][band]['Alt']
 
     if band != 'w':
         filter_keys = sum(filter_keys, [])
@@ -1944,7 +1913,6 @@ def select_std_stars(ref_cat: pd.DataFrame,
         df = df[(df[filter_keys[0][1]] != 0.) & (df[filter_keys[1][1]] != 0.)]
 
     n = len(df)
-    alt_filter_key = _base_conf.CATALOG_FILTER_EXT[catalog][band]['Alt']
     if n < num_std_min and alt_filter_key is not None and band != 'w':
         if not silent:
             log.warning(f"    ==> No or less than {num_std_min} stars "
