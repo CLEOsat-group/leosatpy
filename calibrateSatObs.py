@@ -22,16 +22,16 @@
 # -----------------------------------------------------------------------------
 
 """ Modules """
-import gc
-import math
+
 # STDLIB
 import os
-import random
+import gc
 import sys
 import logging
 import warnings
 import time
-from datetime import timedelta, datetime, timezone
+from datetime import (
+    timedelta, datetime, timezone)
 import collections
 import configparser
 from pathlib import Path
@@ -44,14 +44,18 @@ import pandas as pd
 # astropy
 from astropy.io import fits
 from astropy import units as u
-from astropy.utils.exceptions import (AstropyUserWarning, AstropyWarning)
+from astropy.utils.exceptions import AstropyUserWarning
 from astropy.wcs import WCS
-from astropy.wcs import utils
 from astropy.coordinates import (FK5, ICRS, SkyCoord)
 from astropy.time import Time
 from astropy.visualization import (LinearStretch, LogStretch, SqrtStretch)
 from astropy.visualization.mpl_normalize import ImageNormalize
+
+# photutils
 from photutils.aperture import CircularAperture
+
+# scipy
+from scipy.spatial import KDTree
 
 # plotting; optional
 try:
@@ -61,6 +65,7 @@ except ImportError:
     mpl = None
     warnings.warn('matplotlib not found, plotting is disabled', AstropyUserWarning)
 else:
+    import matplotlib
     import matplotlib as mpl
     import matplotlib.pyplot as plt
     import matplotlib.gridspec as gridspec  # GRIDSPEC !
@@ -83,15 +88,16 @@ from utils.tables import ObsTables
 import utils.sources as sext
 import utils.transformations as imtrans
 import config.base_conf as _base_conf
+from version import __version__
 
 # -----------------------------------------------------------------------------
 
 """ Meta-info """
 __author__ = "Christian Adam"
-__copyright__ = 'Copyright 2021, UA, LEOSat observations'
-__credits__ = ["Christian Adam, Eduardo Unda-Sanzana, Jeremy Tregloan-Reed"]
-__license__ = "Free"
-__version__ = "0.1.0"
+__copyright__ = 'Copyright 2021-2023, CLEOSat group'
+__credits__ = ["Eduardo Unda-Sanzana, Jeremy Tregloan-Reed, Christian Adam"]
+__license__ = "GPL-3.0 license"
+__version__ = __version__
 __maintainer__ = "Christian Adam"
 __email__ = "christian.adam84@gmail.com"
 __status__ = "Production"
@@ -363,18 +369,17 @@ class CalibrateObsWCS(object):
         if not plt_path_final.exists():
             plt_path_final.mkdir(exist_ok=True)
 
-        # get wcs
+        # get wcs and an original copy
         wcsprm = WCS(hdr).wcs
-        wcsprm_original = WCS(hdr).wcs
 
-        # run checks on wcs
+        # run checks on wcs and get an initial guess
         self._check_image_wcs(wcsprm=wcsprm, hdr=hdr,
                               obsparams=obsparams,
                               radius=self._radius,
                               ignore_header_rot=self._ignore_header_rot)
-        wcsprm = self._wcsprm
+        init_wcsprm = self._wcsprm
 
-        # extract sources on detector
+        # update configuration
         config = obsparams.copy()
         params_to_add = dict(_fov_radius=self._fov_radius,
                              _vignette=self._vignette,
@@ -386,6 +391,7 @@ class CalibrateObsWCS(object):
                              image_mask=img_mask,
                              estimate_bkg=estimate_bkg,
                              n_ref_sources=self._config['REF_SOURCES_MAX_NO'],
+                             ref_cat_mag_lim=self._config['REF_CATALOG_MAG_LIM'],
                              bkg_fname=(bkg_fname, bkg_fname_short),
                              _force_extract=self._force_extract,
                              _force_download=self._force_download,
@@ -396,9 +402,10 @@ class CalibrateObsWCS(object):
         for key, value in self._config.items():
             config[key] = value
 
+        # extract sources on detector
         extraction_result, state = sext.get_src_and_cat_info(fbase, cat_path,
-                                                             imgarr, hdr, wcsprm, catalog,
-                                                             has_trail=False, mode='astro',
+                                                             imgarr, hdr, init_wcsprm, catalog,
+                                                             mode='astro',
                                                              silent=self._silent,
                                                              **config)
         # unpack extraction result tuple
@@ -406,10 +413,12 @@ class CalibrateObsWCS(object):
          src_cat_fname, ref_cat_fname, _,
          kernel_fwhm, psf, segmap, _) = extraction_result
 
+        # check execution state
         if not state:
             self._converged = False
             ra = hdr[obsparams['ra']]
             dec = hdr[obsparams['dec']]
+
             if obsparams['radec_separator'] == 'XXX':
                 ra = round(hdr[obsparams['ra']], _base_conf.ROUND_DECIMAL)
                 dec = round(hdr[obsparams['dec']], _base_conf.ROUND_DECIMAL)
@@ -424,117 +433,71 @@ class CalibrateObsWCS(object):
             return
 
         # get reference positions before the transformation
-        ref_positions_before = wcsprm.s2p(ref_tbl[["RA", "DEC"]].values, 0)['pixcrd']
+        ref_positions_before = init_wcsprm.s2p(ref_tbl[["RA", "DEC"]].values, 0)['pixcrd']
 
-        # if 'include_fwhm' in src_tbl.columns:
-        #     idx = src_tbl['include_fwhm']
-        #     if np.sum(idx) <= 11:
-        #         idx = [True] * len(src_tbl)
-        # else:
-        #     idx = [True] * len(src_tbl)
-        #
-        # src_tbl = src_tbl[idx]
+        # test with lower number of stars
+        # src_tbl = src_tbl.head(170)
+        max_wcs_iter = self._config['MAX_WCS_FUNC_ITER']
 
-        converged = False
-        dic_rms = {}
-        wcs_pixscale = np.nan
-        rotation_angle = np.nan
-        max_iter = 50
-        max_ref_src_no = self._config['REF_SOURCES_MAX_NO']
-        src_no = len(src_tbl)
-        # select the brightest reference sources
-        idx = -1 * max_ref_src_no
-        ref_tbl_truncated = ref_tbl[idx:] if len(ref_tbl) > max_ref_src_no else ref_tbl
-        ref_tbl_truncated.reset_index(inplace=True, drop=True)
-        ref_no = len(ref_tbl_truncated)
-        n_ref_to_select = math.ceil(src_no / self._config['THRESHOLD_CONVERGENCE'])
-        max_ref_src_no = math.ceil(10 * src_no) if 10 * src_no < ref_no else ref_no
-        idx_list = sorted(list(set(np.linspace(n_ref_to_select, max_ref_src_no, max_iter,
-                                               endpoint=True, dtype=int))), reverse=False)
+        match_radius = self._config['MATCH_RADIUS']
+        match_radius = kernel_fwhm[0] if match_radius == -1 else match_radius
 
-        for i, val in enumerate(idx_list):
-            idx = -1 * val
-            ref_tbl_select = ref_tbl_truncated[idx:]
-            wcsprm_tmp = wcsprm
-            # get reference positions before the transformation
-            ref_positions_before = wcsprm_tmp.s2p(ref_tbl_select[["RA", "DEC"]].values, 0)['pixcrd']
-            self._log.info("> Try [ %d/%d ] Find scale, rotation and offset "
-                           "using %d reference sources" % (i + 1, len(idx_list),
-                                                           len(ref_tbl_select)))
-            # get the scale, rotation and offset
-            wcsprm_tmp, fine_tune_status = self._get_transformations(source_cat=src_tbl,
-                                                                 ref_cat=ref_tbl_select,
-                                                                 wcsprm=wcsprm_tmp)
+        best_wcsprm, converged = self.get_wcs(src_tbl, ref_tbl,
+                                              init_wcsprm,
+                                              match_radius,
+                                              max_wcs_iter)
 
-            # move scaling to cdelt, out of the pc matrix
-            wcsprm_tmp, scales = imtrans.translate_wcsprm(wcsprm=wcsprm_tmp)
+        # Move scaling to cdelt and out of the pc matrix
+        best_wcsprm, scales = imtrans.translate_wcsprm(wcsprm=best_wcsprm)
 
-            # WCS difference before and after
-            wcs_pixscale, rotation_angle = self._compare_results(imgarr,
-                                                                 hdr,
-                                                                 wcsprm_tmp,
-                                                                 wcsprm_original,
-                                                                 scales)
+        status_str = _base_conf.BCOLORS.PASS + "PASS" + _base_conf.BCOLORS.ENDC
+        if not converged:
+            status_str = _base_conf.BCOLORS.FAIL + "FAIL" + _base_conf.BCOLORS.ENDC
+        else:
+            wcsprm = best_wcsprm
 
-            # check convergence
+        if not self._silent:
+            self._log.info("  => Calibration status: " + status_str)
+
+        # apply the found wcs to the original reference catalog
+        ref_tbl_adjusted = ref_tbl.copy()
+        pos_on_det = wcsprm.s2p(ref_tbl[["RA", "DEC"]].values, 0)['pixcrd']
+        ref_tbl_adjusted["xcentroid"] = pos_on_det[:, 0]
+        ref_tbl_adjusted["ycentroid"] = pos_on_det[:, 1]
+
+        # update file header and save
+        dic_rms = {"radius_px": None, "matches": None, "rms": None}
+        if converged:
+            # check goodness
             if not self._silent:
                 self._log.info("> Evaluate goodness of transformation")
-            converged, dic_rms = self._determine_if_fit_converged(ref_tbl_select, src_tbl, wcsprm_tmp,
-                                                                  imgarr.shape[0], imgarr.shape[1],
-                                                                  kernel_fwhm[0])
+            dic_rms = self._determine_if_fit_converged(ref_tbl_adjusted, src_tbl, wcsprm,
+                                                       match_radius)
 
-            if converged and fine_tune_status:
-                self._log.info(f"  Try [ %d/%d ] Convergence test and/or"
-                               f" refinement was SUCCESSFUL" % (i + 1, len(idx_list)))
-                wcsprm = wcsprm_tmp
-                break
-            else:
-                # if n_ref_to_select >= len(ref_tbl_truncated):
-                #     break
+            # WCS difference before and after
+            wcs_pixscale, rotation_angle, rotation_direction = self._compare_results(imgarr,
+                                                                                     hdr,
+                                                                                     wcsprm)
 
-                if i + 1 == len(idx_list):
-                    self._log.warning(f"  Try [ %d/%d ] Final convergence test and/or refinement has FAILED "
-                                      f"- Giving up for now! "
-                                      f"Please retry with adjusted configuration." % (i + 1, len(idx_list)))
-                else:
-                    self._log.warning(f"  Try [ %d/%d ] Convergence test and/or refinement has FAILED "
-                                      f"- Retrying with increased number of "
-                                      f"reference sources." % (i + 1, len(idx_list)))
+            # update report dict
+            report["converged"] = converged
+            report["catalog"] = ref_catalog
+            report["fwhm"] = kernel_fwhm[0]
+            report["e_fwhm"] = kernel_fwhm[1]
+            report["matches"] = int(dic_rms["matches"])
+            report["match_radius"] = dic_rms["radius_px"]
+            report["match_rms"] = dic_rms["rms"]
+            report["pix_scale"] = np.mean(abs(wcs_pixscale)) * 3600. if wcs_pixscale is not np.nan else np.nan
+            report["scale_x"] = abs(wcs_pixscale[1]) * 3600.
+            report["scale_y"] = abs(wcs_pixscale[0]) * 3600.
+            report["det_rotang"] = rotation_angle if rotation_angle is not np.nan else np.nan
 
-                # n_ref_to_select += 20
-
-        # update report dict
-        report["converged"] = converged
-        report["catalog"] = ref_catalog
-        report["fwhm"] = kernel_fwhm[0]
-        report["e_fwhm"] = kernel_fwhm[1]
-        report["matches"] = dic_rms["matches"]
-        report["match_radius"] = dic_rms["radius_px"]
-        report["match_rms"] = dic_rms["rms"]
-        report["pix_scale"] = np.mean(abs(wcs_pixscale)) * 3600. if wcs_pixscale is not np.nan else np.nan
-        report["scale_x"] = abs(wcs_pixscale[1]) * 3600.
-        report["scale_y"] = abs(wcs_pixscale[0]) * 3600.
-        report["det_rotang"] = rotation_angle if rotation_angle is not np.nan else np.nan
-
-        # match results within 1 pixel radius for plot
-        matches = imtrans.find_matches(src_tbl,
-                                       ref_tbl,
-                                       wcsprm,
-                                       threshold=1)
-        _, _, _, ref_positions_after, _, _, _ = matches
-        # update file header and save
-        if converged:
+            # save result to fits
             self._write_wcs_to_hdr(original_filename=abs_file_path,
                                    filename_base=fbase,
                                    dest=cal_path,
                                    wcsprm=wcsprm,
                                    report=report, hdul_idx=hdu_idx)
-            # if not self._silent:
-            #     self._log.info("> Save source and reference catalog.")
-            # sext.save_catalog(cat=src_tbl, wcsprm=wcsprm, out_name=src_cat_fname,
-            #                   kernel_fwhm=kernel_fwhm)
-            # sext.save_catalog(cat=ref_tbl, wcsprm=wcsprm, out_name=ref_cat_fname,
-            #                   mode='ref_astro', catalog=ref_catalog)
         else:
             ra = hdr[obsparams['ra']]
             dec = hdr[obsparams['dec']]
@@ -551,7 +514,13 @@ class CalibrateObsWCS(object):
 
         # plot final figures
         src_positions = list(zip(src_tbl['xcentroid'], src_tbl['ycentroid']))
-        # ref_positions_after = wcsprm.s2p(ref_tbl[["RA", "DEC"]].values, 1)['pixcrd']
+
+        # match results within 1 fwhm radius for plot
+        matches = imtrans.find_matches(src_tbl,
+                                       ref_tbl_adjusted,
+                                       wcsprm,
+                                       threshold=match_radius)
+        _, _, _, ref_positions_after, _, _, _ = matches
 
         if not self._silent:
             self._log.info("> Plot and save before after comparison")
@@ -570,7 +539,273 @@ class CalibrateObsWCS(object):
             state, matches
         gc.collect()
 
-    def _get_transformations(self, source_cat: pd.DataFrame, ref_cat, wcsprm):
+    def get_wcs(self, source_df, ref_df, initial_wcsprm,
+                match_radius=1, max_iter=6):
+        """"""
+
+        # make a copy to work with
+        source_cat = source_df.copy()
+        reference_cat = ref_df.copy()
+
+        # make sure the catalogs are sorted
+        source_cat = source_cat.sort_values(by='mag', ascending=True)
+        source_cat.reset_index(inplace=True, drop=True)
+
+        reference_cat = reference_cat.sort_values(by='mag', ascending=True)
+        reference_cat.reset_index(inplace=True, drop=True)
+
+        self._log.info("> Run WCS calibration")
+
+        # number of detected sources
+        Nobs = len(source_cat)
+        Nref = len(reference_cat)
+        source_ratio = (Nobs / Nref) * 100.
+        percent_to_select = np.ceil(source_ratio * 10)
+        n_percent = percent_to_select if percent_to_select < 100 else 100
+
+        # Calculate the number of rows to select based on the percentage
+        num_rows = int(Nref * (n_percent / 100))
+
+        # Select at least the first 100 entries
+        num_rows = 100 if num_rows < 100 else num_rows
+
+        if not self._silent:
+            self._log.info(f'  Number of detected sources: {Nobs}')
+            self._log.info(f'  Number of reference sources (total): {Nref}')
+            self._log.info(f'  Ratio of detected sources to reference sources: {source_ratio:.3f}%')
+            # self._log.info(f'Select: {np.ceil(source_ratio * 10):.2f}%')
+            self._log.info(f'  Initial number of reference sources selected: {num_rows}')
+            self._log.info(f'  Source match radius = {match_radius:.2f} px')
+
+        # keep track of progress
+        progress = 0
+        no_changes = 0
+        # match_radius = 1
+        has_converged = False
+        use_initial_ref_cat = False
+
+        # apply the found wcs to the original reference catalog
+        ref_cat_orig_adjusted = reference_cat.copy()
+        pos_on_det = initial_wcsprm.s2p(reference_cat[["RA", "DEC"]].values, 0)['pixcrd']
+        ref_cat_orig_adjusted["xcentroid"] = pos_on_det[:, 0]
+        ref_cat_orig_adjusted["ycentroid"] = pos_on_det[:, 1]
+
+        # select initial reference sample based on current best result
+        initial_reference_cat_subset = ref_cat_orig_adjusted.head(num_rows)
+
+        current_reference_cat_subset = initial_reference_cat_subset
+        current_wcsprm = initial_wcsprm
+
+        # setup best values
+        # best_rms = 1
+        # best_score = 0
+        best_Nobs = 0
+        best_completeness = 0
+        best_wcsprm = None
+
+        if not self._silent:
+            self._log.info(f'  Find scale, rotation, and offset.')
+
+        while True:
+            if progress == max_iter:
+                break
+            else:
+                progress += 1
+
+            if use_initial_ref_cat:
+                current_reference_cat_subset = initial_reference_cat_subset
+
+            # get wcs transformation
+            try:
+                tform_result = self._get_transformations(source_cat=source_cat,
+                                                         ref_cat=current_reference_cat_subset,
+                                                         wcsprm=current_wcsprm)
+            except IndexError:
+                current_reference_cat_subset = (initial_reference_cat_subset
+                                                .sample(int(len(initial_reference_cat_subset) * 0.95)))
+                current_wcsprm = initial_wcsprm
+                continue
+
+            # extract variables
+            new_wcsprm, new_wcsprm_vals, tform_params, offsets, is_fine_tuned = tform_result
+
+            # match results within 1 pixel radius for plot, consider fwhm
+            matches = imtrans.find_matches(source_cat,
+                                           current_reference_cat_subset,
+                                           new_wcsprm,
+                                           threshold=match_radius)
+            source_cat_matched, ref_cat_matched, obs_xy, _, distances, _, _ = matches
+            # update the wcsprm variable
+            current_wcsprm = new_wcsprm
+
+            # check if any matches were found
+            if obs_xy is None or len(obs_xy[:, 0]) == 0:
+                if not self._silent:
+                    self._log.info(f'  Try [ {progress}/{max_iter} ] No matches found. Trying again.')
+                use_initial_ref_cat = True
+                continue
+
+            # get convergence criteria
+            Nobs_matched = len(obs_xy[:, 0])
+            new_completeness = Nobs_matched / Nobs
+            new_rms = np.sqrt(np.mean(np.square(distances))) / Nobs_matched
+            new_score = Nobs_matched / new_rms
+
+            message = f'  Try [ {progress}/{max_iter} ] ' \
+                      f'Found matches: {Nobs_matched}/{Nobs} ({new_completeness * 100:.1f}%), ' \
+                      f'Score: {new_score:.0f}, ' \
+                      f'RMS: {new_rms:.3f}'
+
+            if not self._silent:
+                self._log.info(message)
+
+            if Nobs_matched > 3:
+                delta_matches = Nobs_matched - best_Nobs
+
+                # update best values
+                if Nobs_matched > best_Nobs:
+                    best_wcsprm = new_wcsprm
+                    best_Nobs = Nobs_matched
+                    # best_score = new_score
+                    # best_rms = new_rms
+                    best_completeness = new_completeness
+
+                # best case, all sources were matched
+                if best_completeness == 1.:
+                    has_converged = True
+                    break
+
+                if Nobs_matched >= self._config['MIN_SOURCE_NO_CONVERGENCE'] and delta_matches == 0.:
+                    if best_completeness > self._config['THRESHOLD_CONVERGENCE'] or best_completeness <= \
+                            self._config['THRESHOLD_CONVERGENCE']:
+
+                        has_converged = True
+                        break
+                elif Nobs_matched >= self._config['MIN_SOURCE_NO_CONVERGENCE'] and delta_matches < 0:
+                    no_changes += 1
+
+                if no_changes == 3:
+                    if not self._silent:
+                        self._log.info(f'  No improvement in the last 3 iterations. Using best result.')
+                    has_converged = True
+                    break
+                # Use the remaining detected sources and find close sources in the ref catalog
+                current_reference_cat_subset = self._update_ref_cat_subset(source_cat_matched,
+                                                                           ref_cat_matched,
+                                                                           source_cat, reference_cat,
+                                                                           new_wcsprm)
+                # current_wcsprm = initial_wcsprm
+                use_initial_ref_cat = False
+            else:
+                use_initial_ref_cat = True
+
+        return best_wcsprm, has_converged
+
+    def _update_ref_cat_subset(self, source_cat_matched, ref_cat_matched,
+                               source_cat_original, ref_cat_original, wcsprm):
+        """"""
+
+        # apply the found wcs to the original reference catalog
+        ref_cat_orig_adjusted = ref_cat_original.copy()
+        pos_on_det = wcsprm.s2p(ref_cat_original[["RA", "DEC"]].values, 0)['pixcrd']
+        ref_cat_orig_adjusted["xcentroid"] = pos_on_det[:, 0]
+        ref_cat_orig_adjusted["ycentroid"] = pos_on_det[:, 1]
+
+        # get the remaining not matched source from the source catalog
+        remaining_sources = source_cat_original[~source_cat_original['id'].isin(source_cat_matched['id'])]
+
+        # get the closest N sources from the reference catalog for the remaining sources
+        ref_sources_to_add = self.match_catalogs(remaining_sources,
+                                                 ref_cat_orig_adjusted,
+                                                 radius=10., N=3)
+        # print(ref_sources_to_add)
+        #
+        ref_cat_orig_matched = self.match_catalogs(ref_cat_matched,
+                                                   ref_cat_original,
+                                                   ra_dec_tol=1e-4, N=1)
+
+        ref_catalog_subset = pd.concat([ref_cat_orig_matched, ref_sources_to_add],
+                                       ignore_index=True)
+        # print(ref_catalog_subset)
+        # print(len(ref_catalog_subset))
+        # self.plot_catalog_positions(source_catalog=remaining_sources,
+        #                             reference_catalog=ref_sources_to_add)
+        # self.plot_catalog_positions(source_catalog=source_cat_original,
+        #                             reference_catalog=ref_catalog_subset,
+        #                             wcsprm=wcsprm)
+        # plt.show()
+        return ref_catalog_subset
+
+    @staticmethod
+    def match_catalogs(catalog1, catalog2, ra_dec_tol=None, radius=None, N=3):
+        """
+        Match catalogs based on closest points within a tolerance or centroid within a radius.
+
+        Args:
+            catalog1 (DataFrame): First catalog.
+            catalog2 (DataFrame): Second catalog.
+            ra_dec_tol (float): Tolerance in RA/DEC coordinates for matching.
+            radius (float): Radius in pixels to consider for matching.
+            N (int): Number of closest points to return.
+
+        Returns:
+            DataFrame: Subset of catalog2 with matched points.
+        """
+        if ra_dec_tol is not None:
+            # Build a KDTree for catalog1 based on RA/DEC coordinates
+            catalog1_tree = KDTree(catalog1[['RA', 'DEC']].values)
+
+            # Find the indices of the closest points for each row in catalog2
+            # based on RA/DEC coordinates
+            distances, indices = catalog1_tree.query(catalog2[['RA', 'DEC']].values, k=1)
+
+            # Create a mask for distances within the specified tolerance
+            mask = distances < ra_dec_tol
+        elif radius is not None:
+            # Build a KDTree for catalog1 based on centroid coordinates
+            catalog1_tree = KDTree(catalog1[['xcentroid', 'ycentroid']].values)
+
+            # Find the indices and distances of the closest points for each row in catalog2
+            # based on centroid coordinates
+            distances, indices = catalog1_tree.query(catalog2[['xcentroid', 'ycentroid']].values, k=N)
+
+            # Create a mask for distances within the specified radius
+            mask = distances <= radius
+        else:
+            raise ValueError("Either ra_dec_tol or radius must be specified for matching.")
+
+        # Select the matching rows from catalog2
+        matched_catalog2_subset = catalog2[mask]
+
+        return matched_catalog2_subset
+
+    @staticmethod
+    def plot_catalog_positions(source_catalog, reference_catalog, wcsprm=None):
+        reference_cat = reference_catalog.copy()
+
+        if wcsprm is not None:
+            pos_on_det = wcsprm.s2p(reference_catalog[["RA", "DEC"]].values, 0)['pixcrd']
+            reference_cat["xcentroid"] = pos_on_det[:, 0]
+            reference_cat["ycentroid"] = pos_on_det[:, 1]
+
+        fig, ax = plt.subplots(figsize=(10, 10))
+
+        # Plot the positions of the source catalog
+        ax.scatter(source_catalog['xcentroid'], source_catalog['ycentroid'], c='blue', marker='o',
+                   label='Source Catalog', alpha=0.7)
+
+        # Plot the positions of the reference catalog
+        ax.scatter(reference_cat['xcentroid'], reference_cat['ycentroid'], c='red', marker='x',
+                   label='Reference Catalog',
+                   alpha=0.7)
+
+        ax.set_xlabel('X Position')
+        ax.set_ylabel('Y Position')
+        ax.legend()
+        plt.title('Source Catalog and Reference Catalog Positions')
+        # plt.show()
+
+    def _get_transformations(self, source_cat: pd.DataFrame, ref_cat: pd.DataFrame, wcsprm):
         """ Determine rotation, scale and offset using image transformations
 
         Parameters
@@ -583,47 +818,58 @@ class CalibrateObsWCS(object):
             World coordinate system object describing translation between image and skycoord
         """
         INCREASE_FOV_FLAG, PIXSCALE_UNCLEAR = self._wcs_check
+        tform_params = None
+        offsets = None
 
         if self._rot_scale:
-            if not self._silent:
-                self._log.info("  > Determine pixel scale and rotation angle")
-            wcsprm = imtrans.get_scale_and_rotation(observation=source_cat,
-                                                    catalog=ref_cat,
-                                                    wcsprm=wcsprm,
-                                                    scale_guessed=PIXSCALE_UNCLEAR,
-                                                    dist_bin_size=self._config['DISTANCE_BIN_SIZE'],
-                                                    ang_bin_size=self._config['ANG_BIN_SIZE'],
-                                                    silent=self._silent)
+            # if not self._silent:
+            #     self._log.info("  > Determine pixel scale and rotation angle")
+            self._log.debug("  > Determine pixel scale and rotation angle")
+            wcsprm, tform_params = imtrans.get_scale_and_rotation(observation=source_cat,
+                                                                  catalog=ref_cat,
+                                                                  wcsprm=wcsprm,
+                                                                  scale_guessed=PIXSCALE_UNCLEAR,
+                                                                  dist_bin_size=self._config['DISTANCE_BIN_SIZE'],
+                                                                  ang_bin_size=self._config['ANG_BIN_SIZE'])
 
         if self._xy_transformation:
-            if not self._silent:
-                self._log.info("  > Determine x, y offset")
-            wcsprm, _, _ = imtrans.get_offset_with_orientation(observation=source_cat,
-                                                               catalog=ref_cat,
-                                                               wcsprm=wcsprm,
-                                                               silent=self._silent)
+            # if not self._silent:
+            #     self._log.info("  > Determine x, y offset")
+            self._log.debug("  > Determine x, y offset")
+            wcsprm, offsets, _, _ = imtrans.get_offset_with_orientation(observation=source_cat,
+                                                                        catalog=ref_cat,
+                                                                        wcsprm=wcsprm)
+
+        # update reference catalog
+        ref_cat_corrected = ref_cat.copy()
+        pos_on_det = wcsprm.s2p(ref_cat[["RA", "DEC"]].values, 0)['pixcrd']
+        ref_cat_corrected["xcentroid"] = pos_on_det[:, 0]
+        ref_cat_corrected["ycentroid"] = pos_on_det[:, 1]
 
         # correct subpixel error
-        wcsprm, fine_tune_status = self._correct_subpixel_error(source_cat=source_cat,
-                                                                ref_cat=ref_cat,
-                                                                wcsprm=wcsprm)
+        wcsprm, wcsprm_vals, fine_tune_status = self._correct_subpixel_error(source_cat=source_cat,
+                                                                             ref_cat=ref_cat_corrected,
+                                                                             wcsprm=wcsprm)
 
-        del source_cat, ref_cat, _
+        del source_cat, ref_cat, ref_cat_corrected, _
         gc.collect()
 
-        return wcsprm, fine_tune_status
+        return wcsprm, wcsprm_vals, tform_params, offsets, fine_tune_status
 
-    def _compare_results(self, imgarr, hdr, wcsprm, wcsprm_original, scales):
+    def _compare_results(self, imgarr, hdr, wcsprm):
         """Compare WCS difference before and after transformation"""
+
+        wcsprm_original = WCS(hdr).wcs
 
         if not self._silent:
             self._log.info("> Compared to the input the Wcs was changed by: ")
-        scales_original = utils.proj_plane_pixel_scales(WCS(hdr))
+        # scales_original = utils.proj_plane_pixel_scales(WCS(hdr))
 
-        if not self._silent:
-            self._log.info("  WCS got scaled by a factor of {} in x direction and "
-                           "{} in y direction".format(scales[0] / scales_original[0],
-                                                      scales[1] / scales_original[1]))
+        # if scales is not None:
+        #     if not self._silent:
+        #         self._log.info("  WCS got scaled by a factor of {} in x direction and "
+        #                        "{} in y direction".format(scales[0] / scales_original[0],
+        #                                                   scales[1] / scales_original[1]))
 
         # sources:
         # https://math.stackexchange.com/questions/2113634/comparing-two-rotation-matrices
@@ -645,24 +891,37 @@ class CalibrateObsWCS(object):
         # bugfix: multiplying by cdelt otherwise the calculated angle is off by a tiny bit
         rotation_angle = matrix_angle(wcsprm.get_pc() @ wcsprm.get_cdelt(),
                                       wcsprm_original.get_pc() @ wcsprm_original.get_cdelt()) / 2. / np.pi * 360.
+
         if (wcsprm.get_pc() @ wcsprm_original.get_pc())[0, 1] > 0:
             text = "counterclockwise"
+            rotation_direction = 'ccw'
         else:
             text = "clockwise"
+            rotation_direction = 'cw'
+
         if not self._silent:
             self._log.info(f"  Rotation of WCS by an angle of {rotation_angle} deg " + text)
+
         old_central_pixel = [imgarr.shape[0] / 2, imgarr.shape[1] / 2]
         if not self._silent:
             self._log.info("  x offset: {} px, y offset: {} px ".format(wcsprm.crpix[0] - old_central_pixel[0],
                                                                         wcsprm.crpix[1] - old_central_pixel[1]))
 
+        wcs_pixscale = self._get_wcs_pixelscale(wcsprm)
+
+        return wcs_pixscale, rotation_angle, rotation_direction
+
+    @staticmethod
+    def _get_wcs_pixelscale(wcsprm):
+        """ Get the pixel scale in deg/pixel from the WCS object """
+
         pc = wcsprm.get_pc()
         cdelt = wcsprm.get_cdelt()
         wcs_pixscale = (pc @ cdelt)
 
-        return wcs_pixscale, rotation_angle
+        return wcs_pixscale
 
-    def _correct_subpixel_error(self, source_cat: pd.DataFrame, ref_cat, wcsprm):
+    def _correct_subpixel_error(self, source_cat: pd.DataFrame, ref_cat: pd.DataFrame, wcsprm):
         """ Correct the subpixel error using fine transformation.
 
         Parameters
@@ -691,22 +950,24 @@ class CalibrateObsWCS(object):
                                        threshold=compare_threshold)
         _, _, _, _, distances, best_score, state = matches
 
+        best_wcsprm_vals = None
         fine_transformation_success = False
         if self._fine_transformation:
-            if not self._silent:
-                self._log.info("  > Refine scale and rotation")
+            # if not self._silent:
+            #     self._log.info("  > Refine scale and rotation")
+            self._log.debug("  > Refine scale and rotation")
             lis = [2, 3, 5, 8, 10, 20, 1, 0.5, 0.2, 0.1]  # , 0.5, 0.25, 0.2, 0.1
             if self._high_res:
                 lis = [200, 300, 100, 150, 80, 40, 70, 20, 100, 30, 9, 5]
             skip_rot_scale = True
             for i in lis:
-                wcsprm_new, score = imtrans.fine_transformation(source_cat,
-                                                                ref_cat,
-                                                                wcsprm,
-                                                                threshold=i,
-                                                                compare_threshold=compare_threshold,
-                                                                skip_rot_scale=skip_rot_scale,
-                                                                silent=self._silent)
+                wcsprm_new, score, wcsprm_vals = imtrans.fine_transformation(source_cat,
+                                                                             ref_cat,
+                                                                             wcsprm,
+                                                                             threshold=i,
+                                                                             compare_threshold=compare_threshold,
+                                                                             skip_rot_scale=skip_rot_scale,
+                                                                             silent=self._silent)
 
                 if i == 20:
                     # only allow rot and scaling for the last few tries
@@ -715,23 +976,24 @@ class CalibrateObsWCS(object):
                 if score > best_score:
                     wcsprm = wcsprm_new
                     best_score = score
+                    best_wcsprm_vals = wcsprm_vals
                     fine_transformation_success = True
 
-            pass_str = _base_conf.BCOLORS.PASS + "PASS" + _base_conf.BCOLORS.ENDC
-            fail_str = _base_conf.BCOLORS.FAIL + "FAIL" + _base_conf.BCOLORS.ENDC
-            if not fine_transformation_success:
-                if not self._silent:
-                    self._log.info("    Status: " + fail_str)
-            else:
-                if not self._silent:
-                    self._log.info("    Status: " + pass_str)
+            # pass_str = _base_conf.BCOLORS.PASS + "PASS" + _base_conf.BCOLORS.ENDC
+            # fail_str = _base_conf.BCOLORS.FAIL + "FAIL" + _base_conf.BCOLORS.ENDC
+            # if not fine_transformation_success:
+            #     if not self._silent:
+            #         self._log.info("    Status: " + fail_str)
+            # else:
+            #     if not self._silent:
+            #         self._log.info("    Status: " + pass_str)
 
         del source_cat, ref_cat, matches
         gc.collect()
 
-        return wcsprm, fine_transformation_success
+        return wcsprm, best_wcsprm_vals, fine_transformation_success
 
-    def _determine_if_fit_converged(self, catalog, observation, wcsprm, NAXIS1, NAXIS2, fwhm):
+    def _determine_if_fit_converged(self, catalog, observation, wcsprm, fwhm) -> dict:
         """Cut off criteria for deciding if the astrometry fit worked.
         
         Parameters
@@ -739,35 +1001,25 @@ class CalibrateObsWCS(object):
         catalog :
         observation :
         wcsprm :
-        NAXIS1 :
-        NAXIS2 :
+        fwhm :
 
         Returns
         -------
         converged: bool
             Returns whether the fit converged or not
         """
-        converged = False
 
         N_obs = observation.shape[0]
 
-        catalog_on_sensor = wcsprm.s2p(catalog[["RA", "DEC"]], 0)['pixcrd']
-        cat_x = np.array([catalog_on_sensor[:, 0]])
-        cat_y = np.array([catalog_on_sensor[:, 1]])
-        mask = (cat_x >= 0) & (cat_x <= NAXIS1) & (cat_y >= 0) & (cat_y <= NAXIS2)
-        N_cat = mask.sum()
-
-        N = min([N_obs, N_cat])
-
         # get pixel scale
-        px_scale = wcsprm.cdelt[0] * 3600.  # in arcsec
+        px_scale = np.abs(wcsprm.cdelt[0]) * 3600.  # in arcsec
 
         # get radii list
         r = round(2 * fwhm, 1)
-        radii_list = imtrans.frange(0.1, r, 0.1)
+        radii_list = list(imtrans.frange(0.1, r, 0.1))
+        result_array = np.zeros((len(radii_list), 6))
 
-        dic_rms = {"radius_px": None, "matches": None, "rms": None}
-        for r in radii_list:
+        for i, r in enumerate(radii_list):
             matches = imtrans.find_matches(observation,
                                            catalog, wcsprm,
                                            threshold=r)
@@ -775,31 +1027,39 @@ class CalibrateObsWCS(object):
             len_obs_x = len(obs_xy[:, 0])
 
             rms = np.sqrt(np.mean(np.square(distances))) / len_obs_x
-            self._log.debug("  Within {} pixel or {:.3g} arcsec {} sources where matched. "
-                            "The rms is {:.3g} pixel or "
-                            "{:.3g} arcsec".format(r,
-                                                   px_scale * r,
-                                                   len_obs_x,
-                                                   rms,
-                                                   rms * px_scale))
-            # self._log.debug("  Conditions for convergence of fit: at least 3 matches within "
-            #                 "{}px and at least 0.25 * minimum ( observed sources, catalog sources in fov) "
-            #                 "matches with the same radius".format(len_obs_x))
 
-            if (len_obs_x >= self._config['MIN_SOURCE_NO_CONVERGENCE']) \
-                    and (r >= 1.) \
-                    and (len_obs_x >= self._config['THRESHOLD_CONVERGENCE'] * N):
-                converged = True
-                dic_rms = {"radius_px": r, "matches": len_obs_x, "rms": rms}
-                if not self._silent:
-                    self._log.info("  Within {} pixel or {:.3g} arcsec {}/{} ({:.1f}%) sources where matched. "
-                                   "The rms is {:.3g} pixel or "
-                                   "{:.3g} arcsec".format(r, px_scale * r,
-                                                          len_obs_x, N_obs, (len_obs_x / N_obs) * 100,
-                                                          rms, rms * px_scale))
-                break
+            result_array[i, :] = [len_obs_x, len_obs_x / N_obs, r, r * px_scale, rms, rms * px_scale]
 
-        return converged, dic_rms
+        # Calculate the differences between consecutive numbers of sources and pixel values
+        diff_sources = np.diff(result_array[:, 0])
+        diff_pixels = np.diff(result_array[:, 2])
+
+        # Calculate the rate of change
+        rate_of_change = diff_sources / diff_pixels
+
+        # Find the point where the rate of change drops below a certain threshold
+        threshold = 1.  # This is just an example value, you might need to adjust it based on your data
+        index = np.where(np.logical_and((rate_of_change < threshold),
+                                        (result_array[1:, 2] > fwhm / 2.)))[0][0]
+
+        result = result_array[index, :]
+        len_obs_x = int(result[0])
+        r = result[2]
+        rms = result[4]
+        dic_rms = {"matches": len_obs_x,
+                   "complete": result[1],
+                   "radius_px": r,
+                   "rms": rms}
+        print(dic_rms)
+        if not self._silent:
+            self._log.info("  Within {} pixel or {:.3g} arcsec {}/{} ({:.1f}%) sources where matched. "
+                           "The rms is {:.3g} pixel or "
+                           "{:.3g} arcsec".format(r, px_scale * r,
+                                                  len_obs_x, N_obs,
+                                                  (len_obs_x / N_obs) * 100,
+                                                  rms, rms * px_scale))
+
+        return dic_rms
 
     def _check_image_wcs(self, wcsprm, hdr, obsparams,
                          ra_input=None, dec_input=None,
@@ -871,7 +1131,7 @@ class CalibrateObsWCS(object):
                 wcsprm.equinox = 2000.0
 
         wcs = WCS(wcsprm.to_header())
-        hdr.update(wcs.to_header())
+        hdr.update(wcs.to_header(), relax=True)
 
         if 'RADECSYS' not in hdr:
             hdr['RADECSYS'] = 'FK5'
@@ -901,15 +1161,14 @@ class CalibrateObsWCS(object):
         y_size = axis2 * pixscale_y / 60.  # arcmin
 
         # test if the current pixel scale makes sense
-        pc = wcsprm.get_pc()
-        cdelt = wcsprm.get_cdelt()
-        wcs_pixscale = (pc @ cdelt)
+        wcs_pixscale = self._get_wcs_pixelscale(wcsprm)
 
+        # print(pc, cdelt, wcs_pixscale)
         test_wcs1 = ((np.abs(wcs_pixscale[0])) < 1e-7 or (np.abs(wcs_pixscale[1])) < 1e-7 or
                      (np.abs(wcs_pixscale[0])) > 5e-3 or (np.abs(wcs_pixscale[1])) > 5e-3)
         if test_wcs1:
             if not self._silent:
-                log.info("  Pixelscale is unrealistic. Will guess")
+                log.info("  Pixelscale appears unrealistic. We will use a guess instead.")
                 # wcsprm.pc = [[1, 0], [0, 1]]
                 wcsprm.pc = [[0, 1], [-1, 0]]
                 guess = pixscale_x / 3600.
@@ -925,14 +1184,13 @@ class CalibrateObsWCS(object):
         if ignore_header_rot:
             wcsprm.pc = [[1, 0], [0, 1]]
 
-        # test if found pixel scale makes sense size +- 10%
+        # test if found pixel scale makes sense
         test_wcs2 = (120. > x_size > 0.5) & \
                     (120. > y_size > 0.5)
 
         if test_wcs2:
-            pc = wcsprm.get_pc()
-            cdelt = wcsprm.get_cdelt()
-            wcs_pixscale = (pc @ cdelt)
+            wcs_pixscale = self._get_wcs_pixelscale(wcsprm)
+
             pixscale_x = pixscale_x / 60. / 60.  # pixel scale now in deg / pixel
             pixscale_y = pixscale_y / 60. / 60.  # pixel scale now in deg / pixel
 
@@ -946,10 +1204,6 @@ class CalibrateObsWCS(object):
                 if self._telescope == 'DK-1.54':
                     wcsprm.pc = [[-1, 0], [0, -1]]
                     wcsprm.cdelt = [pixscale_x, pixscale_y]
-
-                    # rotation = np.deg2rad(90. - wcsprm.crota[1])
-                    # rot = imtrans.rotation_matrix(rotation)
-                    # wcsprm = imtrans.rotate(wcsprm, np.array(rot))
                 if self._telescope == 'DDOTI 28-cm f/2.2':
                     wcsprm.pc = [[1, 0], [0, -1]]
                     wcsprm.cdelt = [pixscale_x, pixscale_y]
@@ -1080,12 +1334,13 @@ class CalibrateObsWCS(object):
                          file_name, fig_path, wcsprm, norm='lin', cmap='Greys', **config):
         """Plot before and after images"""
 
-        bkg_fname = config['bkg_fname']
         # load fits file
+        bkg_fname = config['bkg_fname']
         with fits.open(f'{bkg_fname[0]}.fits') as hdul:
             hdul.verify('fix')
             bkg_background = hdul[0].data.astype('float32')
 
+        # subtract background
         imgarr = imgarr - bkg_background
 
         # get the scale and angle
@@ -1119,9 +1374,13 @@ class CalibrateObsWCS(object):
         xenmark = xstmark + xlemark
         ystmark = plim * (1. - 0.975)
 
-        apertures = CircularAperture(src_pos, r=7)
-        apertures_catalog_before = CircularAperture(ref_pos_before, r=10)
-        apertures_catalog_after = CircularAperture(ref_pos_after, r=10.)
+        adjusted_src_pos = [(x + 0.5, y + 0.5) for x, y in src_pos]
+        adjusted_ref_pos_before = [(x + 0.5, y + 0.5) for x, y in ref_pos_before]
+        adjusted_ref_pos_after = [(x + 0.5, y + 0.5) for x, y in ref_pos_after]
+
+        apertures = CircularAperture(adjusted_src_pos, r=7)
+        apertures_catalog_before = CircularAperture(adjusted_ref_pos_before, r=10)
+        apertures_catalog_after = CircularAperture(adjusted_ref_pos_after, r=10.)
 
         # Define normalization and the colormap
         vmin = np.percentile(imgarr, 50)
