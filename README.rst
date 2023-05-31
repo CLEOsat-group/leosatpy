@@ -1,3 +1,34 @@
+.. Define variables
+
+.. _ckoir: https://www.astro.uantof.cl/research/observatorios/ckoirama-observatory/
+
+.. |ckoir| replace:: Ckoirama Observatory
+
+.. _ctio: http://www.astro.yale.edu/smarts/0.9m.html
+
+.. |ctio| replace:: Small and Moderate Aperture Research Telescope System
+
+.. _dk154: https://www.eso.org/public/teles-instr/lasilla/danish154/
+
+.. |dk154| replace:: 1.54-metre Danish telescope
+
+.. _spm: https://www.astrossp.unam.mx/es/
+
+.. |spm| replace:: Observatorio Astronómico Nacional
+
+.. _ouka: https://moss-observatory.org/
+
+.. |ouka| replace:: MOSS telescope
+
+.. _cbnuo: https://www.chungbuk.ac.kr/site/english/main.do
+
+.. |cbnuo| replace:: Chungbuk National University Observatory
+
+.. _ca123: https://www.caha.es/CAHA/Telescopes/1.2m.html
+
+.. |ca123| replace:: 1.23-metre telescope
+
+
 ========
 LEOSatpy
 ========
@@ -51,21 +82,15 @@ Supported Telescopes
 
 Observations from the following telescopes are currently supported:
 
-* 0.6-metre Chakana telescope at the `Ckoirama Observatory`__ of the Universidad de Antofagasta, Antofagasta, Chile.
-* 0.9-metre Small and Moderate Aperture Research Telescope System (SMARTS) telescope
+* 0.6-metre Chakana telescope at the |ckoir|_ of the Universidad de Antofagasta, Antofagasta, Chile.
+* 0.9-metre |ctio|_ (SMARTS)
   at Cerro Tololo Inter-american Observatory (CTIO), Chile.
-* 1.54-metre Danish telescope at the La Silla Observatory, Chile.
-* 0.28-metre DDOTI telescopes at the Observatorio Astronómico Nacional (OAN) in
-  Sierra San Pedro Martír (SPM), Baja California, México.
-* 0.5-metre MOSS telescope at the Oukaïmeden Observatory, Morocco.
-* 0.6-metre telescope of the Chungbuk National University Observatory in Jincheon, South Korea.
-* 1.23-metre telescope at the Calar Alto Observatory, Spain.
+* |dk154|_ at the La Silla Observatory, Chile.
+* 0.28-metre DDOTI (Deca-Degree Optical Transient Imager) telescopes at the |spm|_ (OAN) in Sierra San Pedro Martír (SPM), Baja California, México.
+* 0.5-metre |ouka|_ at the Oukaïmeden Observatory, Morocco.
+* 0.6-metre telescope of the |cbnuo|_ in Jincheon, South Korea.
+* |ca123|_ at the Calar Alto Observatory, Spain.
 
-.. _Ckoirama: https://www.astro.uantof.cl/research/observatorios/ckoirama-observatory/
-
-__ Ckoirama_
-
-.. put links to telescopes
 
 .. note::
 
@@ -79,7 +104,6 @@ The positions and magnitudes of the comparison stars are collected using the
 `WebServices for Catalog Access <https://outerspace.stsci.edu/display/GC/WebServices+for+Catalog+Access>`_
 to the Guide Star Catalog(s) v2.4.3.
 
-.. `Link <Feedback, comments, questions?_>`_
 
 -------------------
 How to use LEOSatpy
@@ -302,10 +326,10 @@ When publishing data processed and analysed with LEOSatpy, please cite `TBW`
 Acknowledgements
 ----------------
 
-Alongside the packages listed in the `requirements.txt`, this project uses workflows and code adopted from the following packages:
+Alongside the packages listed in the ``requirements.txt``, this project uses workflows and code adopted from the following packages:
 
-* `Astrometry v1.5 <https://github.com/lukaswenzl/astrometry>`_ under the GPLv3 License, Lukas Wenzl (2022), `Zenodo <https://doi.org/10.5281/zenodo.6462441>`_
-* `AutoPhOT <https://github.com/Astro-Sean/autophot>`_ under the GPLv3 License, Brennan & Fraser (2022) `NASA ADS <https://ui.adsabs.harvard.edu/abs/2022A%26A...667A..62B/abstract>`_
+* `Astrometry <https://github.com/lukaswenzl/astrometry>`_ under the GPLv3 License, Lukas Wenzl (2022), `Zenodo <https://doi.org/10.5281/zenodo.6462441>`_
+* `AutoPhOT <https://github.com/Astro-Sean/autophot>`_ under the GPLv3 License, Brennan & Fraser (2022), `NASA ADS <https://ui.adsabs.harvard.edu/abs/2022A%26A...667A..62B/abstract>`_
 .. * `reduceccd <https://github.com/rgbIAA/reduceccd/tree/master>`_ under the BSD-3-Clause license
 .. * `wht_reduction_scripts <https://github.com/crawfordsm/wht_reduction_scripts>`_ under the BSD-3-Clause license
 
@@ -318,13 +342,13 @@ of the **LEOSat** Python package:
 * `Eduardo Unda-Sanzana <eduardo.unda@uamail.cl>`_, Universidad de Antofagasta
 * `Edgar Ortiz <ed.ortizm@gmail.com>`_, Universidad de Antofagasta
 * `Maria Isabel Romero Colmenares <maria.romero.21@alumnos.uda.cl>`_, Universidad de Atacama
-* `Sangeetha Nandakumar <sangeetha.nandakumar@postgrados.uda.cl>`_, Universidad de Atacama
+* `Sangeetha Nandakumar <an.sangeetha@gmail.coml>`_, Universidad de Atacama
 
 The project would not have been possible without the help of everyone who contributed.
 
 
 ------------------------------
-Feedback, comments, questions?
+Feedback, questions, comments?
 ------------------------------
 
 **LEOSatpy** is under active development and help with the development of new functionalities
@@ -333,7 +357,7 @@ In case you would like to contribute, feel free to fork the
 `GitHub repository <https://github.com/CLEOsat-group/leosatpy>`_ and to create a pull request.
 
 If you encounter a bug or problem, please `submit a new issue on the GitHub repository
-<https://github.com/CLEOsat-group/leosatpy/issues>`_. Provide as much
+<https://github.com/CLEOsat-group/leosatpy/issues>`_ providing as much
 detail as possible (error message, operating system, Python version, etc.).
 
 If you have further feedback, questions or comments you can also send an e-mail to
