@@ -29,17 +29,14 @@ import os
 import sys
 from copy import deepcopy
 import logging
-import warnings
 import time
 from datetime import datetime
 from datetime import timedelta
 import configparser
 import collections
 import argparse
-
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 # THIRD PARTY
 import numpy as np
 import pandas as pd
@@ -47,20 +44,23 @@ import pandas as pd
 # astropy
 from astropy.io import fits
 from astropy import units as u
-from astropy.stats import (mad_std, sigma_clipped_stats)
-from astropy.utils.exceptions import (AstropyUserWarning, AstropyWarning)
+from astropy.stats import (
+    mad_std, SigmaClip, sigma_clipped_stats)
 
 # ccdproc
 import ccdproc
 from ccdproc import ImageFileCollection
 from ccdproc import CCDData
 
+# photutils
 import photutils
-from photutils.background import (Background2D,
-                                  SExtractorBackground, StdBackgroundRMS)
+from photutils.background import (
+    Background2D, SExtractorBackground, StdBackgroundRMS)
+from photutils.segmentation import (detect_sources,
+                                    detect_threshold)
 
-from photutils.segmentation import make_source_mask
 # Project modules
+from version import __version__
 import config.base_conf as _base_conf
 from utils.arguments import ParseArguments
 from utils.dataset import DataSet
@@ -70,13 +70,14 @@ from utils.tables import ObsTables
 
 """ Meta-info """
 __author__ = "Christian Adam"
-__copyright__ = 'Copyright 2021, UA, LEOSat observations'
-__credits__ = ["Christian Adam, Eduardo Unda-Sanzana, Jeremy Tregloan-Reed"]
-__license__ = "Free"
-__version__ = "0.5.1"
+__copyright__ = 'Copyright 2021-2023, CLEOSat group'
+__credits__ = ["Eduardo Unda-Sanzana, Jeremy Tregloan-Reed, Christian Adam"]
+__license__ = "GPL-3.0 license"
+__version__ = __version__
 __maintainer__ = "Christian Adam"
 __email__ = "christian.adam84@gmail.com"
 __status__ = "Production"
+
 
 __taskname__ = 'reduceSatObs'
 # -----------------------------------------------------------------------------
@@ -166,7 +167,7 @@ class ReduceSatObs(object):
         and run reduction for a given set of data.
         """
 
-        StartTime = time.perf_counter()
+        starttime = time.perf_counter()
         self._log.info('====> Science image reduction init <====')
 
         # load configuration
@@ -192,8 +193,8 @@ class ReduceSatObs(object):
         inst_list = ds.instruments_list
         inst_data = ds.instruments
 
-        N_inst = len(inst_list)
-        for i in range(N_inst):
+        n_inst = len(inst_list)
+        for i in range(n_inst):
             inst = inst_list[i]
             self._instrument = inst
             self._telescope = inst_data[inst]['telescope']
@@ -214,8 +215,8 @@ class ReduceSatObs(object):
                 # reduce dataset
                 self._run_single_reduction(src_path, files)
 
-        EndTime = time.perf_counter()
-        dt = EndTime - StartTime
+        endtime = time.perf_counter()
+        dt = endtime - starttime
         td = timedelta(seconds=dt)
 
         if not silent:
@@ -2061,8 +2062,17 @@ def compute_2d_background_simple(imgarr: np.ndarray, box_size: int, win_size: in
     # If Background2D does not work at all, define default scalar values for
     # the background to be used in source identification
     if bkg is None:
-        mask = make_source_mask(imgarr, nsigma=2, npixels=5, dilate_size=11)
-        sigcl_mean, sigcl_median, sigcl_std = sigma_clipped_stats(imgarr, sigma=3.0, mask=mask, maxiters=11)
+
+        # detect the sources
+        threshold = detect_threshold(imgarr, nsigma=2.0,
+                                     sigma_clip=SigmaClip(sigma=3.0, maxiters=10))
+        segment_img = detect_sources(imgarr, threshold, npixels=5)
+        src_mask = segment_img.make_source_mask(footprint=None)
+        sigcl_mean, sigcl_median, sigcl_std = sigma_clipped_stats(imgarr,
+                                                                  sigma=3.0,
+                                                                  mask=src_mask,
+                                                                  maxiters=10)
+        # sigcl_mean, sigcl_median, sigcl_std = sigma_clipped_stats(imgarr, sigma=3.0, mask=mask, maxiters=11)
         bkg_median = max(0.0, sigcl_median)
         bkg_rms_median = sigcl_std
         # create background frame shaped like imgarr populated with sigma-clipped median value

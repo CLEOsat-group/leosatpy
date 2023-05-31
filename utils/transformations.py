@@ -24,12 +24,10 @@
 import gc
 import math
 import os
-import sys
 from copy import copy
 import inspect
 import logging
 
-import matplotlib.pyplot as plt
 import numpy as np
 from astropy.wcs import WCS, utils
 from fast_histogram import histogram2d
@@ -41,20 +39,19 @@ import config.base_conf as _base_conf
 
 """ Meta-info """
 __author__ = "Christian Adam"
-__copyright__ = 'Copyright 2021, UA, LEOSat observations'
-__credits__ = ["Christian Adam, Eduardo Unda-Sanzana, Jeremy Tregloan-Reed"]
-__license__ = "Free"
-__version__ = "0.1.0"
+__copyright__ = 'Copyright 2021-2023, CLEOSat group'
+__credits__ = ["Eduardo Unda-Sanzana, Jeremy Tregloan-Reed, Christian Adam"]
+__license__ = "GPL-3.0 license"
 __maintainer__ = "Christian Adam"
 __email__ = "christian.adam84@gmail.com"
 __status__ = "Production"
+
+__taskname__ = 'transformations'
 # -----------------------------------------------------------------------------
 
 """ Parameter used in the script """
 
 log = logging.getLogger(__name__)
-
-__taskname__ = 'transformations'
 
 MODULE_PATH = os.path.dirname(inspect.getfile(inspect.currentframe()))
 
@@ -65,7 +62,7 @@ MODULE_PATH = os.path.dirname(inspect.getfile(inspect.currentframe()))
 
 
 def get_scale_and_rotation(observation, catalog, wcsprm, scale_guessed,
-                           dist_bin_size, ang_bin_size, silent=False):
+                           dist_bin_size, ang_bin_size):
     """Calculate the scale and rotation compared to the catalog based on the method of Kaiser et al. (1999).
 
     This should be quite similar to the approach by SCAMP.
@@ -81,8 +78,6 @@ def get_scale_and_rotation(observation, catalog, wcsprm, scale_guessed,
     scale_guessed:
     dist_bin_size:
     ang_bin_size:
-    silent: bool, optional
-        Set to True to suppress most console output
 
     Returns
     -------
@@ -92,24 +87,25 @@ def get_scale_and_rotation(observation, catalog, wcsprm, scale_guessed,
     # Initialize logging for this user-callable function
     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
 
-    catalog_on_sensor = wcsprm.s2p(catalog[["RA", "DEC"]], 0)
-    catalog_on_sensor = catalog_on_sensor['pixcrd']
-
+    # manage observations
     obs_x = [observation["xcentroid"].values]
     obs_y = [observation["ycentroid"].values]
+
+    log_dist_obs = calculate_log_dist(obs_x, obs_y)
+    angles_obs = calculate_angles(obs_x, obs_y)
+
+    # manage reference catalog
+    catalog_on_sensor = wcsprm.s2p(catalog[["RA", "DEC"]], 0)
+    catalog_on_sensor = catalog_on_sensor['pixcrd']
 
     cat_x = np.array([catalog_on_sensor[:, 0]])
     cat_y = np.array([catalog_on_sensor[:, 1]])
 
-    log_dist_obs = calculate_log_dist(obs_x, obs_y)
     log_dist_cat = calculate_log_dist(cat_x, cat_y)
-
-    angles_obs = calculate_angles(obs_x, obs_y)
     angles_cat = calculate_angles(cat_x, cat_y)
 
-    # get scaling and rotation using cross correlation to match observation and
-    # reference catalog.
-    # Is also applied to the reflected image.
+    # Get scaling and rotation using cross correlation to match observation and
+    # reference catalog. Is also applied to the reflected image.
     corr_ = peak_with_cross_correlation(log_dist_obs,
                                         angles_obs,
                                         log_dist_cat,
@@ -117,7 +113,6 @@ def get_scale_and_rotation(observation, catalog, wcsprm, scale_guessed,
                                         scale_guessed=scale_guessed,
                                         dist_bin_size=dist_bin_size,
                                         ang_bin_size=ang_bin_size)
-
     scaling, rotation, signal, _ = corr_
     corr_reflected = peak_with_cross_correlation(log_dist_obs,
                                                  -1. * angles_obs,
@@ -130,21 +125,21 @@ def get_scale_and_rotation(observation, catalog, wcsprm, scale_guessed,
 
     if signal_reflected > signal:
         is_reflected = True
-        confidence = signal_reflected / signal
+        confidence = np.abs(signal_reflected / signal)
         scaling = scaling_reflected
         rotation = rotation_reflected
     else:
         is_reflected = False
-        confidence = signal / signal_reflected
+        confidence = np.abs(signal / signal_reflected)
 
     rot = rotation_matrix(rotation)
     if is_reflected:
         # reflecting, but which direction?? this is a flip of the y-axis
         rot = np.array([[1, 0], [0, -1]]) @ rot
 
+    # check if the result make sense
     wcsprm_new = copy(wcsprm)
-    if 0.45 < scaling < 4.:
-        # wcsprm = scale(wcsprm, scaling)
+    if 0.45 < scaling < 4.5:
         wcsprm_new = rotate(copy(wcsprm), rot)
         wcsprm_new = scale(wcsprm_new, scaling)
 
@@ -152,28 +147,26 @@ def get_scale_and_rotation(observation, catalog, wcsprm, scale_guessed,
         refl = ""
     else:
         refl = "not "
-    if not silent:
-        # print(confidence)
-        log.info("    Found a rotation of {:.3g} deg and the pixelscale "
-                 "was scaled with the factor {:.3g}.".format(rotation / 2 / np.pi * 360., scaling) +
-                 " The image was " + refl + "mirrored.")
+
+    log.debug("    Found a rotation of {:.3g} deg and the pixelscale "
+              "was scaled with the factor {:.3g}.".format(rotation / 2 / np.pi * 360., scaling) +
+              " The image was " + refl + "mirrored.")
     log.debug("    The confidence level is {}. Values between 1 and 2 are bad. "
               "Much higher values are best.".format(confidence))
     log.debug("    Note that there still might be a 180deg rotation. "
               "If this is the case it should be correct in the next step")
 
     del observation, catalog_on_sensor, obs_x, obs_y, cat_x, cat_y, \
-        log_dist_obs, log_dist_cat, angles_obs, angles_cat, \
-        scaling, rotation, signal, _, \
+        log_dist_obs, log_dist_cat, angles_obs, angles_cat, _, \
         scaling_reflected, rotation_reflected, signal_reflected, \
         corr_, corr_reflected
     gc.collect()
 
-    return wcsprm_new
+    return wcsprm_new, (scaling, rotation, signal, confidence)
 
 
 def get_offset_with_orientation(observation, catalog, wcsprm, fast=False,
-                                report_global="", silent=False):
+                                report_global=""):
     """Use offset from cross correlation but with trying 0,90,180,270 rotation.
 
     Parameters
@@ -187,8 +180,6 @@ def get_offset_with_orientation(observation, catalog, wcsprm, fast=False,
     fast: bool, optional
         If true will run with a subset of the sources to increase speed.
     report_global: str, optional
-    silent: bool, optional
-        Set to True to suppress most console output
 
     Returns
     -------
@@ -211,7 +202,7 @@ def get_offset_with_orientation(observation, catalog, wcsprm, fast=False,
     if fast:
         log.debug("> running in fast mode")
 
-    # already checking for reflections with the scaling and general rotations,
+    # Already checking for reflections with the scaling and general rotations,
     # but in case rot_scale is of it is nice to have
     rotations = np.array([[[1, 0], [0, 1]], [[-1, 0], [0, -1]],
                           [[-1, 0], [0, 1]], [[1, 0], [0, -1]],
@@ -224,14 +215,15 @@ def get_offset_with_orientation(observation, catalog, wcsprm, fast=False,
         log.debug("> Trying rotation {}".format(rot))
         wcsprm = rotate(copy(wcsprm_global), rot)
         report = report_global + "---- Report for rotation {} ---- \n".format(rot)
-        wcsprm, signal, report = simple_offset(observation, catalog, wcsprm, report=report)
-        results.append([copy(wcsprm), signal, report])
+        wcsprm, signal, report, xy_shift = simple_offset(observation, catalog, wcsprm, report=report)
+        results.append([copy(wcsprm), signal, report, xy_shift])
 
     signals = [i[1] for i in results]
     median = np.nanmedian(signals)
     i = np.nanargmax(signals)
     wcsprm = results[i][0]
     signal = signals[i]
+    xy_shift = results[i][3]
 
     report = results[i][2]
     report += "A total of {} sources from the fits file where used. \n".format(N_SOURCES)
@@ -243,13 +235,13 @@ def get_offset_with_orientation(observation, catalog, wcsprm, fast=False,
     log.debug("And here is the report:")
     log.debug(report)
     log.debug("-----------------------------")
+
     off = wcsprm.crpix - wcsprm_global.crpix
-    if not silent:
-        log.info("    Found offset {:.3g} in x direction and {:.3g} in y direction".format(off[0], off[1]))
+    log.debug("    Found offset {:.3g} in x direction and {:.3g} in y direction".format(off[0], off[1]))
 
     del observation
 
-    return wcsprm, signal, report
+    return wcsprm, (xy_shift, off), signal, report
 
 
 def simple_offset(observation, catalog, wcsprm=None, offset_binwidth=1, report=""):
@@ -273,13 +265,14 @@ def simple_offset(observation, catalog, wcsprm=None, offset_binwidth=1, report="
     """
     report += "simple_offset approach via a histogram \n"
 
-    cat_x = np.array([catalog["xcentroid"].values])
-    cat_y = np.array([catalog["ycentroid"].values])
     if wcsprm is not None:
         catalog_on_sensor = wcsprm.s2p(catalog[["RA", "DEC"]], 0)
         catalog_on_sensor = catalog_on_sensor['pixcrd']
         cat_x = np.array([catalog_on_sensor[:, 0]])
         cat_y = np.array([catalog_on_sensor[:, 1]])
+    else:
+        cat_x = np.array([catalog["xcentroid"].values])
+        cat_y = np.array([catalog["ycentroid"].values])
 
     obs_x = np.array([observation["xcentroid"].values])
     obs_y = np.array([observation["ycentroid"].values])
@@ -287,18 +280,28 @@ def simple_offset(observation, catalog, wcsprm=None, offset_binwidth=1, report="
     dist_x = (obs_x - cat_x.T).flatten()
     dist_y = (obs_y - cat_y.T).flatten()
 
-    # would there be a reason to make it bigger than 1?
-    bins = [np.arange(min(dist_x), max(dist_x) + offset_binwidth, offset_binwidth, dtype='float32'),
-            np.arange(min(dist_y), max(dist_y) + offset_binwidth, offset_binwidth, dtype='float32')]
-    # print(bins)
-    H, x_edges, y_edges = np.histogram2d(dist_x, dist_y, bins=bins)
-    # plt.figure()
-    # plt.imshow(H)
-    # plt.show()
-    del cat_x, cat_y, obs_x, obs_y, bins
+    # Compute the minimum and maximum values for both axes
+    min_x, max_x = dist_x.min(), dist_x.max()
+    min_y, max_y = dist_y.min(), dist_y.max()
+
+    # Compute the number of bins for both axes
+    num_bins_x = int(np.ceil((max_x - min_x) / offset_binwidth)) + 1
+    num_bins_y = int(np.ceil((max_y - min_y) / offset_binwidth)) + 1
+
+    # Compute the edges for both axes
+    x_edges = np.linspace(min_x, max_x, num_bins_x)
+    y_edges = np.linspace(min_y, max_y, num_bins_y)
+
+    # Compute the histogram
+    H = histogram2d(dist_x, dist_y,
+                    bins=[num_bins_x, num_bins_y],
+                    range=[[min_x, max_x],
+                           [min_y, max_y]])
+
+    del cat_x, cat_y, obs_x, obs_y
     gc.collect()
 
-    # finding the peak for the x and y distance where the two sets overlap and take the first peak
+    # find the peak for the x and y distance where the two sets overlap and take the first peak
     peak = np.argwhere(H == np.max(H))[0]
 
     # sum up signal in fixed aperture 1 pixel in each direction around the peak,
@@ -324,7 +327,7 @@ def simple_offset(observation, catalog, wcsprm=None, offset_binwidth=1, report="
                              current_central_pixel[1] + y_shift]
         wcsprm.crpix = new_central_pixel
 
-        return wcsprm, signal, report
+        return wcsprm, signal, report, [x_shift, y_shift]
     else:
         return [x_shift, y_shift]
 
@@ -361,16 +364,18 @@ def fine_transformation(observation, catalog, wcsprm, threshold=10,
     wcsprm_original = wcsprm
     wcsprm = copy(wcsprm)
 
+    # find matches
     _, _, obs_xy, cat_xy, _, _, _ = \
         find_matches(observation, catalog, wcsprm, threshold=threshold)
 
     if len(obs_xy[:, 0]) < 4:
-        return wcsprm_original, 0  # not enough matches
+        return wcsprm_original, 0, (None, None, [0, 0])  # not enough matches
 
     # angle
     angle_offset = -calculate_angles([obs_xy[:, 0]],
                                      [obs_xy[:, 1]]) + calculate_angles([cat_xy[:, 0]],
                                                                         [cat_xy[:, 1]])
+
     log_dist_obs = calculate_log_dist([obs_xy[:, 0]], [obs_xy[:, 1]])
     log_dist_cat = calculate_log_dist([cat_xy[:, 0]], [cat_xy[:, 1]])
 
@@ -385,8 +390,9 @@ def fine_transformation(observation, catalog, wcsprm, threshold=10,
     angle_offset = angle_offset[mask]
     scale_offset = scale_offset[mask]
 
-    rotation = np.mean(angle_offset)
-    scaling = np.e ** (np.mean(scale_offset))
+    # get rotation and scale
+    rotation = np.nanmean(angle_offset)
+    scaling = np.e ** (np.nanmean(scale_offset))
 
     del angle_offset, scale_offset, mask, log_dist_obs, log_dist_cat
 
@@ -398,30 +404,31 @@ def fine_transformation(observation, catalog, wcsprm, threshold=10,
         else:
             if not silent:
                 log.warning("    Fine transformation failed. Scaling calculation failed")
-            return wcsprm_original, 0
+            return wcsprm_original, 0, (None, None, [0, 0])
 
-    # need to recalculate positions
+    # Recalculate positions
     _, _, obs_xy, cat_xy, _, _, _ = \
         find_matches(observation, catalog, wcsprm, threshold=threshold)
 
     if len(obs_xy[:, 0]) < 4:
-        return wcsprm_original, 0
+        return wcsprm_original, 0, (None, None, [0, 0])
 
-    # offset:
-    x_shift = np.mean(obs_xy[:, 0] - cat_xy[:, 0])
-    y_shift = np.mean(obs_xy[:, 1] - cat_xy[:, 1])
+    # Get offset and update the central reference pixel
+    x_shift = np.nanmean(obs_xy[:, 0] - cat_xy[:, 0])
+    y_shift = np.nanmean(obs_xy[:, 1] - cat_xy[:, 1])
 
     current_central_pixel = wcsprm.crpix
     new_central_pixel = [current_central_pixel[0] + x_shift,
                          current_central_pixel[1] + y_shift]
     wcsprm.crpix = new_central_pixel
 
+    # Recalculate score
     _, _, _, _, _, score, _ = \
         find_matches(observation, catalog, wcsprm, threshold=compare_threshold)
 
     del _, observation, catalog
 
-    return wcsprm, score
+    return wcsprm, score, (scaling, rotation, [x_shift, y_shift])
 
 
 def find_matches(obs, cat, wcsprm=None, threshold=10.):
@@ -438,10 +445,11 @@ def find_matches(obs, cat, wcsprm=None, threshold=10.):
     obs_xy = obs[["xcentroid", "ycentroid"]].to_numpy()
 
     # set up the catalog data; use RA, Dec if used with wcsprm
-    cat_xy = cat[["xcentroid", "ycentroid"]].to_numpy()
     if wcsprm is not None:
         cat_xy = wcsprm.s2p(cat[["RA", "DEC"]], 0)
         cat_xy = cat_xy['pixcrd']
+    else:
+        cat_xy = cat[["xcentroid", "ycentroid"]].to_numpy()
 
     # calculate the distances
     dist_xy = np.sqrt((obs_xy[:, 0] - cat_xy[:, 0, np.newaxis]) ** 2
@@ -451,7 +459,7 @@ def find_matches(obs, cat, wcsprm=None, threshold=10.):
     min_dist_xy = dist_xy[idx_arr]
     del dist_xy
 
-    mask = min_dist_xy < threshold
+    mask = min_dist_xy <= threshold
     cat_idx = idx_arr[0][mask]
     obs_idx = idx_arr[1][mask]
     min_dist_xy = min_dist_xy[mask]
@@ -459,21 +467,24 @@ def find_matches(obs, cat, wcsprm=None, threshold=10.):
     obs_matched = obs.iloc[obs_idx]
     cat_matched = cat.iloc[cat_idx]
 
+    obs_matched = obs_matched.sort_values(by='mag', ascending=True)
     obs_matched.reset_index(drop=True, inplace=True)
+
+    cat_matched = cat_matched.sort_values(by='mag', ascending=True)
     cat_matched.reset_index(drop=True, inplace=True)
 
     columns_to_add = ['xcentroid', 'ycentroid', 'fwhm', 'fwhm_err', 'include_fwhm']
     cat_matched = cat_matched.assign(**obs_matched[columns_to_add].to_dict(orient='series'))
     del obs, cat
 
+    obs_xy = obs_xy[obs_idx, :]
+    cat_xy = cat_xy[cat_idx, :]
+
     if len(min_dist_xy) == 0:  # meaning the list is empty
         best_score = 0
     else:
         rms = np.sqrt(np.mean(np.square(min_dist_xy)))
-        best_score = len(obs_xy) / (rms + 10)  # start with the current best score
-
-    obs_xy = obs_xy[obs_idx, :]
-    cat_xy = cat_xy[cat_idx, :]
+        best_score = len(obs_xy) / rms  # start with the current best score
 
     return obs_matched, cat_matched, obs_xy, cat_xy, min_dist_xy, best_score, True
 
@@ -487,16 +498,31 @@ def cross_corr_to_fourier_space(a):
     aaa = np.pad(aa, (2, 2), 'constant')
     ff_a = np.fft.fft2(aaa)
 
-    del a, aa, aaa
-    gc.collect()
-
     return ff_a
+
+
+def create_bins(min_value, max_value, bin_size, is_distance=True):
+    """ Create bins for histogram """
+
+    bin_step = np.deg2rad(bin_size)
+    diff = max_value - min_value
+
+    if is_distance:
+        bin_step = bin_size
+        diff = (np.e ** max_value - np.e ** min_value)
+
+    N = math.ceil(diff / bin_step)
+    N += 1
+
+    bins, binwidth = np.linspace(min_value, max_value, N, retstep=True, dtype='float32')
+
+    return bins, binwidth
 
 
 def peak_with_cross_correlation(log_distance_obs: np.ndarray, angle_obs: np.ndarray,
                                 log_distance_cat: np.ndarray, angle_cat: np.ndarray,
                                 scale_guessed: bool = False,
-                                dist_bin_size: float = 1e-3,
+                                dist_bin_size: float = 1,
                                 ang_bin_size: float = 0.1,
                                 frequ_threshold: float = 0.02):
     """Find the best relation between the two sets using cross correlation.
@@ -523,61 +549,48 @@ def peak_with_cross_correlation(log_distance_obs: np.ndarray, angle_obs: np.ndar
     scaling, rotation, signal
     """
 
+    # set limits for distances and angles
+    minimum_distance = min(log_distance_obs)
     if not scale_guessed:
-        minimum_distance = min(log_distance_obs)
         maximum_distance = max(log_distance_obs)
     else:
         # broader distance range if the scale is just a guess so there is a higher chance to find the correct one
-        minimum_distance = min([min(log_distance_cat),
-                                min(log_distance_obs)])
         maximum_distance = max([max(log_distance_cat),
                                 max(log_distance_obs)])
-
-    # use a broader distance range for the scale,
-    # so there is a higher chance to find the correct one
-    dist_bin_step = dist_bin_size
-    N_dist = math.ceil((np.e ** maximum_distance - np.e ** minimum_distance) / dist_bin_step)
-    # N_dist = math.ceil((maximum_distance - minimum_distance) / np.log(dist_bin_step))
-    N_dist += 1
-
-    bins_dist, binwidth_dist = np.linspace(minimum_distance, maximum_distance,
-                                           N_dist, retstep=True, dtype='float32')
 
     minimum_ang = min([min(angle_cat), min(angle_obs)])
     maximum_ang = max([max(angle_cat), max(angle_obs)])
 
-    ang_bin_step = np.deg2rad(ang_bin_size)
-    N_ang = math.ceil((maximum_ang - minimum_ang) / ang_bin_step)
-    N_ang += 1
+    # create bins and ranges for histogram
+    bins_dist, binwidth_dist = create_bins(minimum_distance, maximum_distance,
+                                           dist_bin_size, is_distance=True)
+    bins_ang, binwidth_ang = create_bins(minimum_ang, maximum_ang,
+                                         ang_bin_size, is_distance=False)
 
-    bins_ang, binwidth_ang = np.linspace(minimum_ang, maximum_ang,
-                                         N_ang, retstep=True, dtype='float32')
-
-    bins = np.array([len(bins_dist), len(bins_ang)])  # .astype('uint64')
-
-    vals = np.array([log_distance_obs, angle_obs])  # .astype('float32')
+    bins = np.array([len(bins_dist), len(bins_ang)])
     ranges = np.array([[minimum_distance, maximum_distance],
-                       [minimum_ang, maximum_ang]])  # .astype('float32')
+                       [minimum_ang, maximum_ang]])
+
+    # create a 2d histogram for the observations
+    vals = np.array([log_distance_obs, angle_obs])
     H_obs = histogram2d(*vals, bins=bins,
-                        range=ranges)
-    vals = np.array([log_distance_cat, angle_cat])  # .astype('float32')
+                        range=ranges).astype(dtype=np.complex128)
+
+    # create a 2d histogram for the reference sources
+    vals = np.array([log_distance_cat, angle_cat])
     H_cat = histogram2d(*vals, bins=bins,
-                        range=ranges)
+                        range=ranges).astype(dtype=np.complex128)
 
-    # H_obs = (H_obs - np.nanmean(H_obs)) / np.nanstd(H_obs)
-    # H_cat = (H_cat - np.nanmean(H_cat)) / np.nanstd(H_cat)
-
-    # FFT
+    # apply FFT
     ff_obs = cross_corr_to_fourier_space(H_obs)
     ff_cat = cross_corr_to_fourier_space(H_cat)
 
-    # normalize
-    # ff_obs = (ff_obs - np.nanmean(ff_obs)) / np.nanstd(ff_obs)
-    # ff_cat = (ff_cat - np.nanmean(ff_cat)) / np.nanstd(ff_cat)
+    # normalize the FFT
+    ff_obs = (ff_obs - np.nanmean(ff_obs)) / np.nanstd(ff_obs)
+    ff_cat = (ff_cat - np.nanmean(ff_cat)) / np.nanstd(ff_cat)
 
-    # cross power spectrum
+    # calculate cross-correlation
     cross_corr = ff_obs * np.conj(ff_cat)
-    cross_corr /= (abs(ff_obs) * abs(ff_cat))
 
     # frequency cut off
     step = 1  # maybe in arcsec??, this is usually the time-step to get a frequency
@@ -585,22 +598,19 @@ def peak_with_cross_correlation(log_distance_obs: np.ndarray, angle_obs: np.ndar
     max_frequ = np.max(frequ)  # frequencies are symmetric - to +
     threshold = frequ_threshold * max_frequ
 
+    # Apply the mask to the cross_corr array
     cross_corr[(frequ < threshold) & (frequ > -threshold)] = 0  # how to choose the frequency cut off?
+
+    # Inverse transform from frequency to spatial domain
     cross_corr = np.real(np.fft.ifft2(cross_corr))
-    # plt.figure()
-    # plt.imshow(cross_corr, aspect='auto')
-    # plt.show()
     cross_corr = np.fft.fftshift(cross_corr)  # the zero shift is at (0,0), this moves it to the middle
 
-    # plt.figure()
-    # plt.imshow(cross_corr, aspect='auto')
-    # plt.show()
-
-    # take first peak
-    peak = np.argwhere(cross_corr == np.max(cross_corr))[0]
+    # take the first peak
+    # alternative: peak = np.unravel_index(np.argmax(np.abs(cross_corr)), cross_corr.shape)
+    peak = np.argwhere(cross_corr == np.max(cross_corr))[0]  # original
     around_peak = cross_corr[peak[0] - 1:peak[0] + 2, peak[1] - 1:peak[1] + 2]
 
-    # finding the sub pixel shift of the true peak
+    # find the sub pixel shift of the true peak
     peak_x_subpixel = np.sum(np.sum(around_peak, axis=1)
                              * (np.arange(around_peak.shape[0]) + 1)) / np.sum(around_peak) - 2
     peak_y_subpixel = np.sum(np.sum(around_peak, axis=0)
@@ -609,22 +619,23 @@ def peak_with_cross_correlation(log_distance_obs: np.ndarray, angle_obs: np.ndar
     # sum up signal in fixed aperture 1 pixel in each direction around the peak, so a 3x3 array, total 9 pixel
     signal = np.sum(cross_corr[peak[0] - 1:peak[0] + 2, peak[1] - 1:peak[1] + 2])
 
-    # is that correct? yes, I think so, shape is an uneven number and index counting starts at 0
+    # get mid-point
     middle_x = cross_corr.shape[0] / 2
     middle_y = cross_corr.shape[1] / 2
 
+    # calculate final shift
     x_shift = (peak[0] + peak_x_subpixel - middle_x) * binwidth_dist
     y_shift = (peak[1] + peak_y_subpixel - middle_y) * binwidth_ang
+
+    # extract scale and rotation from shift
+    scaling = np.e ** (-x_shift)
+    rotation = y_shift
 
     del cross_corr, middle_x, middle_y, \
         log_distance_obs, log_distance_cat, angle_obs, angle_cat, \
         bins_dist, bins_ang, binwidth_dist, binwidth_ang, \
         vals, H_obs, H_cat, ff_obs, ff_cat
     gc.collect()
-
-    # get the scale and rotation
-    scaling = np.e ** (-x_shift)
-    rotation = y_shift
 
     return scaling, rotation, signal, [x_shift, y_shift]
 
@@ -645,6 +656,7 @@ def frange(x, y, jump=1.0):
 
 def calculate_dist(data_x, data_y):
     """Calculate the distance between positions."""
+
     data_x = np.array(data_x)
     data_y = np.array(data_y)
 
@@ -699,13 +711,17 @@ def calculate_angles(data_x, data_y):
 
 
 def rotation_matrix(angle):
-    rot = [[np.cos(angle), np.sin(angle)], [-np.sin(angle), np.cos(angle)]]
+    """Return the corresponding rotation matrix"""
+    rot = [[np.cos(angle), np.sin(angle)],
+           [-np.sin(angle), np.cos(angle)]]
     del angle
     return rot
 
 
 def rotate(wcsprm, rot):
-    """Help method for offset_with_orientation. Set the different rotations in the header."""
+    """Help method for offset_with_orientation.
+    Set the different rotations in the header.
+    """
     # hdr["PC1_1"] = rot[0][0]
     # hdr["PC1_2"] = rot[1][0]
     # hdr["PC2_1"] = rot[0][1]
@@ -745,11 +761,12 @@ def translate_wcsprm(wcsprm):
     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
 
     wcs = WCS(wcsprm.to_header())
-    log.debug(wcs)
-    scales = utils.proj_plane_pixel_scales(wcs)
 
+    # compute the scales corresponding to celestial axes
+    scales = utils.proj_plane_pixel_scales(wcs)
     cdelt = wcsprm.get_cdelt()
     scale_ratio = scales / cdelt
+
     pc = np.array(wcsprm.get_pc())
 
     pc[0, 0] = pc[0, 0] / scale_ratio[0]
@@ -805,3 +822,57 @@ def shift_translation(src_image, target_image):
     gc.collect()
 
     return shift
+
+# Can be used for debugging
+# def plot_3d_cross_corr(cross_corr, binwidth_dist, binwidth_ang):
+#     import matplotlib.pyplot as plt
+#     fig = plt.figure()
+#     ax = fig.add_subplot(111, projection='3d')
+#
+#     x = np.arange(-cross_corr.shape[0] / 2, cross_corr.shape[0] / 2) * binwidth_dist
+#     y = np.arange(-cross_corr.shape[1] / 2, cross_corr.shape[1] / 2) * binwidth_ang
+#     x, y = np.meshgrid(y, x)
+#     z = cross_corr
+#
+#     surf = ax.plot_surface(y, x, z, cmap='viridis', linewidth=0, antialiased=False)
+#     fig.colorbar(surf, shrink=0.5, aspect=5)
+#
+#     ax.set_xlabel('X-axis')
+#     ax.set_ylabel('Y-axis')
+#     ax.set_zlabel('Cross-correlation')
+#
+#
+# def plot_3d_surface(array: np.ndarray,
+#                     ranges: np.ndarray,
+#                     xlabel: str = 'X-axis',
+#                     ylabel: str = 'Y-axis',
+#                     zlabel: str = 'Z-axis'):
+#     """Create a 3D surface plot for a 2D array."""
+#     import matplotlib.pyplot as plt
+#     # print(array.shape)
+#     # Generate a meshgrid for the X and Y coordinates
+#     log_distance_bins = np.linspace(ranges[0][0], ranges[0][1], array.shape[0])
+#     angle_bins = np.linspace(np.rad2deg(ranges[1][0]),
+#                              np.rad2deg(ranges[1][1]), array.shape[1])
+#     X, Y = np.meshgrid(angle_bins, log_distance_bins)
+#     # # Generate a meshgrid for the X and Y coordinates
+#     # X, Y = np.meshgrid(np.arange(array.shape[1]), np.arange(array.shape[0]))
+#
+#     # Create a 3D plot
+#     fig = plt.figure()
+#     # ax = fig.gca(projection='3d')
+#     # surf = ax.plot_surface(X, Y, array, cmap='viridis', linewidth=0, antialiased=False)
+#     ax = fig.add_subplot(111, projection='3d')
+#     surf = ax.plot_surface(Y, X, array, cmap='viridis', linewidth=0, antialiased=False)
+#
+#     # Add a color bar
+#     fig.colorbar(surf, shrink=0.5, aspect=5)
+#
+#     # Set plot labels
+#     # ax.set_xlabel(xlabel)
+#     # ax.set_ylabel(ylabel)
+#     ax.set_zlabel(zlabel)
+#     ax.set_ylabel('Angle (deg)')
+#     ax.set_xlabel('Log Distance')
+#     # Display the plot
+#     # plt.show()

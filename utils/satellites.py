@@ -18,11 +18,9 @@
 # - file created and basic methods
 #
 # -----------------------------------------------------------------------------
-from __future__ import annotations
-
-import sys
 
 """ Modules """
+from __future__ import annotations
 
 import os
 import inspect
@@ -34,7 +32,6 @@ from pyorbital import astronomy
 from geopy import distance
 from datetime import datetime
 from dateutil import parser
-
 import requests
 import math
 import fast_histogram as fhist
@@ -42,13 +39,16 @@ from lmfit import Model
 import ephem
 
 from scipy import ndimage as nd
-from skimage import morphology as morph
 from skimage.draw import line
 from skimage.measure import regionprops_table
-from skimage.transform import hough_line_peaks, hough_line
+from skimage.transform import hough_line_peaks
 
-from astropy.stats import (sigma_clipped_stats, sigma_clip, mad_std)
 from astropy import constants as const
+from astropy import units as u
+from astropy.coordinates import Angle
+from photutils.aperture import RectangularAperture
+from astropy.stats import (sigma_clipped_stats, sigma_clip, mad_std)
+
 from photutils.segmentation import (SegmentationImage, detect_sources, detect_threshold)
 
 from sklearn.cluster import AgglomerativeClustering
@@ -58,7 +58,7 @@ try:
 except ImportError:
     plt = None
 else:
-    import matplotlib as mpl
+    import matplotlib
     from matplotlib import pyplot as plt
     import matplotlib.lines as mlines
     import matplotlib.gridspec as gridspec  # GRIDSPEC !
@@ -82,10 +82,9 @@ import config.base_conf as _base_conf
 
 """ Meta-info """
 __author__ = "Christian Adam"
-__copyright__ = 'Copyright 2021, UA, LEOSat observations'
-__credits__ = ["Christian Adam, Eduardo Unda-Sanzana, Jeremy Tregloan-Reed"]
-__license__ = "Free"
-__version__ = "0.2.0"
+__copyright__ = 'Copyright 2021-2023, CLEOSat group'
+__credits__ = ["Eduardo Unda-Sanzana, Jeremy Tregloan-Reed, Christian Adam"]
+__license__ = "GPL-3.0 license"
 __maintainer__ = "Christian Adam"
 __email__ = "christian.adam84@gmail.com"
 __status__ = "Production"
@@ -416,7 +415,8 @@ def calculate_trail_parameter(fit_result):
             np.rad2deg(theta_p), np.rad2deg(theta_p_err), e)
 
 
-def fit_trail_params(Hij, rhos, thetas, theta_0, image_size, cent_ind, win_size):
+def fit_trail_params(Hij, rhos, thetas, theta_0, image_size, cent_ind, win_size,
+                     fit_method='leastsq'):
     """Perform fit on a given sub-window of the Hough space."""
 
     fit_results = {}
@@ -445,11 +445,19 @@ def fit_trail_params(Hij, rhos, thetas, theta_0, image_size, cent_ind, win_size)
                     np.sum(h_peak_win[:, col])).flatten()[col]
 
     # fit quadratic model
-    pmodel = Model(poly_func)
+    pmodel = Model(poly_func, independent_vars='x')
     params = pmodel.make_params(a0=1., a1=1., a2=1.)
-    quad_fit_result = pmodel.fit(var, params, x=theta_i_rad,
+
+    # WARNING: This might cause problems in the future.
+    # lmfit v1.1.0 works fine, but since 1.2.0 and above the fit fails; reason unknown
+    quad_fit_result = pmodel.fit(data=var,
+                                 params=params,
+                                 x=theta_i_rad,
+                                 method=fit_method,
                                  weights=np.sqrt(1. / var),
+                                 nan_policy='omit',
                                  scale_covar=True)
+
     fit_results['quad_fit'] = quad_fit_result
     fit_results['quad_xnew'] = theta_i_rad_new
     fit_results['quad_x'] = theta_i_rad
@@ -459,6 +467,9 @@ def fit_trail_params(Hij, rhos, thetas, theta_0, image_size, cent_ind, win_size)
     (L, err_L, T, err_T,
      theta_p_rad, e_theta_p_rad,
      theta_p_deg, e_theta_p_deg, e) = calculate_trail_parameter(quad_fit_result)
+    # print(L, err_L, T, err_T,
+    #       theta_p_rad, e_theta_p_rad,
+    #       theta_p_deg, e_theta_p_deg, e)
 
     # set-up axis for fit; apply alternate transformation if 45deg < theta < 135deg
     x = np.tan(theta_i_rad)
@@ -475,12 +486,17 @@ def fit_trail_params(Hij, rhos, thetas, theta_0, image_size, cent_ind, win_size)
                        num=int(len(x) * 100), endpoint=True)
 
     # fit linear model
-    pmodel = Model(poly_func)
+    pmodel = Model(poly_func, independent_vars='x')
     params = pmodel.make_params(a0=1., a1=1., a2=0.)
 
     # fix quadratic term
     params['a2'].vary = False
-    lin_fit_result = pmodel.fit(y, params, x=x, scale_covar=True)
+    lin_fit_result = pmodel.fit(data=y,
+                                params=params,
+                                x=x,
+                                method=fit_method,
+                                nan_policy='omit',
+                                scale_covar=True)
     fit_results['lin_fit'] = lin_fit_result
     fit_results['lin_xnew'] = xnew
     fit_results['lin_x'] = x
@@ -670,26 +686,23 @@ def detect_sat_trails(image: np.ndarray,
     if mask is not None:
         m = np.where(mask, 0, 1)
         image *= m
-    plt.figure()
-    plt.imshow(image)
 
     blurred_f = nd.gaussian_filter(image, 2.)
     filter_blurred_f = nd.gaussian_filter(blurred_f, sigma_blurr)
     sharpened = blurred_f + alpha * (blurred_f - filter_blurred_f)
 
     mean, _, std = sigma_clipped_stats(sharpened, grow=False)
-    sharpened -= mean
+    # sharpened -= mean
 
-    threshold = detect_threshold(sharpened, 1., mean, std)
+    # threshold = detect_threshold(sharpened, 1., mean, std)
+    threshold = detect_threshold(sharpened, 1.)
+
     sources = detect_sources(sharpened, threshold=threshold,
                              npixels=9, connectivity=8, mask=mask)
     segm = SegmentationImage(sources.data)
 
     # only for CTIO BW3 2022-11-10
     if config['use_sat_mask']:
-        from astropy import units as u
-        from astropy.coordinates import (Angle, SkyCoord, EarthLocation)
-        from photutils.aperture import (RectangularAperture, RectangularAnnulus, CircularAperture)
 
         raper = RectangularAperture([[959.63, 1027.3], [903.93, 1073.75]],
                                     w=2755,
@@ -901,7 +914,8 @@ def get_trail_properties(segm_map, df, config,
 
     theta_init = np.deg2rad(theta[col_ind])
     fit_res = fit_trail_params(hspace_smooth, dist, theta, theta_init,
-                               dilated.shape, center_idx, sub_win_size)
+                               dilated.shape, center_idx, sub_win_size,
+                               config['TRAIL_PARAMS_FITTING_METHOD'])
 
     reg_dict = {'coords': fit_res[0],  # 'coords':  reg.centroid[::-1],
                 'coords_err': fit_res[1],

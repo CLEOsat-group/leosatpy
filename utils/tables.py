@@ -28,7 +28,6 @@ import os
 import logging
 import re
 import csv
-import sys
 from pathlib import Path
 import pandas as pd
 import numpy as np
@@ -36,6 +35,7 @@ from datetime import timedelta
 from datetime import datetime as dt
 from astropy import units as u
 from astropy.coordinates import SkyCoord
+from packaging.version import Version
 
 # Project modules
 import config.base_conf as _base_conf
@@ -44,13 +44,14 @@ import config.base_conf as _base_conf
 
 """ Meta-info """
 __author__ = "Christian Adam"
-__copyright__ = 'Copyright 2021, UA, LEOSat observations'
-__credits__ = ["Christian Adam, Eduardo Unda-Sanzana, Jeremy Tregloan-Reed"]
-__license__ = "Free"
-__version__ = "0.3.1"
+__copyright__ = 'Copyright 2021-2023, CLEOSat group'
+__credits__ = ["Eduardo Unda-Sanzana, Jeremy Tregloan-Reed, Christian Adam"]
+__license__ = "GPL-3.0 license"
 __maintainer__ = "Christian Adam"
 __email__ = "christian.adam84@gmail.com"
 __status__ = "Production"
+
+__taskname__ = 'tables'
 # -----------------------------------------------------------------------------
 
 # changelog
@@ -140,9 +141,6 @@ class ObsTables(object):
             sat_type = 'starlink'
         if 'BLUEWALKER' in sat_name:
             sat_type = 'bluewalker'
-
-        # regex = re.compile(r'tle_{0}_{1}_.+.txt'.format(sat_type,
-        #                                                 obs_date))
 
         regex = re.compile(rf'tle_{sat_type}_{obs_date[0]}[-_]{obs_date[1]}[-_]{obs_date[2]}.+.txt')
 
@@ -563,7 +561,12 @@ class ObsTables(object):
                         new_dict[dcol_name] = value
 
         new_df = pd.DataFrame(new_dict)
-        obs_info = obs_info.append(new_df, ignore_index=False)
+
+        # Pandas version < 2.0
+        if Version(pd.__version__) < Version('2.0'):
+            obs_info = obs_info.append(new_df, ignore_index=False)
+        else:
+            obs_info = pd.concat([obs_info, new_df], ignore_index=False)
 
         del new_df, new_dict
         gc.collect()
@@ -690,16 +693,3 @@ class ObsTables(object):
             test_str = test_str.replace(f'-({alt_id})', '')
 
         return test_str, alt_id, unique_id
-
-
-def main():
-    """ Main procedure """
-
-
-# -----------------------------------------------------------------------------
-
-
-# standard boilerplate to set 'main' as starting function
-if __name__ == '__main__':
-    main()
-# -----------------------------------------------------------------------------
