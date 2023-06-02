@@ -111,7 +111,7 @@ class DataSet(object):
         self._check_input_for_fits()
         self._filter_fits_files()
 
-    def _load_config(self):
+    def load_config(self):
         """ Load base configuration file """
 
         # configuration file name
@@ -122,17 +122,17 @@ class DataSet(object):
         self._log.info('> Read configuration')
         config.read(configfile)
 
-        conf_groups = ['Reduction', 'Calibration', 'Source_detection',
-                       'Satellite_detection', 'Aperture_photometry']
+        conf_groups = ['Reduction', 'Calibration',
+                       'Detection', 'Satellite_analysis']
+
         if self._mode == 'reduceSatObs':
             conf_groups = ['Reduction']
         if self._mode == 'calibrateSatObs':
             conf_groups = ['Calibration',
-                           'Source_detection']
+                           'Detection']
         if self._mode == 'analyseSatObs':
-            conf_groups = ['Source_detection',
-                           'Satellite_detection',
-                           'Aperture_photometry']
+            conf_groups = ['Detection',
+                           'Satellite_analysis']
 
         for group in conf_groups:
             items = dict(config.items(group))
@@ -155,10 +155,6 @@ class DataSet(object):
     @property
     def instruments_list(self):
         return self._instruments_list
-
-    @property
-    def telescopes(self):
-        return self._telescopes
 
     @property
     def obsparams(self):

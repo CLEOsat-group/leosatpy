@@ -307,20 +307,17 @@ To run the satellite detection and analysis on all files in the input type:
     * `Xu et al. (2015) <https://ui.adsabs.harvard.edu/abs/2015PatRe..48.4012X/abstract>`_
     * Save results to result table
 
-----
-ToDo
-----
-
-* Add full pre-processing check of files in input path before reduction
-* Add align and combine to reduction to make it more general
-* Memory and speed optimizations
-
 
 ---------------
 Citing LEOSatpy
 ---------------
 
-When publishing data processed and analysed with LEOSatpy, please cite `TBW`
+When publishing data processed and analysed with LEOSatpy, please cite:
+
+::
+
+    Adam, C. et al., 2023 (in preparation). "Estimating the impact to astronomy from the Oneweb satellite constellation using multicolour observations".
+    Software pipeline available at https://github.com/CLEOsat-group/leosatpy.
 
 ----------------
 Acknowledgements
