@@ -9,17 +9,21 @@
 #
 import os
 import sys
+from datetime import datetime
+from version import __version__
 
 sys.path.insert(0, os.path.abspath('../..'))
 
-from version import __version__
+now = datetime.now()
+today = f"{now.year}-{now.month:02}-{now.day:02} {now.hour:02}H{now.minute:02}"
 
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = 'LEOSatpy'
-copyright = '2022-2023, CLEOSat-Group'
 author = 'Christian Adam'
+organization = 'CLEOSat-Group'
+copyright = f"2022-{now.year}, {organization}"
 
 # The short X.Y version
 version = __version__
@@ -31,10 +35,15 @@ release = __version__
 
 extensions = [
     'sphinx.ext.duration',
-    'sphinx.ext.doctest',
+    # 'sphinx.ext.doctest',
     'sphinx.ext.autodoc',
-    'sphinx.ext.autosummary',
-    'sphinx.ext.intersphinx',
+    'sphinx.ext.todo',
+    'sphinx.ext.mathjax',
+    'sphinx.ext.githubpages',
+    'sphinx.ext.autosectionlabel',
+    # 'sphinx.ext.autosummary',
+    "numpydoc",
+    'sphinx.ext.intersphinx'
 ]
 
 
@@ -45,8 +54,8 @@ exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store', '.venv']
 # The suffix(es) of source filenames.
 # You can specify multiple suffix as a list of string:
 #
-# source_suffix = ['.rst', '.md']
-source_suffix = '.rst'
+source_suffix = ['.rst', '.md']
+# source_suffix = '.rst'
 
 # The encoding of source files.
 #
@@ -63,13 +72,13 @@ master_doc = 'index'
 language = 'en'
 
 # The name of the Pygments (syntax highlighting) style to use.
-pygments_style = None
+pygments_style = "sphinx"
 
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 
 html_theme = 'sphinx_rtd_theme'
-html_static_path = ['_static']
+html_static_path = []
 
 # Custom sidebar templates, must be a dictionary that maps document names
 # to template names.
@@ -81,6 +90,30 @@ html_static_path = ['_static']
 #
 html_sidebars = {'**': ['globaltoc.html', 'relations.html', 'searchbox.html'],
                  }
+
+# -- Options for HTMLHelp output ---------------------------------------------
+
+# Output file base name for HTML help builder.
+htmlhelp_basename = 'LEOSatpydoc'
+
+
+# -- Options for Epub output -------------------------------------------------
+
+# Bibliographic Dublin Core info.
+epub_title = project
+
+# The unique identifier of the text. This can be a ISBN number
+# or the project homepage.
+#
+# epub_identifier = ''
+
+# A unique identification for the text.
+#
+# epub_uid = ''
+
+# A list of files that should not be packed into the epub file.
+epub_exclude_files = ['search.html']
+
 
 # -- Options for intersphinx extension ---------------------------------------
 
