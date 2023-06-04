@@ -82,13 +82,14 @@ else:
     # mpl.rcParams['font.family'] = 'Arial'
 
 # Project modules
-from utils.arguments import ParseArguments
-from utils.dataset import DataSet
-from utils.tables import ObsTables
-import utils.sources as sext
-import utils.transformations as imtrans
-import config.base_conf as _base_conf
-from version import __version__
+from leosatpy.utils.arguments import ParseArguments
+from leosatpy.utils.dataset import DataSet
+from leosatpy.utils.tables import ObsTables
+import leosatpy.utils.sources as sext
+import leosatpy.utils.transformations as imtrans
+from leosatpy.utils.version import __version__
+
+import leosatpy.utils.base_conf as _base_conf
 
 # -----------------------------------------------------------------------------
 
@@ -198,10 +199,6 @@ class CalibrateObsWCS(object):
 
         StartTime = time.perf_counter()
         self._log.info('====> Astrometric calibration init <====')
-        self._load_config()
-
-        self._obsTable = ObsTables(config=self._config)
-        self._obsTable.load_obs_table()
 
         if not silent:
             self._log.info("> Search input and prepare data")
@@ -212,6 +209,14 @@ class CalibrateObsWCS(object):
         ds = DataSet(input_args=self._input_path,
                      prog_typ='calibWCS',
                      log=self._log, log_level=self._log_level)
+
+        # load configuration
+        ds.load_config()
+        self._config = ds.config
+
+        self._obsTable = ObsTables(config=self._config)
+        self._obsTable.load_obs_table()
+
         inst_list = ds.instruments_list
         inst_data = ds.instruments
 
@@ -312,7 +317,7 @@ class CalibrateObsWCS(object):
     def _run_single_calibration(self, file_src_path, file_df, catalog="GAIADR3", hdu_idx=0):
         """Run astrometric calibration on a given dataset.
 
-        Create required folder and run full calibration procedure.
+        Create the required folder and run full calibration procedure.
 
         """
 
@@ -457,7 +462,7 @@ class CalibrateObsWCS(object):
             wcsprm = best_wcsprm
 
         if not self._silent:
-            self._log.info("  => Calibration status: " + status_str)
+            self._log.info("  ==> Calibration status: " + status_str)
 
         # apply the found wcs to the original reference catalog
         ref_tbl_adjusted = ref_tbl.copy()
@@ -492,10 +497,10 @@ class CalibrateObsWCS(object):
             report["scale_y"] = abs(wcs_pixscale[0]) * 3600.
             report["det_rotang"] = rotation_angle if rotation_angle is not np.nan else np.nan
 
-            # save result to fits
+            # save the result to the fits-file
             self._write_wcs_to_hdr(original_filename=abs_file_path,
                                    filename_base=fbase,
-                                   dest=cal_path,
+                                   destination=cal_path,
                                    wcsprm=wcsprm,
                                    report=report, hdul_idx=hdu_idx)
         else:
@@ -590,7 +595,7 @@ class CalibrateObsWCS(object):
         ref_cat_orig_adjusted["xcentroid"] = pos_on_det[:, 0]
         ref_cat_orig_adjusted["ycentroid"] = pos_on_det[:, 1]
 
-        # select initial reference sample based on current best result
+        # select initial reference sample based on the current best result
         initial_reference_cat_subset = ref_cat_orig_adjusted.head(num_rows)
 
         current_reference_cat_subset = initial_reference_cat_subset
@@ -670,7 +675,7 @@ class CalibrateObsWCS(object):
                     # best_rms = new_rms
                     best_completeness = new_completeness
 
-                # best case, all sources were matched
+                # the best case, all sources were matched
                 if best_completeness == 1.:
                     has_converged = True
                     break
@@ -678,7 +683,6 @@ class CalibrateObsWCS(object):
                 if Nobs_matched >= self._config['MIN_SOURCE_NO_CONVERGENCE'] and delta_matches == 0.:
                     if best_completeness > self._config['THRESHOLD_CONVERGENCE'] or best_completeness <= \
                             self._config['THRESHOLD_CONVERGENCE']:
-
                         has_converged = True
                         break
                 elif Nobs_matched >= self._config['MIN_SOURCE_NO_CONVERGENCE'] and delta_matches < 0:
@@ -739,14 +743,14 @@ class CalibrateObsWCS(object):
     @staticmethod
     def match_catalogs(catalog1, catalog2, ra_dec_tol=None, radius=None, N=3):
         """
-        Match catalogs based on closest points within a tolerance or centroid within a radius.
+        Match catalogs based on the closest points within a tolerance or centroid within a radius.
 
         Args:
             catalog1 (DataFrame): First catalog.
             catalog2 (DataFrame): Second catalog.
             ra_dec_tol (float): Tolerance in RA/DEC coordinates for matching.
             radius (float): Radius in pixels to consider for matching.
-            N (int): Number of closest points to return.
+            N (int): Number of the closest points to return.
 
         Returns:
             DataFrame: Subset of catalog2 with matched points.
@@ -863,6 +867,7 @@ class CalibrateObsWCS(object):
 
         if not self._silent:
             self._log.info("> Compared to the input the Wcs was changed by: ")
+
         # scales_original = utils.proj_plane_pixel_scales(WCS(hdr))
 
         # if scales is not None:
@@ -1014,7 +1019,7 @@ class CalibrateObsWCS(object):
         # get pixel scale
         px_scale = np.abs(wcsprm.cdelt[0]) * 3600.  # in arcsec
 
-        # get radii list
+        # get the radii list
         r = round(2 * fwhm, 1)
         radii_list = list(imtrans.frange(0.1, r, 0.1))
         result_array = np.zeros((len(radii_list), 6))
@@ -1050,7 +1055,7 @@ class CalibrateObsWCS(object):
                    "complete": result[1],
                    "radius_px": r,
                    "rms": rms}
-        print(dic_rms)
+        # print(dic_rms)
         if not self._silent:
             self._log.info("  Within {} pixel or {:.3g} arcsec {}/{} ({:.1f}%) sources where matched. "
                            "The rms is {:.3g} pixel or "
@@ -1123,9 +1128,9 @@ class CalibrateObsWCS(object):
             equinox = float(hdr['EQUINOX'])
             wcsprm.equinox = equinox
             if equinox != 2000.:
-                anyeq = SkyCoord(ra=ra_deg * u.deg, dec=dec_deg * u.deg,
-                                 frame=FK5, equinox=Time(equinox, format='jyear', scale='utc'))
-                coo = anyeq.transform_to(ICRS)
+                any_eq = SkyCoord(ra=ra_deg * u.deg, dec=dec_deg * u.deg,
+                                  frame=FK5, equinox=Time(equinox, format='jyear', scale='utc'))
+                coo = any_eq.transform_to(ICRS)
                 ra_deg = coo.ra.deg
                 dec_deg = coo.dec.deg
                 wcsprm.equinox = 2000.0
@@ -1264,12 +1269,12 @@ class CalibrateObsWCS(object):
         self._wcs_check = (INCREASE_FOV_FLAG, PIXSCALE_UNCLEAR)
 
     def _write_wcs_to_hdr(self, original_filename, filename_base,
-                          dest, wcsprm, report, hdul_idx=0):
+                          destination, wcsprm, report, hdul_idx=0):
         """Update the header of the fits file itself.
         Parameters
         ----------
         original_filename: str
-            Original filename of the fits file.
+            Original filename of the fits-file.
         wcsprm: astropy.wcs.wcsprm
             World coordinate system object describing translation between image and skycoord
         """
@@ -1315,7 +1320,7 @@ class CalibrateObsWCS(object):
             hdu.header = hdr_file
             hdul[hdul_idx] = hdu
 
-            hdul.writeto(dest / f"{filename_base}_cal.fits", overwrite=True)
+            hdul.writeto(destination / f"{filename_base}_cal.fits", overwrite=True)
 
             fits_header = hdu.header
 
@@ -1469,11 +1474,11 @@ class CalibrateObsWCS(object):
                 color='k'  # tick color
             )
 
-            minorLocatorx = AutoMinorLocator(5)
-            minorLocatory = AutoMinorLocator(5)
+            minorlocatorx = AutoMinorLocator(5)
+            minorlocatory = AutoMinorLocator(5)
 
-            ax.xaxis.set_minor_locator(minorLocatorx)
-            ax.yaxis.set_minor_locator(minorLocatory)
+            ax.xaxis.set_minor_locator(minorlocatorx)
+            ax.yaxis.set_minor_locator(minorlocatory)
 
             if i == 1:
                 ax.set_yticklabels([])

@@ -58,7 +58,7 @@ from astropy.coordinates import (Angle, SkyCoord, EarthLocation)
 from astropy.stats import sigma_clipped_stats
 
 # photutils
-from photutils.aperture import (RectangularAperture, RectangularAnnulus, CircularAperture)
+from photutils.aperture import (RectangularAperture, CircularAperture)
 from photutils.segmentation import (SegmentationImage, detect_sources, detect_threshold)
 
 # pyorbital
@@ -97,14 +97,14 @@ else:
     mpl.rc('text.latex', preamble=r'\usepackage{sfmath}')
 
 # Project modules
-from version import __version__
-from utils.arguments import ParseArguments
-from utils.dataset import DataSet
-from utils.tables import ObsTables
-import utils.sources as sext
-import utils.satellites as sats
-import utils.photometry as phot
-import config.base_conf as _base_conf
+from leosatpy.utils.version import __version__
+from leosatpy.utils.arguments import ParseArguments
+from leosatpy.utils.dataset import DataSet
+from leosatpy.utils.tables import ObsTables
+import leosatpy.utils.sources as sext
+import leosatpy.utils.satellites as sats
+import leosatpy.utils.photometry as phot
+import leosatpy.utils.base_conf as _base_conf
 
 # -----------------------------------------------------------------------------
 
@@ -147,7 +147,7 @@ frmt = "%Y-%m-%dT%H:%M:%S.%f"
 
 # noinspection PyAugmentAssignment
 class AnalyseSatObs(object):
-    """Perform photometric, i.e. integrated flux and differential magnitude,
+    """Perform photometric, i.e., integrated flux and differential magnitude,
      analysis on satellite trails.
      """
 
@@ -226,14 +226,6 @@ class AnalyseSatObs(object):
 
         starttime = time.perf_counter()
         self._log.info('====> Analyse satellite trail init <====')
-        self._load_config()
-        self._obsTable = ObsTables(config=self._config)
-        self._obsTable.load_obs_table()
-        self._obs_info = ObsTables.obs_info
-        self._obj_info = ObsTables.obj_info
-
-        # Load Region-of-Interest
-        self._obsTable.load_roi_table()
 
         if not self._silent:
             self._log.info("> Search input and prepare data")
@@ -243,6 +235,19 @@ class AnalyseSatObs(object):
         ds = DataSet(input_args=self._input_path,
                      prog_typ='satPhotometry',
                      log=self._log, log_level=self._log_level)
+
+        # load configuration
+        ds.load_config()
+        self._config = ds.config
+
+        self._obsTable = ObsTables(config=self._config)
+        self._obsTable.load_obs_table()
+        self._obs_info = ObsTables.obs_info
+        self._obj_info = ObsTables.obj_info
+
+        # Load Region-of-Interest
+        self._obsTable.load_roi_table()
+
         self._dataset_all = ds
 
         # set variables for use
@@ -406,7 +411,7 @@ class AnalyseSatObs(object):
                                               img_dict=trail_img_dict,
                                               qlf_aprad=qlf_aprad)
 
-        # load tle data, extract info for the satellite and calc mags, angles etc.
+        # load tle data, extract info for the satellite and calc mags, and angles, etc.
         state, fail_msg = self._get_final_results(img_dict=trail_img_dict,
                                                   sat_name=sat_name,
                                                   sat_apphot=sat_apphot,
@@ -676,7 +681,7 @@ class AnalyseSatObs(object):
 
         # if not self._silent:
         #     if dt_sec > exptime / 2.:
-        #         self._log.warning('  Time difference lager than half of exposure time!!! '
+        #         self._log.warning('  Time difference is lager than half of exposure time !!!'
         #                           'Please consider using more accurate visibility data.')
 
         del _mags, _aper_sum, sat_info, obj_info, hdr, obsparams, img_dict, sat_apphot, std_apphot
@@ -722,7 +727,7 @@ class AnalyseSatObs(object):
         if not has_ref and not df.empty:
             src_mask = np.zeros(imgarr.shape)
 
-            # filter apertures outside of image
+            # filter apertures outside image
             trail_stars = df.drop((df.loc[(df['xcentroid'] < 0) |
                                           (df['ycentroid'] < 0) |
                                           (df['xcentroid'] > imgarr.shape[1]) |
@@ -835,6 +840,8 @@ class AnalyseSatObs(object):
                                                             theta=ang)
 
             # this can be helpful
+            # from photutils.aperture import (RectangularAperture, RectangularAnnulus)
+
             # annulus_aperture = RectangularAnnulus(src_pos[0], w_in=w_in, w_out=w_out,
             #                                       h_in=h_in, h_out=h_out,
             #                                       theta=ang)
@@ -939,7 +946,7 @@ class AnalyseSatObs(object):
         Select standard stars and perform aperture photometry
         with bkg annulus sky estimation.
         Use the growth curve to determine the best aperture radius;
-        recenter pixel coordinates before execution using centroid poly_func from photutils
+        re-center pixel coordinates before execution using centroid poly_func from photutils
 
         Parameters
         ----------
@@ -1339,7 +1346,7 @@ class AnalyseSatObs(object):
                         detect_mask[yx[0]:yx[1], yx[2]:yx[3]] = 1
                     detect_mask = np.where(detect_mask == 1, True, False)
 
-                # extract region of interest for detection
+                # extract the region of interest for detection
                 roi_img = img.copy()
                 self._obsTable.get_roi(file_name_clean)
                 roi_info = self._obsTable.roi_data
@@ -2020,6 +2027,7 @@ class AnalyseSatObs(object):
                      color=color, ls='--', alpha=0.25)
 
         ax1.plot(rapers, snr_med, 'r-', lw=2, label='Mean COG')
+
         # indicate optimum aperture
         ax1.axvline(x=opt_aprad, c='b', ls='--')
         ax2.axvline(x=opt_aprad, c='b', ls='--',
@@ -2033,6 +2041,7 @@ class AnalyseSatObs(object):
         ax2.set_ylim(ymin=0.8)
 
         ax3 = fig.add_subplot(gs[:, 1])
+
         # set up the color-bar
         scalarmappaple = cm.ScalarMappable(norm=normalize, cmap=colormap)
         scalarmappaple.set_array(snr_max)
@@ -2056,6 +2065,7 @@ class AnalyseSatObs(object):
             width=1,
             color='k')
         cbar.update_ticks()
+
         # format axes
         ax_list = [ax1, ax2]
         for i in range(len(ax_list)):

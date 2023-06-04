@@ -23,7 +23,7 @@ from astropy import wcs
 from astropy.io import fits
 from astropy.utils.exceptions import (AstropyUserWarning, AstropyWarning)
 
-from config.telescope_conf import *
+# from .telescope_conf import *
 
 """ Meta-info """
 __author__ = "Christian Adam"
@@ -45,6 +45,7 @@ def load_warnings():
     warnings.simplefilter(action="ignore", category=RuntimeWarning)
     warnings.simplefilter(action='ignore', category=UserWarning)
     warnings.simplefilter(action='ignore', category=AstropyWarning)
+    warnings.simplefilter(action='ignore', category=AstropyUserWarning)
     warnings.filterwarnings(action='ignore', category=wcs.FITSFixedWarning)
     warnings.filterwarnings(action='ignore', category=fits.column.VerifyWarning)
     warnings.filterwarnings(action='ignore', category=fits.card.VerifyWarning)
@@ -59,12 +60,7 @@ def load_warnings():
     np.errstate(invalid='ignore')
 
 
-ROOT_DIR = os.path.realpath(os.path.join(os.path.dirname(__file__), '..'))
-
-# # default path to the result .csv containing all the info on an observation.
-# # !!! Change this to: /path/to/my_result_file_name.csv
-# DEF_RES_TBL_PATH = '/home/cadam/Arbeit/projects/UniversidadAntofagasta/LEOSat/data'
-# DEF_RES_TBL_FNAME = 'results_LEOSat.csv'
+ROOT_DIR = os.path.realpath(os.path.join(os.path.dirname(__file__), '../..'))
 
 
 class BCOLORS:
@@ -207,7 +203,7 @@ DEF_ASTROQUERY_CATALOGS = {
     'GSC242': 'I/353/gsc242'
 }
 
-# Dictionary of supported astrometric catalogs with column name translations
+# Dictionary of supported astrometric catalogs with column name translations.
 # These are the minimum columns necessary for alignment to work properly while
 # taking into account all available information from the catalogs.
 # Blank column names indicate the catalog does not have that column,
@@ -352,7 +348,7 @@ CONV_SSDS_BVRI = {'Bmag': [[-0.8116, 0.1313, 0.0095],
 # source detection
 USE_N_SOURCES = 100  # number of sources to be used in fast mode
 
-# URL configuration for photometry pipeline
+# URL configuration for the photometry pipeline
 ASTROMETRIC_CAT_ENVVAR = "ASTROMETRIC_CATALOG_URL"
 DEF_CAT_URL = 'http://gsss.stsci.edu/webservices'
 

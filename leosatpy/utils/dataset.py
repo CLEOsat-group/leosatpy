@@ -43,7 +43,8 @@ from astropy.io import fits
 from ccdproc import ImageFileCollection
 
 # Project modules
-import config.base_conf as _base_conf
+from . import base_conf as _base_conf
+from . import telescope_conf as _tele_conf
 
 # -----------------------------------------------------------------------------
 
@@ -114,12 +115,40 @@ class DataSet(object):
     def load_config(self):
         """ Load base configuration file """
 
-        # configuration file name
-        configfile = f"{self._root_dir}/leosatpy_config.ini"
         config = configparser.ConfigParser()
         config.optionxform = lambda option: option
 
-        self._log.info('> Read configuration')
+        # Define the path to the .ini file in the user's home directory
+        home = str(Path.home())
+        configfile = os.path.join(home, "leosatpy_config.ini")
+        try:
+            # If the .ini file doesn't already exist in the user's home directory,
+            # copy the default one from the package
+            if not os.path.exists(configfile):
+
+                import shutil
+                default_ini_path = f"{self._root_dir}/leosatpy/leosatpy_config.ini"
+                shutil.copy(default_ini_path, configfile)
+
+                self._log.info('> Read configuration')
+                self._log.info("  `leosatpy_config.ini` not found in the user's home directory")
+                self._log.info(f'  ==> Default config file copied to {configfile}')
+                self._log.info('  Please check the config file parameter and values and re-start when ready.')
+                sys.exit(0)
+            else:
+                self._log.info(f'> Read configuration ({configfile})')
+
+        except PermissionError:
+            self._log.error(f"  Unable to access or create the .ini "
+                            f"file at {configfile} due to insufficient permissions.")
+            # handle the error as appropriate for your application
+            sys.exit(1)
+        except Exception as e:
+            self._log.error(f"  An unexpected error occurred: {e}")
+            # handle the error as appropriate for your application
+            sys.exit(1)
+
+        # read config file
         config.read(configfile)
 
         conf_groups = ['Reduction', 'Calibration',
@@ -127,10 +156,10 @@ class DataSet(object):
 
         if self._mode == 'reduceSatObs':
             conf_groups = ['Reduction']
-        if self._mode == 'calibrateSatObs':
+        if self._mode == 'calibWCS':
             conf_groups = ['Calibration',
                            'Detection']
-        if self._mode == 'analyseSatObs':
+        if self._mode == 'satPhotometry':
             conf_groups = ['Detection',
                            'Satellite_analysis']
 
@@ -343,7 +372,7 @@ class DataSet(object):
         -------
         result: Table
             Filtered dataset(s).
-            Folder and files suitable for reduction.
+            Contains folder and files suitable for reduction.
         """
 
         mode = self._mode
@@ -365,8 +394,8 @@ class DataSet(object):
         dataset_list = []
         for i in range(len(instruments_list)):
             inst = instruments_list[i]
-            tel_id = _base_conf.INSTRUMENT_IDENTIFIERS[inst]
-            obsparams = _base_conf.TELESCOPE_PARAMETERS[tel_id]
+            tel_id = _tele_conf.INSTRUMENT_IDENTIFIERS[inst]
+            obsparams = _tele_conf.TELESCOPE_PARAMETERS[tel_id]
             telescope = obsparams['telescope_keyword']
 
             inst_dict[inst]['telescope'] = telescope
@@ -455,7 +484,7 @@ class DataSet(object):
                 if key in header:
                     inst = header[key]
                     if inst == 'GROND':
-                        det_keywords = _base_conf.INSTRUMENT_IDENTIFIERS['GROND']
+                        det_keywords = _tele_conf.INSTRUMENT_IDENTIFIERS['GROND']
                         [instruments.append(det_keywords[i])
                          for i in det_keywords.keys() if i in header.keys()]
                     else:
@@ -513,7 +542,7 @@ class DataSet(object):
 
     @staticmethod
     def join_path(name: str, directory: Path = None):
-        """Simple join path method"""
+        """Simple method to join paths"""
         if directory is not None:
             name = os.path.join(directory, os.path.basename(name))
         return name

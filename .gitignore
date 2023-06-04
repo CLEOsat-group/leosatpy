@@ -159,6 +159,6 @@ cython_debug/
 !/rebin_images.py
 !/reduceCalibObs.py
 !/README.html
-!/utils/reduction.py
+!/leosatpy/utils/reduction.py
 !/scripts/
 !/.gitignore

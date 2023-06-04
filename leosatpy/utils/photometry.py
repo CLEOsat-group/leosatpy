@@ -25,8 +25,8 @@ import os
 import inspect
 import logging
 
-import astropy.table
 import numpy as np
+import pandas as pd
 
 try:
     import matplotlib
@@ -36,6 +36,7 @@ try:
 except ImportError:
     plt = None
 else:
+    import matplotlib
     import matplotlib.gridspec as gridspec  # GRIDSPEC !
     from matplotlib.ticker import (AutoMinorLocator, LogLocator)
     from astropy.visualization import (LinearStretch, LogStretch, SqrtStretch)
@@ -57,7 +58,7 @@ from photutils.aperture import (aperture_photometry,
                                 RectangularAnnulus)
 
 # pipeline-specific modules
-import config.base_conf as _base_conf
+from . import base_conf as _base_conf
 
 # -----------------------------------------------------------------------------
 
@@ -114,7 +115,7 @@ def convert_ssds_to_bvri(f, x1, x2, x3):
 
 
 def get_optimum_aper_rad(image: np.ndarray,
-                         std_cat: astropy.table.Table,
+                         std_cat: pd.DataFrame,
                          fwhm: float,
                          exp_time,
                          config: dict,
@@ -160,7 +161,7 @@ def get_optimum_aper_rad(image: np.ndarray,
         aper_flux = aper_flux_counts / exp_time
         aper_bkg = aper_bkg_counts / exp_time
 
-        # calculate Signal-to-Noise ratio
+        # calculate the Signal-to-Noise ratio
         snr, snr_err = get_snr(flux_star=aper_flux, flux_bkg=aper_bkg, t_exp=exp_time,
                                r=r_aper * fwhm,
                                gain=gain, rdnoise=rdnoise, dc=0.)
