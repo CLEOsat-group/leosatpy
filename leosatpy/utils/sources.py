@@ -49,8 +49,7 @@ from astropy.stats import (sigma_clipped_stats,
                            mad_std, sigma_clip, SigmaClip)
 
 from astropy.convolution import (
-    convolve, Tophat2DKernel,
-    Gaussian2DKernel)
+    convolve, Tophat2DKernel)
 from astropy.nddata import NDData
 
 from astroquery.gaia import Gaia
@@ -78,6 +77,7 @@ try:
 except ImportError:
     plt = None
 else:
+    import matplotlib
     import matplotlib as mpl
     import matplotlib.lines as mlines
     import matplotlib.gridspec as gridspec  # GRIDSPEC !
@@ -99,8 +99,8 @@ else:
     # mpl.rcParams['font.family'] = 'Arial'
 
 # pipeline-specific modules
-import utils.photometry as phot
-import config.base_conf as _base_conf
+from . import photometry as phot
+from . import base_conf as _base_conf
 
 # -----------------------------------------------------------------------------
 
@@ -373,7 +373,7 @@ def auto_build_source_catalog(data,
                     new_fwhm_guess.append(fwhm_fit)
                     m = 0
 
-                except Exception:
+                except (Exception,):
                     pass
 
             new_r_squared_guess = np.array(new_r_squared_guess)
@@ -542,7 +542,7 @@ def auto_build_source_catalog(data,
                         isolated_sources['xcentroid'] = isolated_sources['xcentroid'].replace([x0], corrected_x)
                         isolated_sources['ycentroid'] = isolated_sources['ycentroid'].replace([y0], corrected_y)
 
-            except Exception:
+            except (Exception,):
                 to_add = nan_arr
 
             result_arr[i] = to_add
@@ -880,7 +880,7 @@ def compute_2d_background(imgarr, mask, box_size, win_size,
             # bkg.plot_meshes(outlines=True, marker='.', color='cyan', alpha=0.3)
             # plt.show()
 
-        except Exception:
+        except (Exception,):
             bkg = None
             continue
 
@@ -1150,20 +1150,6 @@ def extract_source_catalog(imgarr,
     gc.collect()
 
     return source_cat, None, None, None, fwhm, True
-
-
-def find_worst_residual_near_center(resid: np.ndarray):
-    """Find the pixel location of the worst residual, avoiding the edges"""
-
-    yc, xc = resid.shape[0] / 2., resid.shape[1] / 2.
-    radius = resid.shape[0] / 3.
-
-    y, x = np.mgrid[0:resid.shape[0], 0:resid.shape[1]]
-
-    mask = np.sqrt((y - yc) ** 2 + (x - xc) ** 2) < radius
-    rmasked = resid * mask
-
-    return np.unravel_index(np.argmax(rmasked), resid.shape)
 
 
 def get_reference_catalog_astro(ra, dec, sr: float = 0.5,
@@ -1701,34 +1687,6 @@ def my_background(img, box_size, mask=None, interp=None, filter_size=(1, 1),
                         interpolator=interp, filter_size=filter_size)
 
 
-def plot_mask(scene, bkgd, mask, zmin, zmax, worst=None, smooth=0):
-    """Make a three-panel plot of:
-         * the mask for the whole image,
-         * the scene times the mask
-         * a zoomed-in region, with the mask shown as contours
-    """
-    if worst is None:
-        y, x = find_worst_residual_near_center(bkgd)
-    else:
-        x, y = worst
-    plt.figure(figsize=(20, 10))
-    plt.subplot(131)
-    plt.imshow(mask, vmin=0, vmax=1, cmap=plt.cm.get_cmap('gray'), origin='lower')
-    plt.subplot(132)
-    if smooth == 0:
-        plt.imshow((scene - bkgd) * (1 - mask), vmin=zmin, vmax=zmax, origin='lower')
-    else:
-        smoothed = convolve((scene - bkgd) * (1 - mask), Gaussian2DKernel(smooth))
-        plt.imshow(smoothed * (1 - mask), vmin=zmin / smooth, vmax=zmax / smooth,
-                   origin='lower')
-    plt.subplot(133)
-    plt.imshow(scene - bkgd, vmin=zmin, vmax=zmax)
-    plt.contour(mask, colors='red', alpha=0.2)
-    plt.ylim(y - 100, y + 100)
-    plt.xlim(x - 100, x + 100)
-    return x, y
-
-
 def rename_colname(table: Table, colname: str, newcol: str):
     """Convert column name in table to user-specified name"""
     # If table is missing a column, add a column with values of None
@@ -1995,27 +1953,6 @@ def select_std_stars(ref_cat: pd.DataFrame,
     return df, filter_keys, has_mag_conv, True
 
 
-def sigma_clipped_bkg(arr: np.array, sigma: float = 3.0,
-                      nsigma: float = 4., maxiters: float = None) -> tuple:
-    """Compute the sigma clipped background."""
-
-    # Account for input being blank
-    if arr.max() == 0:
-        return 0.0, [0.0, 0.0, 0.0]
-    if maxiters is None:
-        maxiters = int(np.log10(arr.max() / 2.) + 0.5)
-
-    # Use a simple constant background to avoid problems with nebulosity
-    bkg = sigma_clipped_stats(arr, sigma=sigma, maxiters=maxiters)
-
-    # total background = mean + 4 * sigma
-    bkg_total = bkg[0] + nsigma * bkg[2]
-
-    del arr
-
-    return bkg_total, bkg
-
-
 def url_checker(url: str) -> tuple[bool, str]:
     """Simple check if the URL is reachable"""
     try:
@@ -2031,3 +1968,46 @@ def url_checker(url: str) -> tuple[bool, str]:
             return True, "URL is reachable"
         else:
             return False, f"URL: is Not reachable, status_code: {get.status_code}"
+
+
+# def find_worst_residual_near_center(resid: np.ndarray):
+#     """Find the pixel location of the worst residual, avoiding the edges"""
+#
+#     yc, xc = resid.shape[0] / 2., resid.shape[1] / 2.
+#     radius = resid.shape[0] / 3.
+#
+#     y, x = np.mgrid[0:resid.shape[0], 0:resid.shape[1]]
+#
+#     mask = np.sqrt((y - yc) ** 2 + (x - xc) ** 2) < radius
+#     rmasked = resid * mask
+#
+#     return np.unravel_index(np.argmax(rmasked), resid.shape)
+
+
+# def plot_mask(scene, bkgd, mask, zmin, zmax, worst=None, smooth=0):
+#     """Make a three-panel plot of:
+#          * the mask for the whole image,
+#          * the scene times the mask
+#          * a zoomed-in region, with the mask shown as contours
+#     """
+#     from astropy.convolution import Gaussian2DKernel
+#     if worst is None:
+#         y, x = find_worst_residual_near_center(bkgd)
+#     else:
+#         x, y = worst
+#     plt.figure(figsize=(20, 10))
+#     plt.subplot(131)
+#     plt.imshow(mask, vmin=0, vmax=1, cmap=plt.cm.get_cmap('gray'), origin='lower')
+#     plt.subplot(132)
+#     if smooth == 0:
+#         plt.imshow((scene - bkgd) * (1 - mask), vmin=zmin, vmax=zmax, origin='lower')
+#     else:
+#         smoothed = convolve((scene - bkgd) * (1 - mask), Gaussian2DKernel(smooth))
+#         plt.imshow(smoothed * (1 - mask), vmin=zmin / smooth, vmax=zmax / smooth,
+#                    origin='lower')
+#     plt.subplot(133)
+#     plt.imshow(scene - bkgd, vmin=zmin, vmax=zmax)
+#     plt.contour(mask, colors='red', alpha=0.2)
+#     plt.ylim(y - 100, y + 100)
+#     plt.xlim(x - 100, x + 100)
+#     return x, y

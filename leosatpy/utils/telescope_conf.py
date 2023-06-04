@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # -----------------------------------------------------------------------------
-# Name:         telescope_configuration.py
+# Name:         telescope_conf.py
 # Purpose:      Configuration file with observatory, telescope and
 #               instrument information required for processing and analysis.
 #
@@ -83,7 +83,7 @@ dk154_params = {
     'airmass': 'AIRMASS',  # airmass keyword
 
     # reduction keywords
-    # trim section for trimming of unwanted areas
+    # define the trim section for trimming of unwanted areas
     'ampsec': {'1x1': None,
                '2x2': None,
                '4x4': None},
@@ -177,7 +177,7 @@ cbnuo_params = {
     'airmass': 'AIRMASS',  # airmass keyword
 
     # reduction keywords
-    # trim section for trimming of unwanted areas
+    # define the trim section for trimming of unwanted areas
     'ampsec': {'1x1': None,
                '2x2': None,
                '4x4': None},
@@ -200,13 +200,6 @@ cbnuo_params = {
     'imagetyp_dark': 'dark',
     'imagetyp_flat': 'flat',
     'add_imagetyp_keys': False,
-
-    # defaults for reduction
-    # 'bias_cor': True,  # correct bias
-    # 'dark_cor': True,  # correct dark
-    # 'flat_cor': True,  # correct flat
-    # 'flat_dark_cor': False,  # flat-dark correction
-    # 'cosmic_correct': True,  # correct for cosmic rays
 
     # keywords to exclude from the header update while preparing the file
     'keys_to_exclude': ['DELMAG', 'FWHMH', 'FWHMV', 'FWHMHS', 'FWHMVS', 'NSTAR'],
@@ -271,7 +264,7 @@ ca123dlrmkiii_param = {
     'airmass': 'AIRMASS',  # airmass keyword
 
     # reduction keywords
-    # trim section for trimming of unwanted areas
+    # define the trim section for trimming of unwanted areas
     'ampsec': {'1x1': None,
                '2x2': None,
                '4x4': None},
@@ -367,7 +360,7 @@ ckoir_param = {
     'airmass': 'AIRMASS',  # airmass keyword
 
     # reduction keywords
-    # trim section for trimming of unwanted areas
+    # define the trim section for trimming of unwanted areas
     'ampsec': {'1x1': None,
                '2x2': None,
                '4x4': None},
@@ -466,7 +459,7 @@ ctio_params = {
     'airmass': 'AIRMASS',  # airmass keyword
 
     # reduction keywords
-    # trim section for trimming of unwanted areas
+    # define the trim section for trimming of unwanted areas
     # 'trimsec': None,
     'ampsec': {'1x1': {'11': [0, 1023, 0, 1084],
                        '12': [0, 1023, 1084, 2168],

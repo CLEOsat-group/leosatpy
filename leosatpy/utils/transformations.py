@@ -33,7 +33,7 @@ from astropy.wcs import WCS, utils
 from fast_histogram import histogram2d
 
 # pipeline-specific modules
-import config.base_conf as _base_conf
+from . import base_conf as _base_conf
 
 # -----------------------------------------------------------------------------
 
@@ -104,7 +104,7 @@ def get_scale_and_rotation(observation, catalog, wcsprm, scale_guessed,
     log_dist_cat = calculate_log_dist(cat_x, cat_y)
     angles_cat = calculate_angles(cat_x, cat_y)
 
-    # Get scaling and rotation using cross correlation to match observation and
+    # Get scaling and rotation using cross-correlation to match observation and
     # reference catalog. Is also applied to the reflected image.
     corr_ = peak_with_cross_correlation(log_dist_obs,
                                         angles_obs,
@@ -134,10 +134,10 @@ def get_scale_and_rotation(observation, catalog, wcsprm, scale_guessed,
 
     rot = rotation_matrix(rotation)
     if is_reflected:
-        # reflecting, but which direction?? this is a flip of the y-axis
+        # reflecting, but which direction? this is a flip of the y-axis
         rot = np.array([[1, 0], [0, -1]]) @ rot
 
-    # check if the result make sense
+    # check if the result makes sense
     wcsprm_new = copy(wcsprm)
     if 0.45 < scaling < 4.5:
         wcsprm_new = rotate(copy(wcsprm), rot)
@@ -167,7 +167,7 @@ def get_scale_and_rotation(observation, catalog, wcsprm, scale_guessed,
 
 def get_offset_with_orientation(observation, catalog, wcsprm, fast=False,
                                 report_global=""):
-    """Use offset from cross correlation but with trying 0,90,180,270 rotation.
+    """Use offset from cross-correlation but with trying 0,90,180,270 rotation.
 
     Parameters
     ----------
@@ -178,7 +178,7 @@ def get_offset_with_orientation(observation, catalog, wcsprm, fast=False,
     wcsprm: astropy.wcs.wcsprm
         World coordinate system object describing translation between image and skycoord
     fast: bool, optional
-        If true will run with a subset of the sources to increase speed.
+        If true, will run with a subset of the sources to increase speed.
     report_global: str, optional
 
     Returns
@@ -304,7 +304,7 @@ def simple_offset(observation, catalog, wcsprm=None, offset_binwidth=1, report="
     # find the peak for the x and y distance where the two sets overlap and take the first peak
     peak = np.argwhere(H == np.max(H))[0]
 
-    # sum up signal in fixed aperture 1 pixel in each direction around the peak,
+    # sum up the signal in the fixed aperture 1 pixel in each direction around the peak,
     # so a 3x3 array, total 9 pixel
     signal = np.sum(H[peak[0] - 1:peak[0] + 2, peak[1] - 1:peak[1] + 2])
     signal_wide = np.sum(H[peak[0] - 4:peak[0] + 5, peak[1] - 4:peak[1] + 5])
@@ -525,18 +525,18 @@ def peak_with_cross_correlation(log_distance_obs: np.ndarray, angle_obs: np.ndar
                                 dist_bin_size: float = 1,
                                 ang_bin_size: float = 0.1,
                                 frequ_threshold: float = 0.02):
-    """Find the best relation between the two sets using cross correlation.
+    """Find the best relation between the two sets using cross-correlation.
     Either the positional offset or the scale+angle between them.
 
     Parameters
     ----------
-    log_distance_obs: array
+    log_distance_obs:
         first axis to consider of observations (log distance)
-    angle_obs: array
+    angle_obs:
         second axis to consider of observations (angle)
-    log_distance_cat: array
+    log_distance_cat:
         first axis to consider of catalog data (log distance)
-    angle_cat: array
+    angle_cat:
         first axis to consider of catalog data (angle)
     scale_guessed:
 
@@ -554,7 +554,7 @@ def peak_with_cross_correlation(log_distance_obs: np.ndarray, angle_obs: np.ndar
     if not scale_guessed:
         maximum_distance = max(log_distance_obs)
     else:
-        # broader distance range if the scale is just a guess so there is a higher chance to find the correct one
+        # broader distance range if the scale is just a guess, so there is a higher chance to find the correct one
         maximum_distance = max([max(log_distance_cat),
                                 max(log_distance_obs)])
 
@@ -593,7 +593,7 @@ def peak_with_cross_correlation(log_distance_obs: np.ndarray, angle_obs: np.ndar
     cross_corr = ff_obs * np.conj(ff_cat)
 
     # frequency cut off
-    step = 1  # maybe in arcsec??, this is usually the time-step to get a frequency
+    step = 1  # maybe in arcsec?, this is usually the time-step to get a frequency
     frequ = np.fft.fftfreq(ff_obs.size, d=step).reshape(ff_obs.shape)
     max_frequ = np.max(frequ)  # frequencies are symmetric - to +
     threshold = frequ_threshold * max_frequ
@@ -616,7 +616,7 @@ def peak_with_cross_correlation(log_distance_obs: np.ndarray, angle_obs: np.ndar
     peak_y_subpixel = np.sum(np.sum(around_peak, axis=0)
                              * (np.arange(around_peak.shape[1]) + 1)) / np.sum(around_peak) - 2
 
-    # sum up signal in fixed aperture 1 pixel in each direction around the peak, so a 3x3 array, total 9 pixel
+    # sum up the signal in a fixed aperture 1 pixel in each direction around the peak, so a 3x3 array, total 9 pixel
     signal = np.sum(cross_corr[peak[0] - 1:peak[0] + 2, peak[1] - 1:peak[1] + 2])
 
     # get mid-point
@@ -783,11 +783,14 @@ def translate_wcsprm(wcsprm):
 def shift_translation(src_image, target_image):
     """
     Translation registration by cross-correlation (like FFT up-sampled cross-correlation)
-    Parameters :
-     - src_image : ndarray of the reference image.
-     - target_image : ndarray of the image to register.
-      Must be same dimensionality as src_image.
-     Return :
+    Parameters
+    ----------
+     src_image: ndarray of the reference image.
+     target_image: ndarray of the image to register.
+     Must be the same dimensionality as src_image.
+
+    Returns
+    -------
       - shift : ndarray of the shift pixels vector required to register the target_image the with src_image.
     """
     # The two images need to have the same size
@@ -806,14 +809,14 @@ def shift_translation(src_image, target_image):
     image_product = src_freq * target_freq.conj()
     cross_correlation = np.fft.ifftn(image_product)
 
-    # Locate maximum in order to calculate the shift between two numpy array
+    # Locate the maximum in order to calculate the shift between the two numpy arrays
     maxima = np.unravel_index(np.argmax(np.abs(cross_correlation)), cross_correlation.shape)
     midpoints = np.array([np.fix(axis_size / 2) for axis_size in shape])
 
     shift = np.array(maxima, dtype=np.float64)
     shift[shift > midpoints] -= np.array(shape)[shift > midpoints]
 
-    # If its only one row or column the shift along that dimension has no effect : we set to zero.
+    # If its only one row or column, the shift along that dimension has no effect: set to zero.
     for dim in range(src_freq.ndim):
         if shape[dim] == 1:
             shift[dim] = 0

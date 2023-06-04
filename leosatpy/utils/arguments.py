@@ -18,7 +18,10 @@
 """ Modules """
 from __future__ import annotations
 import argparse
-from version import __version__
+
+from . import version
+
+__version__ = version.__version__
 
 # -----------------------------------------------------------------------------
 
@@ -314,8 +317,8 @@ class ParseArguments(object):
         # output related args
         # outputArgs = parser.add_argument_group('output control')
         # outputArgs.add_argument('-o', '--out',
-        #                         help='Output directory, by default the "reduced" '
-        #                              'subdirectory of data root folder')
+        #                         help='Output directory,
+        #                         by default the "reduced" subdirectory of data root folder')
 
         # todo: TBD how to implement overwrite and skip
         # outputArgs.add_argument('--no-overwrite', default=True,

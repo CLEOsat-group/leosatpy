@@ -10,7 +10,7 @@
 import os
 import sys
 from datetime import datetime
-from version import __version__
+from leosatpy.utils import __version__
 
 sys.path.insert(0, os.path.abspath('../..'))
 

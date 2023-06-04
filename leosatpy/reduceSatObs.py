@@ -22,49 +22,46 @@
 """ Modules """
 from __future__ import annotations
 
+import argparse
+import collections
+import configparser
 import gc
+import logging
+import os
 # STDLIB
 import re
-import os
 import sys
-from copy import deepcopy
-import logging
 import time
+from copy import deepcopy
 from datetime import datetime
 from datetime import timedelta
-import configparser
-import collections
-import argparse
 from pathlib import Path
-
-# THIRD PARTY
-import numpy as np
-import pandas as pd
-
-# astropy
-from astropy.io import fits
-from astropy import units as u
-from astropy.stats import (
-    mad_std, SigmaClip, sigma_clipped_stats)
 
 # ccdproc
 import ccdproc
-from ccdproc import ImageFileCollection
-from ccdproc import CCDData
-
+# THIRD PARTY
+import numpy as np
+import pandas as pd
 # photutils
 import photutils
+from astropy import units as u
+# astropy
+from astropy.io import fits
+from astropy.stats import (
+    mad_std, SigmaClip, sigma_clipped_stats)
+from ccdproc import CCDData
+from ccdproc import ImageFileCollection
 from photutils.background import (
     Background2D, SExtractorBackground, StdBackgroundRMS)
 from photutils.segmentation import (detect_sources,
                                     detect_threshold)
 
 # Project modules
-from version import __version__
-import config.base_conf as _base_conf
-from utils.arguments import ParseArguments
-from utils.dataset import DataSet
-from utils.tables import ObsTables
+from leosatpy.utils import arguments
+from leosatpy.utils import dataset
+from leosatpy.utils import tables
+from leosatpy.utils import version
+from leosatpy.utils import base_conf as _base_conf
 
 # -----------------------------------------------------------------------------
 
@@ -73,11 +70,10 @@ __author__ = "Christian Adam"
 __copyright__ = 'Copyright 2021-2023, CLEOSat group'
 __credits__ = ["Eduardo Unda-Sanzana, Jeremy Tregloan-Reed, Christian Adam"]
 __license__ = "GPL-3.0 license"
-__version__ = __version__
+__version__ = version.__version__
 __maintainer__ = "Christian Adam"
 __email__ = "christian.adam84@gmail.com"
 __status__ = "Production"
-
 
 __taskname__ = 'reduceSatObs'
 # -----------------------------------------------------------------------------
@@ -170,24 +166,24 @@ class ReduceSatObs(object):
         starttime = time.perf_counter()
         self._log.info('====> Science image reduction init <====')
 
-        # load configuration
-        self._load_config()
-
-        # load observation result table
-        self._obsTable = ObsTables(config=self._config)
-        self._obsTable.load_obs_table()
-
         if not silent:
             self._log.info("> Search input and prepare data")
         if verbose:
             self._log.debug("  > Check input argument(s)")
 
         # prepare dataset from input argument
-        ds = DataSet(input_args=self._input_path,
-                     prog_typ='reduceSatObs',
-                     prog_sub_typ=['light'],
-                     log=self._log, log_level=self._log_level)
-        # ds.get_valid_sci_observations(prog_typ="reduceSatObs")
+        ds = dataset.DataSet(input_args=self._input_path,
+                             prog_typ='reduceSatObs',
+                             prog_sub_typ=['light'],
+                             log=self._log, log_level=self._log_level)
+
+        # load configuration
+        ds.load_config()
+        self._config = ds.config
+
+        # load observation result table
+        self._obsTable = tables.ObsTables(config=self._config)
+        self._obsTable.load_obs_table()
 
         # set variables for use
         inst_list = ds.instruments_list
@@ -279,7 +275,7 @@ class ReduceSatObs(object):
         new_file_paths = []
         verbose = 'v' if self.verbose else ''
         if not self.silent:
-            self._log.info("  > Copy raw science images.")
+            self._log.info("> Copy raw science images.")
         for row_index, row in fits_files_dict.iterrows():
             abs_file_path = row['input']
             file_name = row['file_name']
@@ -292,7 +288,7 @@ class ReduceSatObs(object):
 
         # prepare science file
         if not self.silent:
-            self._log.info(f"  > Prepare {len(new_file_paths)} ``SCIENCE`` files for reduction.")
+            self._log.info(f"> Prepare {len(new_file_paths)} ``SCIENCE`` files for reduction.")
         obs_date, filters, binnings = self._prepare_fits_files(new_file_paths,
                                                                self._telescope,
                                                                self._obsparams, 'science')
@@ -310,7 +306,7 @@ class ReduceSatObs(object):
 
         # clean temporary folder
         if not self.silent:
-            self._log.info("  > Cleaning up")
+            self._log.info("> Cleaning up")
         os.system(f"rm -rf {tmp_path}")
 
     def _check_closest_exposure(self, ic_all: ImageFileCollection,
@@ -422,7 +418,7 @@ class ReduceSatObs(object):
                 readnoise = np.array(ic_all.summary['ron'].data)
                 readnoise = list(np.unique(readnoise[readnoise.nonzero()]))[0]
 
-            # create master bias file for each filter. Only executed once per dataset
+            # Create master bias file for each filter. Only executed once per dataset
             ccd_master_bias = None
             if self._config['BIAS_CORRECT']:
                 master_bias = dbias[0]
@@ -440,7 +436,7 @@ class ReduceSatObs(object):
                                                                method=self._config['COMBINE_METHOD_BIAS'])
                 else:
                     if not self.silent:
-                        self._log.info('> Loading existing master bias file: %s' % os.path.basename(master_bias))
+                        self._log.info('  Loading existing master bias file: %s' % os.path.basename(master_bias))
 
                     ccd_master_bias = self._convert_fits_to_ccd(master_bias, single=True)
                     readnoise = ccd_master_bias.header['ron']
@@ -476,7 +472,7 @@ class ReduceSatObs(object):
                                                                  method=self._config['COMBINE_METHOD_DARK'])
                         else:
                             if not self.silent:
-                                self._log.info(f'> Loading existing master dark file: {os.path.basename(master_dark)}')
+                                self._log.info(f'  Loading existing master dark file: {os.path.basename(master_dark)}')
                             ccd_mdark = self._convert_fits_to_ccd(master_dark, single=True)
                             bias_corr = ccd_mdark.header['biascorr'] if 'biascorr' in ccd_mdark.header else False
                         if i == 0:
@@ -512,7 +508,7 @@ class ReduceSatObs(object):
                                                                         method=self._config['COMBINE_METHOD_FLAT'])
                 else:
                     if not self.silent:
-                        self._log.info('> Loading existing master flat file: %s' % os.path.basename(master_flat))
+                        self._log.info('  Loading existing master flat file: %s' % os.path.basename(master_flat))
                     ccd_master_flat[filt[0]] = self._convert_fits_to_ccd(master_flat, single=True)
             if not ccd_master_flat or not ccd_master_flat[filt[0]]:
                 ccd_master_flat = None
@@ -608,7 +604,7 @@ class ReduceSatObs(object):
 
         for filename in files_list:
             if not self.silent:
-                self._log.info(f">>> ccdproc is working for: {filename}")
+                self._log.info(f"  >>> ccdproc is working for: {filename}")
 
             # read image to a ccd object
             fname = os.path.join(self._tmp_path, filename)
@@ -825,7 +821,7 @@ class ReduceSatObs(object):
             return []
 
         if not self.silent:
-            self._log.info('> Creating master flat file: %s' % os.path.basename(mflat_fname))
+            self._log.info('  Creating master flat file: %s' % os.path.basename(mflat_fname))
 
         lflat = []
         for filename in files_list:
@@ -977,7 +973,7 @@ class ReduceSatObs(object):
         """
 
         if not self.silent:
-            self._log.info('> Creating master dark file: %s' % os.path.basename(mdark_fname))
+            self._log.info('  Creating master dark file: %s' % os.path.basename(mdark_fname))
 
         # check inputs
         if error and (gain is None or readnoise is None):
@@ -1116,7 +1112,7 @@ class ReduceSatObs(object):
         """
 
         if not self.silent:
-            self._log.info('> Creating master bias file: %s' % os.path.basename(mbias_fname))
+            self._log.info('  Creating master bias file: %s' % os.path.basename(mbias_fname))
 
         # check inputs
         if error and (gain is None or readnoise is None):
@@ -1214,7 +1210,7 @@ class ReduceSatObs(object):
             Observation parameter with reduction info
         namps: 
             Number of amplifiers on the chip.
-            If N_amps > 1 trimming is applied to each section and
+            If N_amps > 1 trimming is applied to each section, and
             the results are then combined to a new single ccd object
         trimsec:
             Fits section to be trimmed.
@@ -1312,9 +1308,9 @@ class ReduceSatObs(object):
         Parameters
         ----------
         lfits: list, dict
-            Dictionary or list of dictionaries for conversion to fits
+            Dictionary or list of dictionaries for conversion to fits-files
         key_unit: str, optional
-            Keyword for unit of fits image stored in the header.
+            Keyword for unit of fits-image stored in the header.
             Defaults to 'BUNIT'.
         key_file: 
             Keyword for file name stored in the header.
@@ -1342,7 +1338,7 @@ class ReduceSatObs(object):
             if key_unit is not None and key_unit in hdr:
                 try:
                     fits_unit = eval('u.%s' % hdr[key_unit])
-                except Exception:
+                except (Exception,):
                     pass
             if fits_unit is None:
                 if key_unit is not None:
@@ -1576,7 +1572,7 @@ class ReduceSatObs(object):
                             binnings, obs_date=None, regexp=False):
         """ Filter files according to their binning.
 
-        If the first try with a binning keyword fails, use the un-binned image size
+        If the first try with a binning keyword fails, use the unbinned image size
         known from a telescope to determine the binning factor
         """
 
@@ -1789,11 +1785,11 @@ class ReduceSatObs(object):
                         continue
                     new_hdr[k] = v
 
-                # check object key in header and set if needed
+                # check the object key in header and set if needed
                 if 'OBJECT' not in new_hdr:
                     new_hdr['OBJECT'] = new_hdr[obsparams['object']].strip()
 
-                # check imagetyp key in header and set
+                # check the imagetyp key in header and set
                 new_hdr['IMAGETYP'] = imagetyp
 
                 # special case GROND NIR obs
@@ -1836,7 +1832,7 @@ class ReduceSatObs(object):
                     # close header
                     hdul.close()
 
-                    # remove original file
+                    # remove the original file
                     os.system(f"rm -f {file_path}")
                     break
 
@@ -1868,7 +1864,7 @@ class ReduceSatObs(object):
                     new_hdu.writeto(os.path.join(self._tmp_path, new_fname),
                                     output_verify='ignore', overwrite=True)
 
-                    # remove original file if done
+                    # remove the original file if done
                     if i == hduindexes[-1]:
                         os.system(f"rm -f {file_path}")
                         hdul.close()
@@ -2027,8 +2023,7 @@ def compute_2d_background_simple(imgarr: np.ndarray, box_size: int, win_size: in
         background across the array.  If Background2D fails for any reason, a simpler
         sigma-clipped single-valued array will be computed instead.
     bkg_rms_median:
-        The median value (or single sigma-clipped value) of the RMS of the computed
-        background.
+        The median value (or single sigma-clipped value) of the background RMS.
 
     """
 
@@ -2048,7 +2043,7 @@ def compute_2d_background_simple(imgarr: np.ndarray, box_size: int, win_size: in
                                bkg_estimator=bkg_estimator(),
                                bkgrms_estimator=rms_estimator(),
                                exclude_percentile=percentile, edge_method="pad")
-        except Exception:
+        except (Exception,):
             bkg = None
             continue
 
@@ -2062,7 +2057,6 @@ def compute_2d_background_simple(imgarr: np.ndarray, box_size: int, win_size: in
     # If Background2D does not work at all, define default scalar values for
     # the background to be used in source identification
     if bkg is None:
-
         # detect the sources
         threshold = detect_threshold(imgarr, nsigma=2.0,
                                      sigma_clip=SigmaClip(sigma=3.0, maxiters=10))
@@ -2286,7 +2280,7 @@ def add_key_to_hdr(hdr, key, value):
 
 
 def ammend_hdr(header):
-    """Remove trailing white spaces from header.
+    """Remove trailing blank from header.
 
     Parameters
     ----------
@@ -2296,7 +2290,7 @@ def ammend_hdr(header):
     Returns
     -------
     header:  astropy.io.fits.Header
-        The same fits header object with trailing white spaces removed
+        The same fits header object with trailing blanks removed
     """
     if '' in header:
         del header['']
@@ -2343,7 +2337,7 @@ def inv_median(a):
 
 def main():
     """ Main procedure """
-    pargs = ParseArguments(prog_typ='reduce_sat_obs')
+    pargs = arguments.ParseArguments(prog_typ='reduce_sat_obs')
     args = pargs.args_parsed
     main.__doc__ = pargs.args_doc
 

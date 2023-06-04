@@ -38,7 +38,7 @@ from astropy.coordinates import SkyCoord
 from packaging.version import Version
 
 # Project modules
-import config.base_conf as _base_conf
+from . import base_conf as _base_conf
 
 # -----------------------------------------------------------------------------
 
@@ -53,14 +53,6 @@ __status__ = "Production"
 
 __taskname__ = 'tables'
 # -----------------------------------------------------------------------------
-
-# changelog
-# version 0.1.0 alpha
-# version 0.2.0 improved detection of duplicates and similar data
-#               added methods for adding and updating rows to table
-# version 0.2.1 added satellite name identification from object name in header
-# version 0.3.0 added support for tle data
-# version 0.3.1 added sorting of table, and minor fixes
 
 
 # Logging
@@ -166,7 +158,7 @@ class ObsTables(object):
                                   "This really should not happen!!! TBW: select")
             elif unique_idx and len(unique_idx) == 1:
                 return tle_filenames[unique_idx[0]]
-            # if there is still more than one file, user select
+            # if there is still more than one file, let the user select
             non_unique_idx = np.where(idx_arr == -1)[0]
             if len(non_unique_idx) > 1:
                 self._log.warning("Multiple files found. This should not happen!!! TBW: select")
@@ -244,7 +236,7 @@ class ObsTables(object):
         self._obs_info = obs_info
 
     def get_roi(self, fname):
-        """Get region of interest"""
+        """Get the region of interest"""
         roi_info = self._roi_info
         if not roi_info.empty:
             pos_df = roi_info.copy()
@@ -413,7 +405,7 @@ class ObsTables(object):
     def update_obs_table(self, file, kwargs, obsparams):
         """Load the observation obs info table.
 
-        Load table with observation information.
+        Load the table with observation information.
         If the file does not exist, it is created.
         """
 
@@ -442,7 +434,7 @@ class ObsTables(object):
         obs_info_tmp['File'] = obs_info['File'].str.upper()
         file_upper = file.upper()
 
-        # check position of data
+        # check the position of data
         mask = obs_info_tmp['File'] == file_upper
         pos = np.flatnonzero(mask)
 
@@ -596,7 +588,7 @@ class ObsTables(object):
             # create 3 empty lists to hold row data
             data, data2, data3 = ([] for _ in range(3))
 
-            # load into list
+            # load the .csv into a list
             with open(file, 'r') as f:
                 reader = csv.reader(f)
                 lines = list(reader)

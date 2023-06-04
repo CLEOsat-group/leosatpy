@@ -76,7 +76,7 @@ else:
     matplotlib.rc('ps', fonttype=42)
 
 # pipeline-specific modules
-import config.base_conf as _base_conf
+from . import base_conf as _base_conf
 
 # -----------------------------------------------------------------------------
 
@@ -99,11 +99,6 @@ MODULE_PATH = os.path.dirname(inspect.getfile(inspect.currentframe()))
 
 
 # -----------------------------------------------------------------------------
-# changelog
-# version 0.1.0 alpha version;
-# version 0.2.0 added calculations for satellite data
-# version 0.3.0 added calculations for solar phase angle
-# version 0.4.0 added calculations for angular velocity
 
 def get_angular_distance(observer: ephem.Observer,
                          sat_az_alt: list,
@@ -200,7 +195,7 @@ def get_elevation(lat, long):
 
 
 def get_radius_earth(B):
-    """Get radius of Earth for a given observation site latitude"""
+    """Get the radius of Earth for a given observation site latitude"""
     B = math.radians(B)  # converting into radians
 
     a = _base_conf.REARTH_EQU  # Radius at sea level at the equator
@@ -235,7 +230,7 @@ def ang_distance(lat1, lat2, lon1, lon2):
 
 
 def get_solar_phase_angle(sat_az, sat_alt, geo_loc, obs_range, obsDate):
-    """Get the solar phase angle via Sun-Sat angle"""
+    """Get the solar phase angle via the Sun-Sat angle"""
 
     au = _base_conf.AU_TO_KM
     sun = ephem.Sun()
@@ -283,11 +278,11 @@ def get_observer_angle(sat_lat, geo_lat, sat_h_orb_km, h_obs_km, sat_range_km):
     Rearth_obs = get_radius_earth(geo_lat)
     Rearth_h_obs = Rearth_obs + h_obs_km
 
-    # get radius of Earth for a given satellite latitude
+    # get the radius of Earth for a given satellite latitude
     Rearth_sat = get_radius_earth(sat_lat)
     Rearth_h_sat = Rearth_sat + sat_h_orb_km
 
-    # use cosine theorem to calc obs phase angle
+    # use cosine theorem to calculate the obs phase angle
     theta_2 = math.acos((sat_range_km ** 2 + Rearth_h_sat ** 2 - Rearth_h_obs ** 2) /
                         (2. * sat_range_km * Rearth_h_sat))
     theta_2 = np.rad2deg(theta_2)
@@ -313,7 +308,7 @@ def get_obs_range(sat_elev, h_orb, h_obs_km, lat):
     # O = observer position on the surface
     # C = Geo-center
 
-    gamma = 90. + sat_elev  # degrees, Angle with center in the observer - <SOC>
+    gamma = 90. + sat_elev  # degrees, Angle with the center in the observer - <SOC>
 
     # Length of the CO side = Rearth
     # Length of the CS side = Rearth + Horb

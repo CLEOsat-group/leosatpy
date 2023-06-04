@@ -28,68 +28,56 @@
 
 .. |ca123| replace:: 1.23-metre telescope
 
+.. |stars| image:: https://img.shields.io/github/stars/CLEOsat-Group/leosatpy?style=social
+    :alt: GitHub Repo stars
+    :target: https://github.com/CLEOsat-group/leosatpy
 
-========
+.. |watch| image:: https://img.shields.io/github/watchers/CLEOsat-Group/leosatpy?style=social
+    :alt: GitHub watchers
+    :target: https://github.com/CLEOsat-group/leosatpy
+
+.. |license| image:: https://img.shields.io/github/license/CLEOsat-Group/leosatpy
+    :alt: GitHub
+    :target: https://github.com/CLEOsat-group/leosatpy/blob/master/LICENSE
+
+..
+    |stars| |watch|
+
 LEOSatpy
 ========
 
+.. badges
+
+|license|
+
 **LEOSatpy** (Low Earth Orbit satellite python) is an end-to-end pipeline to process and analyse
-satellite trail observations from different telescopes.
+satellite trail observations from various telescopes.
 
-The programs in the LEOSatpy package are written for python 3.9 (recommended) and 3.10.
-To run LEOSatpy on a machine with a different version of python, it is recommended to use
-LEOSatpy with a Conda environment.
-This allows to run the package without interfering with the system.
+The pipeline is written in Python 3 and provides the following functionalities:
 
-To install Conda follow the instructions
-`here <https://conda.io/projects/conda/en/latest/user-guide/install/linux.html>`_.
-Once installed, a conda environment running a specific version of Python can be created and activated with:
+===========================  ==========================================================================
+Module                       Function
+===========================  ==========================================================================
+``reduceSatObs``             Full reduction of raw-FITS images including bias, dark, and flat reduction.
+``calibrateSatObs``          WCS calibration, i.e. plate solving, using `GAIA DR3 <https://ui.adsabs.harvard.edu/abs/2020yCat.1350....0G/abstract>`_ positions via the `Astroquery <https://astroquery.readthedocs.io/en/latest/#>`_ tool.
+``analyseSatObs``            Satellite trail(s) detection and aperture photometry using
+                             comparison stars from the `GSC v2.4.3 <https://ui.adsabs.harvard.edu/#abs/2008AJ....136..735L>`_ catalog.
+===========================  ==========================================================================
 
-.. code-block:: sh
-
-    $ conda create -n myenv python=3.9
-    $ conda activate myenv
-
-
-The full documentation for **LEOSatpy** can be found `here <https://docs.readthedocs.io/en/stable/tutorial/>`_.
-
+The full documentation for LEOSatpy can be found `here <https://docs.readthedocs.io/en/stable/tutorial/>`_.
 
 LEOSatpy is distributed under the GNU General Public License v3. See the
 `LICENSE <https://github.com/CLEOsat-group/leosatpy/blob/master/LICENSE>`_ file for the precise terms and conditions.
 
------------------------
-Package Functionalities
------------------------
-
-^^^^^^^^^^^^^^^^^^^^
-Content
-^^^^^^^^^^^^^^^^^^^^
-
-The important files for the process in this directory:
-
-===========================  ==========================================================================
-Program                      Function
-===========================  ==========================================================================
-``reduceSatObs.py``          Perform reduction of satellite observations.
-``calibrateSatObs.py``       Perform astrometric calibration using GAIA DR3 positions.
-``analyseSatObs.py``         Detect satellite trail(s) and perform aperture photometry using
-                             comparison stars from the GSC 2.4.3 catalog.
-===========================  ==========================================================================
-
-^^^^^^^^^^^^^^^^^^^^
-Supported Telescopes
-^^^^^^^^^^^^^^^^^^^^
-
-Observations from the following telescopes are currently supported:
-
-* 0.6-metre Chakana telescope at the |ckoir|_ of the Universidad de Antofagasta, Antofagasta, Chile.
-* 0.9-metre |ctio|_ (SMARTS)
-  at Cerro Tololo Inter-american Observatory (CTIO), Chile.
-* |dk154|_ at the La Silla Observatory, Chile.
-* 0.28-metre DDOTI (Deca-Degree Optical Transient Imager) telescopes at the |spm|_ (OAN) in Sierra San Pedro Martír (SPM), Baja California, México.
-* 0.5-metre |ouka|_ at the Oukaïmeden Observatory, Morocco.
-* 0.6-metre telescope of the |cbnuo|_ in Jincheon, South Korea.
-* |ca123|_ at the Calar Alto Observatory, Spain.
+Currently supported telescopes:
+    * 0.6-metre Chakana telescope at the |ckoir|_ of the Universidad de Antofagasta, Antofagasta, Chile.
+    * 0.9-metre |ctio|_ (SMARTS)
+      at Cerro Tololo Inter-american Observatory (CTIO), Chile.
+    * |dk154|_ at the La Silla Observatory, Chile.
+    * 0.28-metre DDOTI (Deca-Degree Optical Transient Imager) telescopes at the |spm|_ (OAN) in Sierra San Pedro Martír (SPM), Baja California, México.
+    * 0.5-metre |ouka|_ at the Oukaïmeden Observatory, Morocco.
+    * 0.6-metre telescope of the |cbnuo|_ in Jincheon, South Korea.
+    * |ca123|_ at the Calar Alto Observatory, Spain.
 
 
 .. note::
@@ -97,79 +85,112 @@ Observations from the following telescopes are currently supported:
     If you want your telescope added to the list, please contact
     `Jeremy Tregloan-Reed <jeremy.tregloan-reed@uda.cl>`_.
 
-The positions of reference stars for astrometric calibration where obtained from the GAIA DR3 catalog via
-`astroquery <https://astroquery.readthedocs.io/en/latest/#>`_
 
-The positions and magnitudes of the comparison stars are collected using the
-`WebServices for Catalog Access <https://outerspace.stsci.edu/display/GC/WebServices+for+Catalog+Access>`_
-to the Guide Star Catalog(s) v2.4.3.
-
-
--------------------
 How to use LEOSatpy
 -------------------
 
-^^^^^^^^^^^^
+The LEOSatpy pipeline is written for use with Python >=3.9.
+To avoid unnecessary interference with the Python installed on the system, it is recommended to create a new Python environment
+to run LEOSatpy, using for example `conda <https://conda.io/projects/conda/en/latest/user-guide/install/linux.html>`_.
+
+..
+    To run LEOSatpy on a machine with a different version of python, it is recommended to use
+    LEOSatpy with a Conda environment.
+    This allows to run the package without interfering directly with the system.
+
+    To install Conda follow the instructions `Conda <https://conda.io/projects/conda/en/latest/user-guide/install/linux.html>`_.
+
+A new conda environment can be created and activated with:
+
+.. code-block:: sh
+
+    $ conda create -n leosatpy_env python=3.9
+    $ conda activate leosatpy_env
+
+
 Installation
 ^^^^^^^^^^^^
 
-To run the `leosatpy` programs, download or clone the repository to your local machine
+
+LEOSatpy is available on PyPI, and can be installed using pip:
+
+.. code:: bash
+
+    $ (leosatpy_env) pip install leosatpy
+
+Alternatively, the latest release of LEOSatpy is also available from the `GitHub repository <https://github.com/CLEOsat-group/leosatpy>`_.
+
+
+1. Clone the repository using git:
+    .. dummy comment
 
 .. code-block:: sh
 
-    $ (myenv) git clone https://github.com/CLEOsat-group/leosatpy.git
+    $ (leosatpy_env) git clone https://github.com/CLEOsat-group/leosatpy.git
 
-and navigate to the folder location of the cloned package files:
+2. Download the zip file from the GitHub repository:
+    Navigate to the main page of the repository. Click on the "Code" button, then click "Download ZIP".
 
-.. code-block:: sh
 
-    $ (myenv) cd path/to/cloned/github
+Once cloned or downloaded and extracted, LEOSatpy can be installed from anywhere by typing:
 
-**INSTALLATION: To be implemented/written**
+.. code:: bash
 
-""""""""""""
-Requirements
-""""""""""""
+    $ (leosatpy_env) pip install -e PATH/TO/CLONED/GITHUB
 
-The LEOSatpy programs are written with python 3.9 and tested with python 3.9 and 3.10.
-
-Alongside the standard python modules such as numpy, pandas, scipy, or matplotlib,
-LEOSatpy also requires a number of additional modules to work, e.g. ccdproc, astropy, or photutils.
-
-All packages required to run LEOSatpy can be install at once with:
+or by navigating to the downloaded folder:
 
 .. code-block:: sh
 
-    $ (myenv) pip install -r requirements.txt
+    $ (leosatpy_env) cd PATH/TO/CLONED/GITHUB
+
+and using the following command in the terminal:
+
+.. code:: bash
+
+    $ (leosatpy_env) python setup.py install
 
 
-^^^^^^^^^^^^^^^^
+The successful installation of LEOSatpy can be tested by trying to access the help or the version of LEOSatpy via:
+
+.. code:: bash
+
+    $ (leosatpy_env) reduceSatObs --help
+
+    $ (leosatpy_env) reduceSatObs --version
+
+If no error messages are shown, LEOSatpy is most likely installed correctly.
+
+
 Running LEOSatpy
 ^^^^^^^^^^^^^^^^
 
-"""""""""""""
+
 Prerequisites
 """""""""""""
 
 **1. Configuration**
 
-The LEOSatpy package comes with a configuration file, called `leosatpy_config.ini`.
+LEOSatpy comes with a configuration file, called `leosatpy_config.ini`, containing an extensive list of parameter
+that can be adjusted to modify the behaviour of LEOSatpy.
 
-..    This file allows to change a number of parameter used during the reduction, calibration and analysis.
-    Among these are the location and name of the result table holding all collected information and analysis results.
+.. important::
 
-By default the results are saved in the ``/home/user`` directory.
-To change the location and name open the configuration file and change the following lines:
+    Upon the first execution, a copy of the leosatpy configuration file is placed in the ``/home/user`` directory.
+    Please modify the file as required and re-run the program.
 
-::
+By default, information and results for each dataset are stored in a .csv file located in the ``/home/user`` directory.
+The location and name of this file can be changed by modifying the following lines in the `leosatpy_config.ini`:
+
+.. code-block::
 
     RESULT_TABLE_PATH = '~'
-    RESULT_TABLE_NAME = 'results_LEOSat.csv'
+    RESULT_TABLE_NAME = 'results_leosatpy.csv'
 
 **2. Folder structure**
 
 Although there is some degree of freedom in the nomenclature and structuring of the folder,
-it is recommended to follow the folder layout given below:
+it is highly recommended to adopt the following folder layout:
 
 .. code-block::
 
@@ -197,10 +218,10 @@ Possible formats are, e.g., 20221110, 2022-11-20, tel_20221011_satxy, 2022-11-26
     However, the difference in date should not exceed 7 days. For example, data observed on 2022-11-11 UTC
     might be located in a folder named 2022-11-10. <-- This is detected.
 
-It is also recommended to separate the raw calibration files from the science observation files
-and place them into separate folder.
+It is furthermore recommended to separate the raw calibration files, i.e., bias, darks, and flats,
+from the science observation files and place them into separate folder.
 
-Once all programs have been executed, the directory should look like this:
+Once all programs have been executed, the final folder structure should look like this:
 
 .. code-block::
 
@@ -211,12 +232,12 @@ Once all programs have been executed, the directory should look like this:
         │   ├── flats
         │   ├── darks
         │   ├── master_calibs
-        │   └── science_data
+        │   └── science_data (e.g., STARLINK)
         │       ├── auxiliary
         │       ├── calibrated
         │       ├── catalogs
         │       ├── figures
-        │       │   └── Sat-ID
+        │       │   └── Sat-ID (e.g., STARLINK-3568)
         │       ├── raw
         │       └── reduced
         ├── YYYY-MM-DD
@@ -224,16 +245,16 @@ Once all programs have been executed, the directory should look like this:
 
 .. attention::
 
-    To prevent unexpected behaviour during execution, please also check that:
+    To prevent unexpected behaviour during the program execution, please also check and make sure that:
 
     * the raw FITS-files contain data
     * FITS-header keywords (e.g., `IMAGETYP` of bias, flats, or science files) are correctly labeled
     * corresponding raw FITS calibration images are available (e.g., binning, exposure time, filter)
 
 
-We are now ready to run LEOSatpy.
+LEOSatpy is now ready for use.
 
-"""""""""
+
 Reduction
 """""""""
 
@@ -241,25 +262,21 @@ The reduction of all raw FITS-files in a folder can be performed via the followi
 
 .. code-block:: sh
 
-    $ (myenv) python reduceSatObs.py [path_to_data]
+    $ (leosatpy_env) reduceSatObs PATH/TO/DATA
 
-For example:
-
-.. code-block:: sh
-
-    $ (myenv) python reduceSatObs.py ../Telescope-Identifier/YYYY-MM-DD/
-
-To reduce data from multiple nights for example type:
+LEOSatpy also accepts relative paths and multiple inputs, for example:
 
 .. code-block:: sh
 
-    $ (myenv) python reduceSatObs.py [path_to_data_night_1] [path_to_data_night_2]
+    $ (leosatpy_env) reduceSatObs ../Telescope-Identifier/YYYY-MM-DD/
 
-It is also possible to reduce all epochs of a telescope at once with:
+    $ (leosatpy_env) reduceSatObs PATH/TO/DATA/NIGHT_1 PATH/TO/DATA/NIGHT_2
+
+To reduce all data from a telescope at once with:
 
 .. code-block:: sh
 
-    $ (myenv) python reduceSatObs.py [path_to_telescope_data]
+    $ (leosatpy_env) reduceSatObs PATH/TO/TELESCOPE/DATA
 
 .. note::
 
@@ -273,7 +290,7 @@ It is also possible to reduce all epochs of a telescope at once with:
         * Removal of instrumental signatures to create and save the reduced FITS-image(s)
         * Save results to result table.
 
-"""""""""""""""""""""""
+
 Astrometric calibration
 """""""""""""""""""""""
 
@@ -281,7 +298,7 @@ To apply the astrometric calibration type:
 
 .. code-block:: sh
 
-    $ (myenv) python calibrateSatObs.py [path_to_data]
+    $ (leosatpy_env) calibrateSatObs PATH/TO/DATA
 
 ..    During the astrometric calibration the following steps are performed:
 
@@ -289,9 +306,9 @@ To apply the astrometric calibration type:
         * 2D background estimation and source detection
         * Determination of the pixel scale and detector rotation angle by comparing the detected sources with precise positions from the GAIA eDR3 catalog
         * Update the FITS-files World Coordinate System (WCS) with found transformation.
-        * Save results to result table
+        * Save results to the result table
 
-""""""""""""""""""""""""""""""""""""""
+
 Satellite trail detection and analysis
 """"""""""""""""""""""""""""""""""""""
 
@@ -299,7 +316,7 @@ To run the satellite detection and analysis on all files in the input type:
 
 .. code-block:: sh
 
-    $ (myenv) python analyseSatObs.py [path_to_data]
+    $ (leosatpy_env) analyseSatObs PATH/TO/DATA
 
 ..  During the analysis the following steps are performed:
 
@@ -308,7 +325,7 @@ To run the satellite detection and analysis on all files in the input type:
     * Save results to result table
 
 
----------------
+
 Citing LEOSatpy
 ---------------
 
@@ -319,7 +336,6 @@ When publishing data processed and analysed with LEOSatpy, please cite:
     Adam, C. et al., 2023 (in preparation). "Estimating the impact to astronomy from the Oneweb satellite constellation using multicolour observations".
     Software pipeline available at https://github.com/CLEOsat-group/leosatpy.
 
-----------------
 Acknowledgements
 ----------------
 
@@ -327,13 +343,16 @@ Alongside the packages listed in the ``requirements.txt``, this project uses wor
 
 * `Astrometry <https://github.com/lukaswenzl/astrometry>`_ under the GPLv3 License, Lukas Wenzl (2022), `Zenodo <https://doi.org/10.5281/zenodo.6462441>`_
 * `AutoPhOT <https://github.com/Astro-Sean/autophot>`_ under the GPLv3 License, Brennan & Fraser (2022), `NASA ADS <https://ui.adsabs.harvard.edu/abs/2022A%26A...667A..62B/abstract>`_
+
 .. * `reduceccd <https://github.com/rgbIAA/reduceccd/tree/master>`_ under the BSD-3-Clause license
+
 .. * `wht_reduction_scripts <https://github.com/crawfordsm/wht_reduction_scripts>`_ under the BSD-3-Clause license
+
 
 The authors of these packages and code are gratefully acknowledged.
 
 Special thanks go out to the following people for their ideas and contributions to the development
-of the **LEOSat** Python package:
+of the LEOSat Python package:
 
 * `Jeremy Tregloan-Reed <jeremy.tregloan-reed@uda.cl>`_, Universidad de Atacama
 * `Eduardo Unda-Sanzana <eduardo.unda@uamail.cl>`_, Universidad de Antofagasta
@@ -344,11 +363,11 @@ of the **LEOSat** Python package:
 The project would not have been possible without the help of everyone who contributed.
 
 
-------------------------------
+
 Feedback, questions, comments?
 ------------------------------
 
-**LEOSatpy** is under active development and help with the development of new functionalities
+LEOSatpy is under active development and help with the development of new functionalities
 and fixing bugs is very much appreciated.
 In case you would like to contribute, feel free to fork the
 `GitHub repository <https://github.com/CLEOsat-group/leosatpy>`_ and to create a pull request.
@@ -360,9 +379,9 @@ detail as possible (error message, operating system, Python version, etc.).
 If you have further feedback, questions or comments you can also send an e-mail to
 `Jeremy Tregloan-Reed <jeremy.tregloan-reed@uda.cl>`_, or `Christian Adam <christian.adam84@gmail.com>`_.
 
-^^^^^^
+
 Author
-^^^^^^
+------
 
 `Christian Adam <christian.adam84@gmail.com>`_,
 Centro de Investigación, Tecnología, Educación y Vinculación Astronómica (CITEVA), Universidad de Antofagasta,
