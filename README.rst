@@ -36,6 +36,18 @@
     :alt: GitHub watchers
     :target: https://github.com/CLEOsat-group/leosatpy
 
+.. |pypi| image:: https://img.shields.io/pypi/v/leosatpy
+    :alt: PyPI
+    :target: https://pypi.org/project/leosatpy/
+
+.. |python| image:: https://img.shields.io/pypi/pyversions/leosatpy
+    :alt: PyPI - Python Version
+    :target: https://pypi.org/project/leosatpy/
+
+.. |last-commit| image:: https://img.shields.io/github/last-commit/CLEOsat-Group/leosatpy
+    :alt: GitHub last commit
+    :target: https://github.com/CLEOsat-group/leosatpy
+
 .. |license| image:: https://img.shields.io/github/license/CLEOsat-Group/leosatpy
     :alt: GitHub
     :target: https://github.com/CLEOsat-group/leosatpy/blob/master/LICENSE
@@ -48,7 +60,7 @@ LEOSatpy
 
 .. badges
 
-|license|
+|pypi| |python| |last-commit| |license|
 
 **LEOSatpy** (Low Earth Orbit satellite python) is an end-to-end pipeline to process and analyse
 satellite trail observations from various telescopes.
@@ -112,7 +124,7 @@ Installation
 ^^^^^^^^^^^^
 
 
-LEOSatpy is available on PyPI, and can be installed using pip:
+LEOSatpy is available on `PyPI <https://pypi.org/project/leosatpy/>`_, and can be installed using pip:
 
 .. code:: bash
 

@@ -10,7 +10,7 @@
 import os
 import sys
 from datetime import datetime
-from leosatpy.utils import __version__
+from leosatpy.utils.version import __version__
 
 sys.path.insert(0, os.path.abspath('../..'))
 
@@ -52,7 +52,7 @@ templates_path = ['_templates']
 exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store', '.venv']
 
 # The suffix(es) of source filenames.
-# You can specify multiple suffix as a list of string:
+# You can specify multiple suffix as a list of strings:
 #
 source_suffix = ['.rst', '.md']
 # source_suffix = '.rst'
@@ -80,7 +80,7 @@ pygments_style = "sphinx"
 html_theme = 'sphinx_rtd_theme'
 html_static_path = []
 
-# Custom sidebar templates, must be a dictionary that maps document names
+# Custom sidebar templates must be a dictionary that maps document names
 # to template names.
 #
 # The default sidebars (for documents that don't match any pattern) are
@@ -102,8 +102,8 @@ htmlhelp_basename = 'LEOSatpydoc'
 # Bibliographic Dublin Core info.
 epub_title = project
 
-# The unique identifier of the text. This can be a ISBN number
-# or the project homepage.
+# The unique identifier of the text.
+# This can be an ISBN or the project homepage.
 #
 # epub_identifier = ''
 
@@ -127,4 +127,3 @@ intersphinx_disabled_domains = ['std']
 
 # If true, `todo` and `todoList` produce output, else they produce nothing.
 todo_include_todos = True
-
