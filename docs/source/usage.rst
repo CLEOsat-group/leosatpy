@@ -2,13 +2,17 @@
 Usage instructions
 ==================
 
-- :ref:`Prerequisites`
+- :ref:`Running LEOSatpy`
 - :ref:`Reduction in a nutshell`
 - :ref:`WCS calibration in a nutshell`
 - :ref:`Satellite trail analysis in a nutshell`
 
-Prerequisites
--------------
+Running LEOSatpy
+----------------
+
+.. important::
+
+    LEOSatpy will not overwrite any original data.
 
 Although there is some degree of freedom in the nomenclature and structuring of the folder,
 it is recommended to follow the folder layout given below:
@@ -31,7 +35,7 @@ that the folder name should contain the date of observation either in the format
 
 The program will select the search path for the calibration data based on the obs date from the science data header
 and the names of folder in the given path.
-Possible formats are, e.g., 20221110, 2022-11-20, tel_20221011_satxy, 2022-11-26_satxy_obs1, etc.
+Possible formats are, e.g., ``20221110``, ``2022-11-20``, ``tel_20221011_satxy``, ``2022-11-26_satxy_obs1``, etc.
 
 .. note::
 
@@ -68,12 +72,21 @@ Once all programs have been executed, the directory should look like this:
 
     To prevent unexpected behaviour during execution, please also check that:
 
-        * the raw FITS-files contain data
-        * FITS-header keywords (e.g., `IMAGETYP` of bias, flats, or science files) are correctly labeled
-        * corresponding raw FITS calibration images are available (e.g., binning, exposure time, filter)
+    * the raw FITS-files contain data
+    * FITS-header keywords (e.g., `IMAGETYP` of bias, flats, or science files) are correctly labeled
+    * corresponding raw FITS calibration images are available (e.g., binning, exposure time, filter)
 
-We are now ready to run LEOSatpy.
+LEOSatpy is now ready for use.
 
+You can then adjust the parameters in the configuration file with a text
+editor (see :ref:`Configuration file`)
+
+.. link to example
+
+.. admonition:: Multiple Hints
+
+   -  typing :code:`reduceSatObs --help`
+   -
 
 Reduction in a nutshell
 -----------------------
@@ -107,12 +120,14 @@ It is also possible to reduce all epochs of a telescope at once with:
     The usage of partial and multiple inputs as shown above also works for the other programs in the package.
 
 
-..    During the reduction the following steps are performed:
+During the reduction the following steps are performed:
 
-        * Image registration and validation
-        * Master calibration file creation
-        * Removal of instrumental signatures to create and save the reduced FITS-image(s)
-        * Save results to result table.
+* Image registration and validation
+* Master calibration file creation
+* Removal of instrumental signatures to create and save the reduced FITS-image(s)
+* Save observation information to the result .csv table.
+* setting :ref:`result_table_path <General options>`
+
 
 
 WCS calibration in a nutshell
@@ -124,13 +139,13 @@ To apply the astrometric calibration type:
 
     $ (myenv) python calibrateSatObs.py [path_to_data]
 
-..    During the astrometric calibration the following steps are performed:
+During the astrometric calibration the following steps are performed:
 
-        * Registration and validation of the reduced FITS-files
-        * 2D background estimation and source detection
-        * Determination of the pixel scale and detector rotation angle by comparing the detected sources with precise positions from the GAIA eDR3 catalog
-        * Update the FITS-files World Coordinate System (WCS) with found transformation.
-        * Save results to result table
+* Registration and validation of the reduced FITS-files
+* 2D background estimation and source detection
+* Determination of the pixel scale and detector rotation angle by comparing the detected sources with precise positions from the GAIA eDR3 catalog
+* Update the FITS-files World Coordinate System (WCS) with found transformation.
+* Save results to result table
 
 
 Satellite trail analysis in a nutshell
@@ -142,8 +157,8 @@ To run the satellite detection and analysis on all files in the input type:
 
     $ (myenv) python analyseSatObs.py [path_to_data]
 
-..  During the analysis the following steps are performed:
+During the analysis the following steps are performed:
 
-    * Registration and validation of the calibrated FITS-files
-    * `Xu et al. (2015) <https://ui.adsabs.harvard.edu/abs/2015PatRe..48.4012X/abstract>`_
-    * Save results to result table
+* Registration and validation of the calibrated FITS-files
+* `Xu et al. (2015) <https://ui.adsabs.harvard.edu/abs/2015PatRe..48.4012X/abstract>`_
+* Save results to result table
