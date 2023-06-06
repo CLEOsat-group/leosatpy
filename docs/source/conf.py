@@ -43,7 +43,7 @@ extensions = [
     'sphinx.ext.githubpages',
     'sphinx.ext.autosectionlabel',
     # 'sphinx.ext.autosummary',
-    "numpydoc",
+    # "numpydoc",
     'sphinx.ext.intersphinx'
 ]
 
