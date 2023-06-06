@@ -10,9 +10,10 @@
 import os
 import sys
 from datetime import datetime
-from leosatpy.utils.version import __version__
 
 sys.path.insert(0, os.path.abspath('../..'))
+
+from leosatpy.utils.version import __version__
 
 now = datetime.now()
 today = f"{now.year}-{now.month:02}-{now.day:02} {now.hour:02}H{now.minute:02}"
