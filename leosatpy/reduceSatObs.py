@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import argparse
 import collections
-import configparser
 import gc
 import logging
 import os
@@ -90,14 +89,6 @@ _log_level = _log.level
 
 
 # -----------------------------------------------------------------------------
-
-# changelog
-# version 0.3.0 first method's
-# version 0.3.1 added an error message for missing calibration files
-# version 0.3.2 fixed a bug that caused the result file to be overwritten
-# version 0.4.0 added check for filter in flat file creation to avoid copying too much data
-# version 0.5.0 added check to take calibration files from the same date if possible
-# version 0.5.1 rename class
 
 
 class ReduceSatObs(object):
@@ -218,27 +209,6 @@ class ReduceSatObs(object):
         if not silent:
             self._log.info(f"Program execution time: {td}")
         self._log.info('====> Science image reduction finished <====')
-
-    def _load_config(self):
-        """ Load base configuration file """
-
-        # configuration file name
-        configfile = f"{self._root_dir}/leosatpy_config.ini"
-        config = configparser.ConfigParser()
-        config.optionxform = lambda option: option
-
-        self._log.info('> Read configuration')
-        config.read(configfile)
-
-        for group in ['Reduction']:
-            items = dict(config.items(group))
-            self._config.update(items)
-            for key, value in items.items():
-                try:
-                    val = eval(value)
-                except NameError:
-                    val = value
-                self._config[key] = val
 
     def _run_single_reduction(self, sci_src_path: str, fits_files_dict: dict):
         """Run reduction on a given dataset.
@@ -615,19 +585,22 @@ class ReduceSatObs(object):
             trimmed = True if trim_section is not None else False
             oscan_corrected = True if oscan_section is not None else False
             ccd = self._trim_image(img_ccd=ccd, obsparams=obsparams,
-                                   namps=namps, oscansec=oscan_section, trimsec=trim_section,
+                                   namps=namps, oscansec=oscan_section,
+                                   trimsec=trim_section,
                                    trimmed=trimmed, oscan_corrected=oscan_corrected)
+
             # create an uncertainty map
             if error:
                 ccd = ccdproc.create_deviation(ccd, gain=gain,
-                                               readnoise=readnoise)
+                                               readnoise=readnoise,
+                                               disregard_nan=True)
             # gain correct
             if gain is not None and self._config['CORRECT_GAIN']:
                 ccd = ccdproc.gain_correct(ccd, gain)
 
             # cosmic ray correction
             if cosmic and gain is not None and self._config['CORRECT_GAIN']:
-                ccd = self._clean_cosmic_ray(ccd, image_filter,
+                ccd = self._clean_cosmic_ray(ccd, ccd_mask_fname,
                                              mbox=mbox, rbox=rbox, gbox=gbox, sigclip=sigclip,
                                              cleantype=cleantype, cosmic_method=cosmic_method)
 
@@ -727,7 +700,7 @@ class ReduceSatObs(object):
         del files_list
         gc.collect()
 
-    def _clean_cosmic_ray(self, ccd, image_filter,
+    def _clean_cosmic_ray(self, ccd, ccd_mask_fname,
                           mbox=15, rbox=15, gbox=11, sigclip=5,
                           cleantype="medmask",
                           cosmic_method='lacosmic'):
@@ -736,7 +709,7 @@ class ReduceSatObs(object):
         Parameters
         ----------
         ccd: 
-        image_filter: 
+        ccd_mask_fname:
         mbox: 
         rbox: 
         gbox: 
@@ -749,21 +722,23 @@ class ReduceSatObs(object):
         ccd: astropy.nddata.CCDData
             An object of the same type as the ccd is returned.
         """
+
         ctype = cosmic_method.lower().strip()
         ctypes = ['lacosmic', 'median']
         if ctype not in ctypes:
             self._log.warning('> Cosmic ray type "%s" NOT available [%s]' % (ctype, ' | '.join(ctypes)))
             return
 
-        ccd_mask_fname = os.path.join(self._master_calib_path, 'mask_from_ccdmask_%s_%s.fits' % (image_filter,
-                                                                                                 self._bin_str))
         ccd_mask_fname = ccd_mask_fname if os.path.exists(ccd_mask_fname) else None
+
         if ccd_mask_fname is not None and isinstance(ccd_mask_fname, str):
             ccd_mask = self._convert_fits_to_ccd(ccd_mask_fname, single=True)
             ccd.mask = ccd_mask.data
 
         if ctype == 'lacosmic':
-            ccd = ccdproc.cosmicray_lacosmic(ccd, sigclip=sigclip, cleantype=cleantype)
+            ccd = ccdproc.cosmicray_lacosmic(ccd,
+                                             sigclip=sigclip,
+                                             cleantype=cleantype, gain_apply=False)
         elif ctype == 'median':
             ccd = ccdproc.cosmicray_median(ccd, mbox=mbox, rbox=rbox, gbox=gbox)
         if isinstance(ccd, CCDData):

@@ -33,7 +33,6 @@ import time
 from datetime import (
     timedelta, datetime, timezone)
 import collections
-import configparser
 from pathlib import Path
 import argparse
 
@@ -108,7 +107,7 @@ __taskname__ = 'calibrateSatObs'
 # -----------------------------------------------------------------------------
 
 """ Parameter used in the script """
-# -----------------------------------------------------------------------------
+
 # Logging and console output
 logging.root.handlers = []
 _log = logging.getLogger()
@@ -120,8 +119,6 @@ _log_level = _log.level
 
 
 # -----------------------------------------------------------------------------
-# changelog
-# version 0.1.0 alpha version
 
 
 class CalibrateObsWCS(object):
@@ -293,27 +290,6 @@ class CalibrateObsWCS(object):
 
         return time_stamp
 
-    def _load_config(self):
-        """ Load base configuration file """
-
-        # configuration file name
-        configfile = f"{self._root_dir}/leosatpy_config.ini"
-        config = configparser.ConfigParser()
-        config.optionxform = lambda option: option
-
-        self._log.info('> Read configuration')
-        config.read(configfile)
-
-        for group in ['Calibration', 'Detection']:
-            items = dict(config.items(group))
-            self._config.update(items)
-            for key, value in items.items():
-                try:
-                    val = eval(value)
-                except NameError:
-                    val = value
-                self._config[key] = val
-
     def _run_single_calibration(self, file_src_path, file_df, catalog="GAIADR3", hdu_idx=0):
         """Run astrometric calibration on a given dataset.
 
@@ -445,7 +421,7 @@ class CalibrateObsWCS(object):
         max_wcs_iter = self._config['MAX_WCS_FUNC_ITER']
 
         match_radius = self._config['MATCH_RADIUS']
-        match_radius = kernel_fwhm[0] if match_radius == -1 else match_radius
+        match_radius = kernel_fwhm[0] if match_radius == 'fwhm' else match_radius
 
         best_wcsprm, converged = self.get_wcs(src_tbl, ref_tbl,
                                               init_wcsprm,
@@ -1399,7 +1375,7 @@ class CalibrateObsWCS(object):
         if cmap is None:
             cmap = 'Greys_r'
 
-        figsize = (10, 6)
+        figsize = self._config['FIG_SIZE']
         fig = plt.figure(figsize=figsize)
         fig.canvas.manager.set_window_title(f'Input for {file_name}')
 

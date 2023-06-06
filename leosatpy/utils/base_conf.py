@@ -90,12 +90,6 @@ FRMT = "%Y-%m-%dT%H:%M:%S.%f"
 
 ROUND_DECIMAL = 5
 
-# # keywords relevant for reduction
-# CORRECT_GAIN = False
-# EST_UNCERTAINTY = False
-# COMBINE_METHOD = 'average'  # Bias, dark and flat combine method; can be median as well
-# COMBINE_METHOD_FLAT = 'median'  # Bias, dark and flat combine method; can be median as well
-
 IMAGETYP_LIGHT = 'science'
 IMAGETYP_BIAS = 'bias'
 IMAGETYP_DARK = 'dark'
@@ -196,7 +190,6 @@ ALLCATALOGS = ['GAIADR1', 'GAIADR2', 'GAIADR3', 'GAIAEDR3',
                '2MASS', 'PS1DR1', 'PS1DR2',
                'GSC241', 'GSC242', 'GSC243']
 
-DEF_PHOTOMETRY_CATALOG = 'GSC242'
 
 DEF_ASTROQUERY_CATALOGS = {
     'GAIADR3': 'gaiadr3.gaia_source',

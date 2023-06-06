@@ -58,10 +58,6 @@ __email__ = "christian.adam84@gmail.com"
 __status__ = "Production"
 
 # -----------------------------------------------------------------------------
-# changelog
-# version 0.1.0 added first method's
-# version 0.1.1 cleanup and documentation update
-# version 0.1.2 spelling check and some minor fixes
 
 # Logging
 _log = logging.getLogger(__name__)
@@ -152,16 +148,16 @@ class DataSet(object):
         config.read(configfile)
 
         conf_groups = ['Reduction', 'Calibration',
-                       'Detection', 'Satellite_analysis']
+                       'Detection', 'Satellite_analysis', 'Plotting']
 
         if self._mode == 'reduceSatObs':
             conf_groups = ['Reduction']
         if self._mode == 'calibWCS':
             conf_groups = ['Calibration',
-                           'Detection']
+                           'Detection', 'Plotting']
         if self._mode == 'satPhotometry':
             conf_groups = ['Detection',
-                           'Satellite_analysis']
+                           'Satellite_analysis', 'Plotting']
 
         for group in conf_groups:
             items = dict(config.items(group))
