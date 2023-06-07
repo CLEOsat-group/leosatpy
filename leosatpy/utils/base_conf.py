@@ -17,6 +17,7 @@
 import os
 import logging
 import warnings
+from dateutil.parser import parse
 import numpy as np
 from colorlog import ColoredFormatter
 from astropy import wcs
@@ -86,15 +87,22 @@ DEF_TIMEOUT = 3  # in seconds
 
 # time delta in days for folder search in reduction of calibration files
 TIMEDELTA_DAYS = 7  # +-days
-FRMT = "%Y-%m-%dT%H:%M:%S.%f"
+FRMT_FS = "%Y-%m-%dT%H:%M:%S.%f"
+FRMT = "%Y-%m-%dT%H:%M:%S"
+
+
+def has_fractional_seconds(time_string):
+    # Parse the time string into a datetime object
+    dt = parse(time_string)
+
+    # Check if the datetime object has fractional seconds
+    if dt.microsecond > 0:
+        return FRMT_FS
+    else:
+        return FRMT
+
 
 ROUND_DECIMAL = 5
-
-# # keywords relevant for reduction
-# CORRECT_GAIN = False
-# EST_UNCERTAINTY = False
-# COMBINE_METHOD = 'average'  # Bias, dark and flat combine method; can be median as well
-# COMBINE_METHOD_FLAT = 'median'  # Bias, dark and flat combine method; can be median as well
 
 IMAGETYP_LIGHT = 'science'
 IMAGETYP_BIAS = 'bias'
@@ -196,7 +204,6 @@ ALLCATALOGS = ['GAIADR1', 'GAIADR2', 'GAIADR3', 'GAIAEDR3',
                '2MASS', 'PS1DR1', 'PS1DR2',
                'GSC241', 'GSC242', 'GSC243']
 
-DEF_PHOTOMETRY_CATALOG = 'GSC242'
 
 DEF_ASTROQUERY_CATALOGS = {
     'GAIADR3': 'gaiadr3.gaia_source',

@@ -33,7 +33,6 @@ import logging
 import sys
 import warnings
 import time
-import configparser
 import collections
 from datetime import (timedelta, datetime, timezone)
 from pathlib import Path
@@ -133,15 +132,11 @@ _log.addHandler(stream)
 _log_level = _log.level
 
 
-# figure size
-figsize = (10, 6)
-
 pass_str = _base_conf.BCOLORS.PASS + "SUCCESSFUL" + _base_conf.BCOLORS.ENDC
 fail_str = _base_conf.BCOLORS.FAIL + "FAILED" + _base_conf.BCOLORS.ENDC
 
 frmt = "%Y-%m-%dT%H:%M:%S.%f"
 
-# todo: rethink the config structure!!!
 # -----------------------------------------------------------------------------
 
 
@@ -199,6 +194,7 @@ class AnalyseSatObs(object):
         self._force_extract = args.force_detection
         self._force_download = args.force_download
         self._plot_images = plot_images
+        self._figsize = (10, 6)
         self._work_dir = None
         self._plt_path = None
         self._aux_path = None
@@ -239,6 +235,7 @@ class AnalyseSatObs(object):
         # load configuration
         ds.load_config()
         self._config = ds.config
+        self._figsize = self._config['FIG_SIZE']
 
         self._obsTable = ObsTables(config=self._config)
         self._obsTable.load_obs_table()
@@ -335,27 +332,6 @@ class AnalyseSatObs(object):
             self._log.info(f"Program execution time in hh:mm:ss: {td}")
         self._log.info('====>  Satellite analysis finished <====')
         sys.exit(0)
-
-    def _load_config(self):
-        """ Load base configuration file """
-
-        # configuration file name
-        configfile = f"{self._root_dir}/leosatpy_config.ini"
-        config = configparser.ConfigParser()
-        config.optionxform = lambda option: option
-
-        self._log.info('> Read configuration')
-        config.read(configfile)
-
-        for group in ['Satellite_analysis', 'Detection']:
-            items = dict(config.items(group))
-            self._config.update(items)
-            for key, value in items.items():
-                try:
-                    val = eval(value)
-                except NameError:
-                    val = value
-                self._config[key] = val
 
     def _analyse_sat_trails(self, files: list, sat_name: str):
         """ Run satellite trail detection and photometry.
@@ -1054,7 +1030,7 @@ class AnalyseSatObs(object):
         aper_correction = np.nanmedian(corrections_cleaned, axis=None)
         aper_correction_err = np.nanstd(corrections_cleaned, axis=None)
 
-        fig = plt.figure(figsize=(10, 6))
+        fig = plt.figure(figsize=self._figsize)
         gs = gridspec.GridSpec(1, 1)
         ax = fig.add_subplot(gs[0, 0])
 
@@ -1614,7 +1590,7 @@ class AnalyseSatObs(object):
         if cmap is None:
             cmap = 'Greys'
 
-        fig = plt.figure(figsize=figsize)
+        fig = plt.figure(figsize=self._figsize)
         gs = gridspec.GridSpec(2, 2)
         ax1 = fig.add_subplot(gs[0, 0])
         ax2 = fig.add_subplot(gs[0, 1])
@@ -1699,7 +1675,7 @@ class AnalyseSatObs(object):
         x = fit_results['lin_x']
         y = fit_results['lin_y']
 
-        fig = plt.figure(figsize=figsize)
+        fig = plt.figure(figsize=self._figsize)
 
         gs = gridspec.GridSpec(1, 1)
         ax = fig.add_subplot(gs[0, 0])
@@ -1780,7 +1756,7 @@ class AnalyseSatObs(object):
         x = fit_results['quad_x']
         y = fit_results['quad_y']
 
-        fig = plt.figure(figsize=figsize)
+        fig = plt.figure(figsize=self._figsize)
         gs = gridspec.GridSpec(1, 1)
         ax = fig.add_subplot(gs[0, 0])
         ax.plot(np.rad2deg(x), y, 'bo')
@@ -1860,7 +1836,7 @@ class AnalyseSatObs(object):
         if cmap is None:
             cmap = 'Greys'
 
-        fig = plt.figure(figsize=figsize)
+        fig = plt.figure(figsize=self._figsize)
         gs = gridspec.GridSpec(1, 1)
         ax = fig.add_subplot(gs[0, 0])
 
@@ -1913,7 +1889,7 @@ class AnalyseSatObs(object):
         """Plot the Signal-to-Noise ratio results from curve-of-growth estimation"""
 
         flux_med = np.nanmedian(fluxes[:, :, 2], axis=1) / np.nanmax(np.nanmedian(fluxes[:, :, 2], axis=1))
-        fig = plt.figure(figsize=figsize)
+        fig = plt.figure(figsize=self._figsize)
 
         gs = gridspec.GridSpec(1, 2)
         ax1 = fig.add_subplot(gs[0, 0])
@@ -2007,14 +1983,14 @@ class AnalyseSatObs(object):
         snr_med = np.nanmedian(snr_arr, axis=1) / np.nanmax(np.nanmedian(snr_arr, axis=1))
         snr_max = np.array([np.nanmax(snr_arr[:, r]) for r in range(fluxes.shape[1])])
 
-        fig = plt.figure(figsize=(10, 6), constrained_layout=True, layout='compressed')
+        fig = plt.figure(figsize=self._figsize, constrained_layout=True, layout='compressed')
         # plt.set_loglevel('WARNING')
         widths = [50, 1]
         gs = gridspec.GridSpec(2, 2, figure=fig, width_ratios=widths)
 
         # set up the normalization and the colormap
         normalize = mcolors.Normalize(vmin=np.min(snr_max), vmax=np.max(snr_max))
-        colormap = cm.jet
+        colormap = mpl.colormaps['jet']
 
         ax1 = fig.add_subplot(gs[0, 0])
         ax2 = fig.add_subplot(gs[1, 0], sharex=ax1)
@@ -2185,7 +2161,7 @@ class AnalyseSatObs(object):
         if cmap is None:
             cmap = 'cividis'
 
-        fig = plt.figure(figsize=figsize)
+        fig = plt.figure(figsize=self._figsize)
 
         gs = gridspec.GridSpec(1, 1)
         ax = fig.add_subplot(gs[0, 0])

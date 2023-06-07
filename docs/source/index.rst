@@ -8,6 +8,10 @@
 
 .. |ckoir| replace:: Ckoirama Observatory
 
+.. _ckoir_2: https://www.astro.uantof.cl/research/observatorios/ckoirama-observatory/
+
+.. |ckoir_2| replace:: *Ckoirama Observatory*
+
 .. _ctio: http://www.astro.yale.edu/smarts/0.9m.html
 
 .. |ctio| replace:: Small and Moderate Aperture Research Telescope System
@@ -15,6 +19,10 @@
 .. _dk154: https://www.eso.org/public/teles-instr/lasilla/danish154/
 
 .. |dk154| replace:: 1.54-metre Danish telescope
+
+.. _dk154_2: https://www.eso.org/public/teles-instr/lasilla/danish154/
+
+.. |dk154_2| replace:: *1.54-metre Danish telescope*
 
 .. _spm: https://www.astrossp.unam.mx/es/
 
@@ -45,7 +53,11 @@ satellite trail observations from different telescopes.
 .. figure:: ./figs/home_leosat_two_examples.png
    :width: 750px
 
-   *Two example of satellite observations reduced and analysed with LEOSatpy: Comparison stars are indicated with red circles.*
+   *Two example of satellite observations reduced and analysed with LEOSatpy:
+   V band observation of OneWeb-0108 taken with the* |dk154_2|_ *at the La Silla Observatory, Chile,
+   and Sloan-r' band observation of Starlink-5464 from the* |ckoir_2|_ *of the University of Antofagasta, Chile.
+   Used comparison stars are marked with red circles.
+   The position and path predicted by the TLE orbital elements are shown in blue.*
 
 Contents
 --------
@@ -57,6 +69,7 @@ Contents
    installation
    configfile
    usage
+   example
    contributing
    citing
    todo
@@ -65,19 +78,15 @@ Contents
 
 ----
 
-
-Package Content
----------------
-
-The important files for the process in this directory:
+The pipeline is written in Python 3 and provides the following functionalities:
 
 ===========================  ==========================================================================
-Program                      Function
+Module                       Function
 ===========================  ==========================================================================
-``reduceSatObs.py``          Perform reduction of satellite observations.
-``calibrateSatObs.py``       Perform astrometric calibration using GAIA DR3 positions.
-``analyseSatObs.py``         Detect satellite trail(s) and perform aperture photometry using
-                             comparison stars from the GSC 2.4.3 catalog.
+``reduceSatObs``             Full reduction of raw-FITS images including bias, dark, and flat reduction.
+``calibrateSatObs``          WCS calibration, i.e. plate solving, using `GAIA DR3 <https://ui.adsabs.harvard.edu/abs/2020yCat.1350....0G/abstract>`_ positions via the `Astroquery <https://astroquery.readthedocs.io/en/latest/#>`_ tool.
+``analyseSatObs``            Satellite trail(s) detection and aperture photometry using
+                             comparison stars from the `GSC v2.4.3 <https://ui.adsabs.harvard.edu/#abs/2008AJ....136..735L>`_ catalog.
 ===========================  ==========================================================================
 
 Supported Telescopes
@@ -85,15 +94,16 @@ Supported Telescopes
 
 .. figure:: ./figs/home_cleosat_network.png
    :width: 750px
+   :align: center
 
-   *Telescopes participating in the CLEOSat observation network.*
+   *Telescopes currently participating in the CLEOSat observation network.*
 
 
-Observations from the following telescopes are currently supported:
+LEOSatpy currently supports the following telescopes:
+
 
 * 0.6-metre Chakana telescope at the |ckoir|_ of the Universidad de Antofagasta, Antofagasta, Chile.
-* 0.9-metre |ctio|_ (SMARTS)
-  at Cerro Tololo Inter-american Observatory (CTIO), Chile.
+* 0.9-metre |ctio|_ (SMARTS) at Cerro Tololo Inter-american Observatory (CTIO), Chile.
 * |dk154|_ at the La Silla Observatory, Chile.
 * 0.28-metre DDOTI (Deca-Degree Optical Transient Imager) telescopes at the |spm|_ (OAN) in Sierra San Pedro Martír (SPM), Baja California, México.
 * 0.5-metre |ouka|_ at the Oukaïmeden Observatory, Morocco.
@@ -105,16 +115,6 @@ Observations from the following telescopes are currently supported:
 
     If you want your telescope added to the list, please contact
     `Jeremy Tregloan-Reed <jeremy.tregloan-reed@uda.cl>`_.
-
-Catalog WebServices
--------------------
-
-The positions of reference stars for astrometric calibration where obtained from the GAIA DR3 catalog via
-`astroquery <https://astroquery.readthedocs.io/en/latest/#>`_
-
-The positions and magnitudes of the comparison stars are collected using the
-`WebServices for Catalog Access <https://outerspace.stsci.edu/display/GC/WebServices+for+Catalog+Access>`_
-to the Guide Star Catalog(s) v2.4.3.
 
 
 ----------------

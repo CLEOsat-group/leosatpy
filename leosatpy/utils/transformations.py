@@ -32,8 +32,6 @@ import numpy as np
 from astropy.wcs import WCS, utils
 from fast_histogram import histogram2d
 
-# pipeline-specific modules
-from . import base_conf as _base_conf
 
 # -----------------------------------------------------------------------------
 
@@ -57,8 +55,6 @@ MODULE_PATH = os.path.dirname(inspect.getfile(inspect.currentframe()))
 
 
 # -----------------------------------------------------------------------------
-# changelog
-# version 0.1.0 alpha version
 
 
 def get_scale_and_rotation(observation, catalog, wcsprm, scale_guessed,
@@ -165,7 +161,7 @@ def get_scale_and_rotation(observation, catalog, wcsprm, scale_guessed,
     return wcsprm_new, (scaling, rotation, signal, confidence)
 
 
-def get_offset_with_orientation(observation, catalog, wcsprm, fast=False,
+def get_offset_with_orientation(observation, catalog, wcsprm,
                                 report_global=""):
     """Use offset from cross-correlation but with trying 0,90,180,270 rotation.
 
@@ -177,8 +173,6 @@ def get_offset_with_orientation(observation, catalog, wcsprm, fast=False,
         pandas dataframe with nearby sources from online catalogs with accurate astrometric information
     wcsprm: astropy.wcs.wcsprm
         World coordinate system object describing translation between image and skycoord
-    fast: bool, optional
-        If true, will run with a subset of the sources to increase speed.
     report_global: str, optional
 
     Returns
@@ -191,16 +185,8 @@ def get_offset_with_orientation(observation, catalog, wcsprm, fast=False,
 
     observation = copy(observation)
     N_SOURCES = observation.shape[0]
-    if fast:
-        if N_SOURCES > _base_conf.USE_N_SOURCES:
-            N_SOURCES = _base_conf.USE_N_SOURCES
-        observation = observation.nlargest(N_SOURCES, 'flux')
-        N_CATALOG = N_SOURCES * 4
-        catalog = catalog.nsmallest(N_CATALOG, 'mag')
 
     log.debug("> offset_with_orientation, searching for offset while considering 0,90,180,270 rotations")
-    if fast:
-        log.debug("> running in fast mode")
 
     # Already checking for reflections with the scaling and general rotations,
     # but in case rot_scale is of it is nice to have
@@ -787,7 +773,7 @@ def shift_translation(src_image, target_image):
     ----------
      src_image: ndarray of the reference image.
      target_image: ndarray of the image to register.
-     Must be the same dimensionality as src_image.
+        Must be the same dimensionality as src_image.
 
     Returns
     -------

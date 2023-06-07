@@ -44,6 +44,10 @@
     :alt: PyPI - Python Version
     :target: https://pypi.org/project/leosatpy/
 
+.. |release| image:: https://img.shields.io/github/v/release/CLEOsat-Group/leosatpy?include_prereleases
+    :alt: GitHub release (latest SemVer including pre-releases)
+    :target: https://github.com/CLEOsat-group/leosatpy
+
 .. |last-commit| image:: https://img.shields.io/github/last-commit/CLEOsat-Group/leosatpy
     :alt: GitHub last commit
     :target: https://github.com/CLEOsat-group/leosatpy
@@ -52,6 +56,9 @@
     :alt: GitHub
     :target: https://github.com/CLEOsat-group/leosatpy/blob/master/LICENSE
 
+.. |rtd| image:: https://readthedocs.org/projects/leosatpy/badge/?version=latest
+    :target: https://leosatpy.readthedocs.io/en/latest/?badge=latest
+    :alt: Documentation Status
 ..
     |stars| |watch|
 
@@ -60,7 +67,7 @@ LEOSatpy
 
 .. badges
 
-|pypi| |python| |last-commit| |license|
+|pypi| |python| |release| |last-commit| |license| |rtd|
 
 **LEOSatpy** (Low Earth Orbit satellite python) is an end-to-end pipeline to process and analyse
 satellite trail observations from various telescopes.
@@ -76,7 +83,7 @@ Module                       Function
                              comparison stars from the `GSC v2.4.3 <https://ui.adsabs.harvard.edu/#abs/2008AJ....136..735L>`_ catalog.
 ===========================  ==========================================================================
 
-The full documentation for LEOSatpy can be found `here <https://docs.readthedocs.io/en/stable/tutorial/>`_.
+The full documentation for LEOSatpy can be found `here <http://leosatpy.readthedocs.io/>`_.
 
 LEOSatpy is distributed under the GNU General Public License v3. See the
 `LICENSE <https://github.com/CLEOsat-group/leosatpy/blob/master/LICENSE>`_ file for the precise terms and conditions.
@@ -251,7 +258,8 @@ Once all programs have been executed, the final folder structure should look lik
         │       ├── figures
         │       │   └── Sat-ID (e.g., STARLINK-3568)
         │       ├── raw
-        │       └── reduced
+        │       ├── reduced
+        │       └── tle_predictions
         ├── YYYY-MM-DD
         └── YYYY-MM-DD
 
@@ -345,7 +353,7 @@ When publishing data processed and analysed with LEOSatpy, please cite:
 
 ::
 
-    Adam, C. et al., 2023 (in preparation). "Estimating the impact to astronomy from the Oneweb satellite constellation using multicolour observations".
+    Adam et al. (2023) (in preparation). "Estimating the impact to astronomy from the Oneweb satellite constellation using multicolour observations".
     Software pipeline available at https://github.com/CLEOsat-group/leosatpy.
 
 Acknowledgements
