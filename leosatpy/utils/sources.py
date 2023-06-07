@@ -252,7 +252,7 @@ def auto_build_source_catalog(data,
             else:
                 failsafe += 1
 
-            # check if threshold value is still good
+            # check if the threshold value is still good
             threshold_value_check = threshold_value + n - m
 
             # if <=0 reverse previous drop and fine_fudge factor
@@ -271,7 +271,7 @@ def auto_build_source_catalog(data,
             else:
                 threshold_value = round(threshold_value + n - m, 3)
 
-            # if threshold goes negative use smaller fudge factor
+            # if the threshold goes negative, use a smaller fudge factor
             if decrease_increment:
                 fudge_factor = fine_fudge_factor
 
@@ -1363,10 +1363,16 @@ def get_photometric_catalog(fname, loc, imgarr, hdr, wcsprm,
         photo_ref_cat_fname = config["_photo_ref_cat_fname"]
 
     # get the observation date
-    t = pd.to_datetime(hdr['date-obs'], format=_base_conf.FRMT, utc=False)
-    if 'time-obs' in hdr:
-        t = pd.to_datetime(f"{hdr['date-obs']}T{hdr['time-obs']}",
-                           format=_base_conf.FRMT, utc=False)
+    if 'time-obs'.upper() in hdr:
+        time_string = f"{hdr['date-obs'.upper()]}T{hdr['time-obs'.upper()]}"
+    else:
+        time_string = hdr['date-obs'.upper()]
+
+    frmt = _base_conf.has_fractional_seconds(time_string)
+
+    t = pd.to_datetime(time_string,
+                       format=frmt, utc=False)
+
     epoch = Time(t)
 
     # set RA and DEC
@@ -1380,7 +1386,7 @@ def get_photometric_catalog(fname, loc, imgarr, hdr, wcsprm,
                                 naxis2=hdr['NAXIS2'],
                                 ra=ra, dec=dec)
 
-    # check for source catalog file. If present and not force extraction use these catalogs
+    # check for source catalog file. If present and not force extraction, use these catalogs
     chk_ref_cat_photo = os.path.isfile(photo_ref_cat_fname + '.cat')
 
     read_ref_cat_photo = True
@@ -1488,10 +1494,16 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
         photo_ref_cat_fname = config["_photo_ref_cat_fname"]
 
     # get the observation date
-    t = pd.to_datetime(hdr['date-obs'], format=_base_conf.FRMT, utc=False)
-    if 'time-obs' in hdr:
-        t = pd.to_datetime(f"{hdr['date-obs']}T{hdr['time-obs']}",
-                           format=_base_conf.FRMT, utc=False)
+    if 'time-obs'.upper() in hdr:
+        time_string = f"{hdr['date-obs'.upper()]}T{hdr['time-obs'.upper()]}"
+    else:
+        time_string = hdr['date-obs'.upper()]
+
+    frmt = _base_conf.has_fractional_seconds(time_string)
+
+    t = pd.to_datetime(time_string,
+                       format=frmt, utc=False)
+
     epoch = Time(t)
 
     # set RA and DEC
@@ -1689,7 +1701,7 @@ def my_background(img, box_size, mask=None, interp=None, filter_size=(1, 1),
 
 def rename_colname(table: Table, colname: str, newcol: str):
     """Convert column name in table to user-specified name"""
-    # If table is missing a column, add a column with values of None
+    # If the table is missing a column, add a column with values of None
     if colname != '':
         table.rename_column(colname, newcol)
     else:
@@ -1891,7 +1903,7 @@ def select_std_stars(ref_cat: pd.DataFrame,
             gc.collect()
             return None, filter_keys, has_mag_conv, False
 
-        # convert band from catalog to observation
+        # convert the band from catalog to observation
         alt_mags, alt_mags_err = phot.convert_ssds_to_bvri(f=filter_keys[0],
                                                            x1=x1, x2=x2, x3=x3)
 

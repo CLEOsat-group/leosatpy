@@ -1592,12 +1592,19 @@ class ReduceSatObs(object):
             hdul = fits.open(file_path, mode='readonly', ignore_missing_end=True)
             hdul.verify('fix')
             prim_hdr = hdul[0].header
+
             self._log.debug("  Check Obs-Date")
             if 'time-obs'.upper() in prim_hdr:
-                t = pd.to_datetime(f"{prim_hdr['date-obs'.upper()]}T{prim_hdr['time-obs'.upper()]}",
-                                   format=frmt, utc=False)
+                time_string = f"{prim_hdr['date-obs'.upper()]}T{prim_hdr['time-obs'.upper()]}"
+
             else:
-                t = pd.to_datetime(prim_hdr['date-obs'.upper()], format=frmt, utc=False)
+                time_string = prim_hdr['date-obs'.upper()]
+
+            frmt = _base_conf.has_fractional_seconds(time_string)
+
+            t = pd.to_datetime(time_string,
+                               format=frmt, utc=False)
+
             t_short = t.strftime('%Y-%m-%d')
             if t_short == obs_date.strftime('%Y-%m-%d'):
                 same_date.append(file_path)

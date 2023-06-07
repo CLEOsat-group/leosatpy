@@ -17,6 +17,7 @@
 import os
 import logging
 import warnings
+from dateutil.parser import parse
 import numpy as np
 from colorlog import ColoredFormatter
 from astropy import wcs
@@ -86,7 +87,20 @@ DEF_TIMEOUT = 3  # in seconds
 
 # time delta in days for folder search in reduction of calibration files
 TIMEDELTA_DAYS = 7  # +-days
-FRMT = "%Y-%m-%dT%H:%M:%S.%f"
+FRMT_FS = "%Y-%m-%dT%H:%M:%S.%f"
+FRMT = "%Y-%m-%dT%H:%M:%S"
+
+
+def has_fractional_seconds(time_string):
+    # Parse the time string into a datetime object
+    dt = parse(time_string)
+
+    # Check if the datetime object has fractional seconds
+    if dt.microsecond > 0:
+        return FRMT_FS
+    else:
+        return FRMT
+
 
 ROUND_DECIMAL = 5
 
