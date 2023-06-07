@@ -59,6 +59,11 @@
 .. |rtd| image:: https://readthedocs.org/projects/leosatpy/badge/?version=latest
     :target: https://leosatpy.readthedocs.io/en/latest/?badge=latest
     :alt: Documentation Status
+
+.. |zenodo| image:: https://zenodo.org/badge/526672685.svg
+    :target: https://zenodo.org/badge/latestdoi/526672685
+    :alt: Zenodo
+
 ..
     |stars| |watch|
 
@@ -67,7 +72,7 @@ LEOSatpy
 
 .. badges
 
-|pypi| |python| |release| |last-commit| |license| |rtd|
+|pypi| |python| |release| |last-commit| |license| |rtd| |zenodo|
 
 **LEOSatpy** (Low Earth Orbit satellite python) is an end-to-end pipeline to process and analyse
 satellite trail observations from various telescopes.
