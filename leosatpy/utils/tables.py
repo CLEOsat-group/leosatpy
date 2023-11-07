@@ -454,6 +454,9 @@ class ObsTables(object):
         fname = self._fname_res_table
         n_ext = obsparams['n_ext']
 
+        # exposure time
+        expt = kwargs['EXPTIME']
+
         # update the columns in case the table was changed
         for col in self._def_cols:
             if col not in obs_info:
@@ -464,10 +467,7 @@ class ObsTables(object):
         obs_info = obs_info[self._def_cols]
 
         # replace all None values with NAN
-        obs_info.replace(to_replace=[None], value=np.nan, inplace=True)
-
-        # exposure time
-        expt = kwargs['EXPTIME']
+        obs_info = obs_info.replace(to_replace=[None], value=np.nan, inplace=False)
 
         # make a copy
         obs_info_tmp = obs_info.copy()
