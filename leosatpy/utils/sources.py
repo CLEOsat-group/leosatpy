@@ -226,16 +226,16 @@ def auto_build_source_catalog(data,
 
     model_func = Model(resid_func, independent_vars=('x', 'y'))
 
-    model_func.set_param_hint('xc', value=source_box_size / 2.,
+    model_func.set_param_hint(name='xc', value=source_box_size / 2.,
                               min=0, max=source_box_size)
-    model_func.set_param_hint('yc', value=source_box_size / 2.,
+    model_func.set_param_hint(name='yc', value=source_box_size / 2.,
                               min=0, max=source_box_size)
 
-    model_func.set_param_hint('alpha', value=3.,
+    model_func.set_param_hint(name='alpha', value=3.,
                               min=0., max=30.)
-    model_func.set_param_hint('beta', value=default_moff_beta,
+    model_func.set_param_hint(name='beta', value=default_moff_beta,
                               vary=False)
-    model_func.set_param_hint('fwhm',
+    model_func.set_param_hint(name='fwhm',
                               min=min_good_fwhm, max=max_good_fwhm,
                               expr='2 * alpha * sqrt(2**(1 / beta) - 1)')
 
@@ -342,6 +342,7 @@ def auto_build_source_catalog(data,
                     stars_tbl['y'] = src_tmp['ycentroid'].loc[[idx]]
                     stars = extract_stars(nddata, stars_tbl, size=source_box_size)
                     stars = stars.data
+                    stars[stars < 0] = 0.
 
                     snr_stars = np.nansum(stars) / np.sqrt(np.nanstd(stars) * source_box_size ** 2
                                                            + ((1. / 2.) ** 2) * source_box_size ** 2)
@@ -351,7 +352,8 @@ def auto_build_source_catalog(data,
 
                     model_func.set_param_hint('amp', value=np.nanmax(stars),
                                               min=1e-3, max=1.5 * np.nanmax(stars))
-                    model_func.set_param_hint('sky', value=np.nanmedian(stars))
+                    _, _, sky = sigma_clipped_stats(data=stars, sigma=3.)
+                    model_func.set_param_hint('sky', value=sky)
                     fit_params = model_func.make_params()
 
                     result = model_func.fit(data=stars, x=xx, y=yy,
@@ -493,6 +495,7 @@ def auto_build_source_catalog(data,
 
             stars = extract_stars(nddata, stars_tbl, size=source_box_size)
             stars = stars.data
+            stars[stars < 0] = 0.
 
             if np.nanmax(stars) >= sat_lim or np.isnan(np.max(stars)):
                 result_arr[i] = nan_arr
@@ -501,7 +504,8 @@ def auto_build_source_catalog(data,
             try:
                 model_func.set_param_hint('amp', value=np.nanmax(stars),
                                           min=1e-3, max=1.5 * np.nanmax(stars))
-                model_func.set_param_hint('sky', value=np.nanmedian(stars))
+                _, _, sky = sigma_clipped_stats(data=stars, sigma=3.)
+                model_func.set_param_hint('sky', value=sky)
 
                 alpha = init_fwhm / (2 * np.sqrt(2**(1 / default_moff_beta) - 1))
                 model_func.set_param_hint('alpha', value=alpha)
@@ -844,7 +848,7 @@ def compute_2d_background(imgarr, mask, box_size, win_size,
     imgarr[np.isnan(imgarr)] = 0.
 
     bkg = None
-    exclude_percentiles = [1, 5, 10, 25, 50, 75]
+    exclude_percentiles = [10, 25, 50, 75]
     for percentile in exclude_percentiles:
         if not silent:
             log.info(f"    Percentile in use: {percentile}")
@@ -929,12 +933,9 @@ def compute_2d_background(imgarr, mask, box_size, win_size,
     hdu2 = fits.ImageHDU(data=bkg_rms)
     new_hdul = fits.HDUList([hdu1, hdu2])
     new_hdul.writeto(f'{bkg_fname[0]}.fits', output_verify='ignore', overwrite=True)
-    # plt.figure()
-    # plt.imshow(bkg_background)
-    # plt.show()
+
     del imgarr, hdu1, hdu2, new_hdul
     gc.collect()
-    # sys.exit()
 
     return bkg_background, bkg_median, bkg_rms, bkg_rms_median
 
@@ -1064,7 +1065,7 @@ def extract_source_catalog(imgarr,
     vignette: float, optional
         Cut off corners using a circle with radius (0. < vignette <= 2.). Defaults to -1.
     vignette_rectangular: float, optional
-        Ignore a fraction of the image at the corner. Default: -1 = nothing ignored
+        Ignore a fraction of the image in the corner. Default: -1 = nothing ignored
         If fraction < 1, the corresponding (1 - frac) percentage is ignored.
         Example: 0.9 ~ 10% ignored
     cutouts: list, or list of lists(s), None, optional
@@ -1356,29 +1357,31 @@ def get_photometric_catalog(fname, loc, imgarr, hdr, wcsprm,
 
     if catalog.upper() not in _base_conf.SUPPORTED_CATALOGS:
         log.warning(f"Given photometry catalog '{catalog}' NOT SUPPORTED. "
-                    "Defaulting to GSC242")
+                    "Defaulting to GSC243")
         catalog = "GSC243"
 
     if config["_photo_ref_cat_fname"] is not None:
         photo_ref_cat_fname = config["_photo_ref_cat_fname"]
 
     # get the observation date
-    if 'time-obs'.upper() in hdr:
-        time_string = f"{hdr['date-obs'.upper()]}T{hdr['time-obs'.upper()]}"
-    else:
-        time_string = hdr['date-obs'.upper()]
+    # if ('time-obs'.upper() in hdr and 'telescop'.upper() in hdr and
+    #         hdr['telescop'.upper()] != 'CTIO 4.0-m telescope'):
+    #     time_string = f"{hdr['date-obs'.upper()]}T{hdr['time-obs'.upper()]}"
+    # else:
+    #     time_string = hdr['date-obs'.upper()]
+    #
+    # frmt = _base_conf.has_fractional_seconds(time_string)
+    #
+    # t = pd.to_datetime(time_string,
+    #                    format=frmt, utc=False)
+    #
+    # epoch = Time(t)
 
-    frmt = _base_conf.has_fractional_seconds(time_string)
+    # set RA and DEC using the image center
+    wcs = WCS(hdr)
 
-    t = pd.to_datetime(time_string,
-                       format=frmt, utc=False)
-
-    epoch = Time(t)
-
-    # set RA and DEC
-    wcs = WCS(wcsprm.to_header())
-    ra, dec = wcs.wcs_pix2world(hdr['NAXIS1'] // 2,
-                                hdr['NAXIS2'] // 2, 0)
+    ra, dec = wcs.all_pix2world(hdr['NAXIS1'] / 2.,
+                                hdr['NAXIS2'] / 2., 0)
 
     # estimate the radius of the FoV for ref. catalog creation
     fov_radius = compute_radius(wcs,
@@ -1401,12 +1404,11 @@ def get_photometric_catalog(fname, loc, imgarr, hdr, wcsprm,
         # get reference catalog
         ref_tbl_photo, ref_catalog_photo = \
             get_reference_catalog_phot(ra=ra, dec=dec, sr=fov_radius,
-                                       epoch=epoch.decimalyear,  # num_sources=_base_conf.NUM_SOURCES_MAX,
                                        catalog=catalog,
                                        full_catalog=True, silent=silent)
 
         # add positions to table
-        pos_on_det = wcsprm.s2p(ref_tbl_photo[["RA", "DEC"]].values, 0)['pixcrd']
+        pos_on_det = wcs.wcs_world2pix(ref_tbl_photo[["RA", "DEC"]].values, 0)#['pixcrd']
         ref_tbl_photo["xcentroid"] = pos_on_det[:, 0]
         ref_tbl_photo["ycentroid"] = pos_on_det[:, 1]
 
@@ -1449,11 +1451,23 @@ def get_photometric_catalog(fname, loc, imgarr, hdr, wcsprm,
     if not state:
         return None, None, None, None, False
 
+    # from photutils.aperture import CircularAperture
+    #
+    # src_pos = np.array(list(zip(ref_tbl_photo['xcentroid'], ref_tbl_photo['ycentroid'])))
+    # aperture = CircularAperture(src_pos, r=12)
+    #
+    # fig = plt.figure(figsize=(10, 6))
+    #
+    # gs = gridspec.GridSpec(1, 1)
+    # ax = fig.add_subplot(gs[0, 0])
+    # ax.imshow(imgarr, origin='lower', interpolation='nearest')
+    # aperture.plot(axes=ax, **{'color': 'red', 'lw': 1.25, 'alpha': 0.75})
+    # plt.show()
+
     return src_tbl, std_fkeys, mag_conv, kernel_fwhm, state
 
 
 def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
-                         catalog, mode='astro',
                          silent=False, **config):
     """Extract astrometric positions and photometric data for sources in the
             input images' field-of-view.
@@ -1462,88 +1476,51 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
 
     # Initialize logging for this user-callable function
     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
-    # todo: change the process so it only loads one ref catalog for multiple images with
-    #  same pointing.
-
-    save_cat = True  # todo: remove this maybe?
-    ref_tbl_photo = None
-    ref_catalog_photo = None
-    ref_tbl_astro = None
-    ref_catalog_astro = None
-
-    src_cat_fname = f'{loc}/{fname}_src_cat'
-    astro_ref_cat_fname = f'{loc}/{fname}_ref_cat'
-    photo_ref_cat_fname = f'{loc}/{fname}_trail_img_photo_ref_cat'
-
-    # check catalog input
-    if mode == 'astro' and catalog.upper() not in _base_conf.SUPPORTED_CATALOGS:
-        log.warning(f"Given astrometry catalog '{catalog}' NOT SUPPORTED. "
-                    "Defaulting to GAIAdr3")
-        catalog = "GAIAdr3"
-    elif mode == 'photo' and catalog.upper() not in _base_conf.SUPPORTED_CATALOGS:
-        log.warning(f"Given photometry catalog '{catalog}' NOT SUPPORTED. "
-                    "Defaulting to GSC242")
-        catalog = "GSC243"
-
-    # check output
-    if config["_src_cat_fname"] is not None:
-        src_cat_fname = config["_src_cat_fname"]
-    if config["_ref_cat_fname"] is not None:
-        astro_ref_cat_fname = config["_ref_cat_fname"]
-    if config["_photo_ref_cat_fname"] is not None:
-        photo_ref_cat_fname = config["_photo_ref_cat_fname"]
-
-    # get the observation date
-    if 'time-obs'.upper() in hdr:
-        time_string = f"{hdr['date-obs'.upper()]}T{hdr['time-obs'.upper()]}"
-    else:
-        time_string = hdr['date-obs'.upper()]
-
-    frmt = _base_conf.has_fractional_seconds(time_string)
-
-    t = pd.to_datetime(time_string,
-                       format=frmt, utc=False)
-
-    epoch = Time(t)
-
-    # set RA and DEC
-    ra, dec = wcsprm.crval
-    wcs = WCS(wcsprm.to_header())
-
-    fov_radius = config["_fov_radius"]
-    if mode == 'photo':
-        ra, dec = wcs.wcs_pix2world(hdr['NAXIS1'] // 2,
-                                    hdr['NAXIS2'] // 2, 0)
-
-        # estimate the radius of the FoV for ref. catalog creation
-        fov_radius = compute_radius(wcs,
-                                    naxis1=hdr['NAXIS1'],
-                                    naxis2=hdr['NAXIS2'],
-                                    ra=ra, dec=dec)
-
-    # check for source catalog file. If present and not force extraction use these catalogs
-    chk_src_cat = os.path.isfile(src_cat_fname + '.cat')
-    chk_ref_cat_astro = os.path.isfile(astro_ref_cat_fname + '.cat')
-    chk_ref_cat_photo = os.path.isfile(photo_ref_cat_fname + '.cat')
-
-    read_src_cat = read_ref_cat_astro = read_ref_cat_photo = True
-    if config["_force_extract"]:
-        read_src_cat = False
-    else:
-        if not chk_src_cat:
-            read_src_cat = False
-
-    if config["_force_download"]:
-        read_ref_cat_astro = read_ref_cat_photo = False
-    else:
-        if not chk_ref_cat_astro:
-            read_ref_cat_astro = False
-        if not chk_ref_cat_photo:
-            read_ref_cat_photo = False
 
     kernel = None
     segmap = None
     segmap_thld = None
+
+    # get the observation date
+    if ('time-obs'.upper() in hdr and 'telescop'.upper() in hdr and
+            hdr['telescop'.upper()] != 'CTIO 4.0-m telescope'):
+        time_string = f"{hdr['date-obs'.upper()]}T{hdr['time-obs'.upper()]}"
+    else:
+        time_string = hdr['date-obs'.upper()]
+
+    # frmt = _base_conf.has_fractional_seconds(time_string)
+    t = pd.to_datetime(time_string,
+                       format='ISO8601', utc=False)
+
+    epoch = Time(t)
+
+    # get RA and DEC value
+    ra, dec = wcsprm.crval
+    # set FoV
+    fov_radius = config["_fov_radius"]
+
+    # Convert pointing to string for catalog name
+    coo = SkyCoord(ra=ra * u.degree, dec=dec * u.degree)
+    ra_str = coo.ra.to_string(unit=u.hourangle, sep='', precision=2, pad=True)
+    dec_str = coo.dec.to_string(sep='', precision=2, alwayssign=True, pad=True)
+
+    # set default catalog name
+    src_cat_fname = f'{loc}/{fname}_src_cat'
+    astro_ref_cat_fname = f'{loc}/ref_cat_{ra_str}{dec_str}'
+
+    # check input and overwrite the defaults if necessary
+    if config["_src_cat_fname"] is not None:
+        src_cat_fname = config["_src_cat_fname"]
+    if config["_ref_cat_fname"] is not None:
+        astro_ref_cat_fname = config["_ref_cat_fname"]
+
+    # check for source catalog file. If present and not force extraction, use these catalogs
+    chk_src_cat = os.path.isfile(src_cat_fname + '.cat')
+    chk_ref_cat_astro = os.path.isfile(astro_ref_cat_fname + '.cat')
+
+    read_src_cat = not (config["_force_extract"] or not chk_src_cat)
+    read_ref_cat_astro = not (config["_force_download"] or not chk_ref_cat_astro)
+
     if read_src_cat:
         if not silent:
             log.info("> Load source catalog from file")
@@ -1596,85 +1573,9 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
 
     # del pos_on_det
 
-    return (src_tbl, ref_tbl_astro, ref_catalog_astro, ref_tbl_photo, ref_catalog_photo,
-            src_cat_fname, astro_ref_cat_fname, photo_ref_cat_fname,
+    return (src_tbl, ref_tbl_astro, ref_catalog_astro,
+            src_cat_fname, astro_ref_cat_fname,
             kernel_fwhm, kernel, segmap, segmap_thld), True
-
-
-def mask_image(image,
-               vignette=-1.,
-               vignette_rectangular=-1.,
-               cutouts=None,
-               only_rectangle=None, silent=False):
-    """Mask image"""
-
-    # Initialize logging for this user-callable function
-    log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
-
-    imgarr = image.copy()
-
-    # only search sources in a circle with radius <vignette>
-    if (0. < vignette < 2.) & (vignette != -1.):
-        sidelength = np.max(imgarr.shape)
-        x = np.arange(0, imgarr.shape[1])
-        y = np.arange(0, imgarr.shape[0])
-        if not silent:
-            log.info("    Only search sources in a circle "
-                     "with radius {}px".format(vignette * sidelength / 2.))
-        vignette = vignette * sidelength / 2.
-        mask = (x[np.newaxis, :] - sidelength / 2) ** 2 + \
-               (y[:, np.newaxis] - sidelength / 2) ** 2 < vignette ** 2
-        imgarr[~mask] = np.nan
-
-    # ignore a fraction of the image at the corner
-    if (0. < vignette_rectangular < 1.) & (vignette_rectangular != -1.):
-        if not silent:
-            log.info("    Ignore {0:0.1f}% of the image at the corner. ".format((1. - vignette_rectangular) * 100.))
-        sidelength_x = imgarr.shape[1]
-        sidelength_y = imgarr.shape[0]
-        cutoff_left = (1. - vignette_rectangular) * sidelength_x
-        cutoff_right = vignette_rectangular * sidelength_x
-        cutoff_bottom = (1. - vignette_rectangular) * sidelength_y
-        cutoff_top = vignette_rectangular * sidelength_y
-        x = np.arange(0, imgarr.shape[1])
-        y = np.arange(0, imgarr.shape[0])
-        left = x[np.newaxis, :] > cutoff_left
-        right = x[np.newaxis, :] < cutoff_right
-        bottom = y[:, np.newaxis] > cutoff_bottom
-        top = y[:, np.newaxis] < cutoff_top
-        mask = (left * bottom) * (right * top)
-        imgarr[~mask] = np.nan
-
-    # cut out rectangular regions of the image, [(xstart, xend, ystart, yend)]
-    if cutouts is not None and all(isinstance(el, list) for el in cutouts):
-        x = np.arange(0, imgarr.shape[1])
-        y = np.arange(0, imgarr.shape[0])
-        for cutout in cutouts:
-            if not silent:
-                log.info("    Cutting out rectangular region {} of image. "
-                         "(xstart, xend, ystart, yend)".format(cutout))
-            left = x[np.newaxis, :] > cutout[0]
-            right = x[np.newaxis, :] < cutout[1]
-            bottom = y[:, np.newaxis] > cutout[2]
-            top = y[:, np.newaxis] < cutout[3]
-            mask = (left * bottom) * (right * top)
-            imgarr[mask] = np.nan
-
-    # use only_rectangle within image format: (xstart, xend, ystart, yend)
-    if only_rectangle is not None and isinstance(only_rectangle, tuple):
-        x = np.arange(0, imgarr.shape[1])
-        y = np.arange(0, imgarr.shape[0])
-        if not silent:
-            log.info("    Use only rectangle {} within image. "
-                     "(xstart, xend, ystart, yend)".format(only_rectangle))
-        left = x[np.newaxis, :] > only_rectangle[0]
-        right = x[np.newaxis, :] < only_rectangle[1]
-        bottom = y[:, np.newaxis] > only_rectangle[2]
-        top = y[:, np.newaxis] < only_rectangle[3]
-        mask = (left * bottom) * (right * top)
-        imgarr[~mask] = np.nan
-
-    return imgarr
 
 
 def my_background(img, box_size, mask=None, interp=None, filter_size=(1, 1),
@@ -1760,7 +1661,7 @@ def save_catalog(cat: pd.DataFrame,
 
     else:
         # get position on the detector
-        pos_on_det = wcsprm.s2p(cat[["RA", "DEC"]].values, 0)['pixcrd']
+        pos_on_det = wcs.wcs_world2pix(cat[["RA", "DEC"]].values, 0)#['pixcrd']
         cat_out["xcentroid"] = pos_on_det[:, 0]
         cat_out["ycentroid"] = pos_on_det[:, 1]
         cols = ['RA', 'DEC', 'xcentroid', 'ycentroid', 'mag', 'objID']
@@ -1768,7 +1669,7 @@ def save_catalog(cat: pd.DataFrame,
     if mode == 'ref_astro':
         cat_out = cat_out[cols]
 
-    # convert to astropy.Table and add meta info
+    # convert to astropy.Table and add meta-info
     cat_out = Table.from_pandas(cat_out, index=False)
     kernel_fwhm = (None, None) if kernel_fwhm is None else kernel_fwhm
     cat_out.meta = {'kernel_fwhm': kernel_fwhm[0],
@@ -2023,3 +1924,79 @@ def url_checker(url: str) -> tuple[bool, str]:
 #     plt.ylim(y - 100, y + 100)
 #     plt.xlim(x - 100, x + 100)
 #     return x, y
+
+# def mask_image(image,
+#                vignette=-1.,
+#                vignette_rectangular=-1.,
+#                cutouts=None,
+#                only_rectangle=None, silent=False):
+#     """Mask image"""
+#
+#     # Initialize logging for this user-callable function
+#     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
+#
+#     imgarr = image.copy()
+#
+#     # only search sources in a circle with radius <vignette>
+#     if (0. < vignette < 2.) & (vignette != -1.):
+#         sidelength = np.max(imgarr.shape)
+#         x = np.arange(0, imgarr.shape[1])
+#         y = np.arange(0, imgarr.shape[0])
+#         if not silent:
+#             log.info("    Only search sources in a circle "
+#                      "with radius {}px".format(vignette * sidelength / 2.))
+#         vignette = vignette * sidelength / 2.
+#         mask = (x[np.newaxis, :] - sidelength / 2) ** 2 + \
+#                (y[:, np.newaxis] - sidelength / 2) ** 2 < vignette ** 2
+#         imgarr[~mask] = np.nan
+#
+#     # ignore a fraction of the image at the corner
+#     if (0. < vignette_rectangular < 1.) & (vignette_rectangular != -1.):
+#         if not silent:
+#             log.info("    Ignore {0:0.1f}% of the image at the corner. ".format((1. - vignette_rectangular) * 100.))
+#         sidelength_x = imgarr.shape[1]
+#         sidelength_y = imgarr.shape[0]
+#         cutoff_left = (1. - vignette_rectangular) * sidelength_x
+#         cutoff_right = vignette_rectangular * sidelength_x
+#         cutoff_bottom = (1. - vignette_rectangular) * sidelength_y
+#         cutoff_top = vignette_rectangular * sidelength_y
+#         x = np.arange(0, imgarr.shape[1])
+#         y = np.arange(0, imgarr.shape[0])
+#         left = x[np.newaxis, :] > cutoff_left
+#         right = x[np.newaxis, :] < cutoff_right
+#         bottom = y[:, np.newaxis] > cutoff_bottom
+#         top = y[:, np.newaxis] < cutoff_top
+#         mask = (left * bottom) * (right * top)
+#         imgarr[~mask] = np.nan
+#
+#     # cut out rectangular regions of the image, [(xstart, xend, ystart, yend)]
+#     if cutouts is not None and all(isinstance(el, list) for el in cutouts):
+#         x = np.arange(0, imgarr.shape[1])
+#         y = np.arange(0, imgarr.shape[0])
+#         for cutout in cutouts:
+#             if not silent:
+#                 log.info("    Cutting out rectangular region {} of image. "
+#                          "(xstart, xend, ystart, yend)".format(cutout))
+#             left = x[np.newaxis, :] > cutout[0]
+#             right = x[np.newaxis, :] < cutout[1]
+#             bottom = y[:, np.newaxis] > cutout[2]
+#             top = y[:, np.newaxis] < cutout[3]
+#             mask = (left * bottom) * (right * top)
+#             imgarr[mask] = np.nan
+#
+#     # use only_rectangle within image format: (xstart, xend, ystart, yend)
+#     if only_rectangle is not None and isinstance(only_rectangle, tuple):
+#         x = np.arange(0, imgarr.shape[1])
+#         y = np.arange(0, imgarr.shape[0])
+#         if not silent:
+#             log.info("    Use only rectangle {} within image. "
+#                      "(xstart, xend, ystart, yend)".format(only_rectangle))
+#         left = x[np.newaxis, :] > only_rectangle[0]
+#         right = x[np.newaxis, :] < only_rectangle[1]
+#         bottom = y[:, np.newaxis] > only_rectangle[2]
+#         top = y[:, np.newaxis] < only_rectangle[3]
+#         mask = (left * bottom) * (right * top)
+#         imgarr[~mask] = np.nan
+#
+#     return imgarr
+#

@@ -75,15 +75,19 @@ class ObsTables(object):
         self._sat_info = pd.DataFrame()
         self._roi_info = pd.DataFrame()
         self._roi_data = pd.DataFrame()
+        self._ext_oi_info = pd.DataFrame()
+        self._ext_oi_data = pd.DataFrame()
 
         self._vis_info = pd.DataFrame()
         self._def_path = Path(config['RESULT_TABLE_PATH']).expanduser().resolve()
         self._def_tbl_name = config['RESULT_TABLE_NAME']
         self._def_roi_name = config['ROI_TABLE_NAME']
+        self._def_ext_oi_name = config['EXT_OI_TABLE_NAME']
         self._def_cols = _base_conf.DEF_RES_TBL_COL_NAMES
         self._def_col_units = _base_conf.DEF_RES_TBL_COL_UNITS
         self._fname_res_table = self._def_path / self._def_tbl_name
         self._fname_roi_table = self._def_path / self._def_roi_name
+        self._fname_ext_oi_table = self._def_path / self._def_ext_oi_name
         self._def_key_transl = _base_conf.DEF_KEY_TRANSLATIONS
         self._create_obs_table()
 
@@ -94,6 +98,10 @@ class ObsTables(object):
     @property
     def roi_data(self):
         return self._roi_data
+
+    @property
+    def ext_oi_data(self):
+        return self._ext_oi_data
 
     @property
     def obj_info(self):
@@ -139,7 +147,7 @@ class ObsTables(object):
         path = os.walk(search_path)
         for root, dirs, files in path:
             f = sorted([s for s in files if re.search(regex, s)])
-            # f = sorted([s for s in files if f'tle_{sat_type}' in s])
+
             if len(f) > 0:
                 [tle_filenames.append((root, s, Path(os.path.join(root, s)))) for s in f]
 
@@ -148,7 +156,7 @@ class ObsTables(object):
                               "TBW: Get tle. "
                               "Exiting for now!!!")
             return None
-            # sys.exit(1)
+        
         elif len(tle_filenames) > 1:
             # first check if one file has unique in name
             idx_arr = np.array([i[0].find('unique') for i in tle_filenames])
@@ -205,7 +213,7 @@ class ObsTables(object):
         return True
 
     def load_roi_table(self):
-        """Load the observation info table"""
+        """Load the regions of interest info table"""
         roi_info = self._roi_info
 
         # files info
@@ -216,6 +224,19 @@ class ObsTables(object):
             roi_info = pd.read_csv(fname, header=0, delimiter=',')
 
         self._roi_info = roi_info
+
+    def load_ext_oi_table(self):
+        """Load the extensions of interest info table"""
+        ext_oi_info = self._ext_oi_info
+
+        # files info
+        fname = self._fname_ext_oi_table
+        if fname.exists():
+            if not self._silent:
+                self._log.info(f'> Read Extensions-of-Interest {self._def_ext_oi_name}')
+            ext_oi_info = pd.read_csv(fname, header=0, delimiter=',')
+
+        self._ext_oi_info = ext_oi_info
 
     def load_obs_table(self):
         """Load the observation info table"""
@@ -251,6 +272,26 @@ class ObsTables(object):
             if list(pos):
                 pos_df = roi_info[pos_mask]
                 self._roi_data = pos_df
+
+    def get_ext_oi(self, fname):
+        """Get extension(s) of interest"""
+        ext_oi_info = self._ext_oi_info
+
+        if not ext_oi_info.empty:
+            pos_df = ext_oi_info.copy()
+
+            # convert file name to uppercase
+            pos_df['File'] = ext_oi_info['File'].str.upper()
+            fname_upper = fname.upper()
+            # check position
+            pos_mask = pos_df['File'] == fname_upper
+            pos = np.flatnonzero(pos_mask)
+
+            if list(pos):
+                pos_df = ext_oi_info[pos_mask]['HDUs'][0]
+                self._ext_oi_data = eval(pos_df)
+            else:
+                self._ext_oi_data = []
 
     def get_object_data(self, fname, kwargs, obsparams):
         """Extract a row from the obs info table"""
@@ -411,6 +452,7 @@ class ObsTables(object):
 
         obs_info = self._obs_info
         fname = self._fname_res_table
+        n_ext = obsparams['n_ext']
 
         # update the columns in case the table was changed
         for col in self._def_cols:
@@ -443,6 +485,16 @@ class ObsTables(object):
         inst_key, inst_val = self._get_position_data(kwargs, obsparams, 'instrume', 'Instrument')
         obj_key, obj_val = self._get_position_data(kwargs, obsparams, 'object', 'Object')
 
+        key_list = ['RA', 'DEC', 'Instrument', 'Object']
+        key_dict = {'RA': [ra_val], 'DEC': [de_val], 'Instrument': [inst_val],
+                    'Object': [obj_val]}
+
+        if n_ext > 1:
+            # hdu index
+            hdu_idx = str(float(kwargs['HDU_IDX']))
+            key_list = ['RA', 'DEC', 'Instrument', 'Object', 'HDU_idx']
+            key_dict['HDU_idx'] = [hdu_idx]
+
         if not list(pos):
             self._log.debug("  File name not found. Adding new entry.")
             obs_info = self._add_row(obs_info, file, kwargs, self._def_cols,
@@ -451,13 +503,9 @@ class ObsTables(object):
             self._log.debug("  Possible match with previous entry found. "
                             "Check RA, DEC, object and instrument.")
 
-            df = obs_info[mask][['RA', 'DEC', 'Instrument', 'Object']].astype(str)
+            df = obs_info[mask][key_list].astype(str)
 
-            coord_match = df.isin({'RA': [ra_val],
-                                   'DEC': [de_val],
-                                   'Instrument': [inst_val],
-                                   'Object': [obj_val]}).all(axis=1)
-
+            coord_match = df.isin(key_dict).all(axis=1)
             if coord_match.any():
 
                 self._log.debug("  Coordinate/Pointing, object and instrument match found. Updating.")
@@ -507,7 +555,7 @@ class ObsTables(object):
                         obs_info.loc[idx, 'Obs-Mid'] = t_mid.strftime('%H:%M:%S.%f')[:-3]
                         obs_info.loc[idx, 'Obs-Stop'] = t_stop.strftime('%H:%M:%S.%f')[:-3]
                     elif dcol_name == 'WCS_cal':
-                        obs_info.loc[idx, dcol_name] = 'T' if value else 'F'
+                        obs_info.loc[idx, dcol_name] = 'T' if value or value == 'successful' else 'F'
                     elif dcol_name == 'RA':
                         obs_info.loc[idx, dcol_name] = ra
                     elif dcol_name == 'DEC':
@@ -541,7 +589,7 @@ class ObsTables(object):
                         new_dict['Obs-Mid'] = t_mid.strftime('%H:%M:%S.%f')[:-3]
                         new_dict['Obs-Stop'] = t_stop.strftime('%H:%M:%S.%f')[:-3]
                     elif dcol_name == 'WCS_cal':
-                        new_dict[dcol_name] = 'T' if value else 'F'
+                        new_dict[dcol_name] = 'T' if value or value == 'successful' else 'F'
                     elif dcol_name == 'RA':
                         new_dict[dcol_name] = ra
                     elif dcol_name == 'DEC':
@@ -600,7 +648,7 @@ class ObsTables(object):
             for line in lines[1:]:
 
                 # split line using regex
-                row = re.split(r'\s\s|\s|\t', line[0])
+                row = re.split(pattern=r'\s\s|\s|\t', string=line[0])
                 l_row = len(row)
 
                 if two_lines:
@@ -653,7 +701,8 @@ class ObsTables(object):
     def _update_times(self, value, expt, kwargs):
         """ Update Observation date, start, mid, and end times."""
         self._log.debug("  Check Obs-Date")
-        if 'time-obs'.upper() in kwargs:
+        if ('time-obs'.upper() in kwargs and 'telescop'.upper() in kwargs and
+                kwargs['telescop'.upper()] != 'CTIO 4.0-m telescope'):
             t = pd.to_datetime(f"{kwargs['date-obs'.upper()]}T{kwargs['time-obs'.upper()]}",
                                format=frmt, utc=False)
         else:

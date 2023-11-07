@@ -162,7 +162,8 @@ def get_optimum_aper_rad(image: np.ndarray,
         aper_bkg = aper_bkg_counts / exp_time
 
         # calculate the Signal-to-Noise ratio
-        snr, snr_err = get_snr(flux_star=aper_flux, flux_bkg=aper_bkg, t_exp=exp_time,
+        snr, snr_err = get_snr(flux_star=aper_flux, flux_bkg=aper_bkg,
+                               t_exp=exp_time,
                                r=r_aper * fwhm,
                                gain=gain, rdnoise=rdnoise, dc=0.)
 
@@ -181,7 +182,7 @@ def get_optimum_aper_rad(image: np.ndarray,
             output = output[:, idx, :]
 
     max_snr_idx = np.nanargmax(np.nanmean(output[:, :, 2], axis=1))
-    max_snr_aprad = rapers[max_snr_idx]
+    max_snr_aprad = float(rapers[max_snr_idx])
     optimum_aprad = max_snr_aprad * 1.25
     qlf_aprad = True
     if optimum_aprad > 3.:
@@ -202,7 +203,7 @@ def get_optimum_aper_rad(image: np.ndarray,
 
 def get_snr(flux_star: np.array, flux_bkg: np.array,
             t_exp: float, r: float,
-            gain: float = 1, rdnoise: float = 0, dc: float = 0):
+            gain: float = 1., rdnoise: float = 0., dc: float = 0.):
     """"""
 
     area = np.pi * r ** 2
@@ -259,45 +260,62 @@ def get_aper_photometry(image: np.ndarray,
     # get statistics with mask in mind
     bkg_stats = ApertureStats(image, annulus_aperture, mask=mask,
                               sigma_clip=sigclip, sum_method='exact')
-    aper_stats = ApertureStats(image, aperture, mask=mask,
-                               sigma_clip=None, sum_method='exact')
 
     # Background median and standard deviation of annulus
     bkg_median = bkg_stats.median
     bkg_std = bkg_stats.std
 
-    if np.any(image) < 0:
-        error = None
-    else:
-        # mean = np.median(image, axis=None)
-        error = np.sqrt(image)
+    # if np.any(image) < 0:
+    #     error = None
+    # else:
+    #     from photutils.datasets import make_noise_image
+    #     image_masked = image * ~mask if mask is not None else image
+    #     error = make_noise_image(image.shape,
+    #                              distribution='poisson',
+    #                              mean=np.nanmean(image_masked))
 
-    aperture_area = aper_stats.sum_aper_area.value  # aperture.area
-    annulus_area = bkg_stats.sum_aper_area.value
+    # error = None
+    # aper_stats = ApertureStats(image, aperture, mask=mask,
+    #                            sigma_clip=None, sum_method='exact')
+    # fig = plt.figure(figsize=(10, 6))
+    #
+    # gs = gridspec.GridSpec(1, 1)
+    # ax = fig.add_subplot(gs[0, 0])
+    # ax.imshow(image*~mask, origin='lower', interpolation='nearest')
+    # aperture.plot(axes=ax, **{'color': 'white', 'lw': 1.25, 'alpha': 0.75})
+    # annulus_aperture.plot(axes=ax, **{'color': 'red', 'lw': 1.25, 'alpha': 0.75})
+    # plt.show()
 
-    phot_table = aperture_photometry(image, aperture, error=error, mask=mask)
+    # Make sure to use the same area over which to perform the photometry
+    aperture_area = aperture.area_overlap(data=image, mask=mask)
+    annulus_area = annulus_aperture.area_overlap(data=image, mask=mask)
+
+    # do aperture photometry
+    phot_table = aperture_photometry(image, aperture, mask=mask)
 
     # rename pix position to make it consistent
     names = ('xcenter', 'ycenter')
     new_names = ('xcentroid', 'ycentroid')
     phot_table.rename_columns(names, new_names)
 
+    # convert to pandas dataframe
     phot_table = phot_table.to_pandas()
-    total_bkg = bkg_median * aperture_area
-    phot_bkgsub = phot_table['aperture_sum'] - total_bkg
 
+    # get total background
+    total_bkg = bkg_median * aperture_area
+
+    # subtract background
+    phot_bkgsub = phot_table['aperture_sum'] - total_bkg
     phot_table['aperture_sum_bkgsub'] = phot_bkgsub
     phot_table.loc[phot_table['aperture_sum_bkgsub'] <= 0] = 0
 
-    flux_var = phot_table['aperture_sum_bkgsub'].values
-    if error is not None:
-        flux_var = phot_table['aperture_sum_err'].values ** 2
-
+    # compute the flux error using DAOPHOT style
+    flux_variance = phot_table['aperture_sum_bkgsub'].values
     bkg_var = (aperture_area * bkg_std ** 2.) * (1. + aperture_area / annulus_area)
-    flux_error = np.sqrt(flux_var / gain + bkg_var)
+    flux_error = (flux_variance / gain + bkg_var) ** 0.5
     phot_table['aperture_sum_bkgsub_err'] = flux_error
 
-    del image, src_pos, bkg_stats, flux_var
+    del image, src_pos, bkg_stats, flux_variance
     gc.collect()
 
     return (phot_table['aperture_sum_bkgsub'].values,
@@ -306,19 +324,22 @@ def get_aper_photometry(image: np.ndarray,
 
 def get_std_photometry(image, std_cat, src_pos, fwhm, config):
     """Perform aperture photometry on standard stars"""
+
     res_cat = std_cat.copy()
     aper_dict = dict(aper=config['APER_RAD'] * fwhm,
                      inf_aper=config['INF_APER_RAD'] * fwhm)
+
     # mask unwanted pixel
     mask = (image < 0)
     img_mask = config['img_mask']
     if img_mask is not None:
         mask |= img_mask
+    
     for key, val in aper_dict.items():
         phot_res = get_aper_photometry(image, src_pos, mask=mask,
                                        r_aper=val,
-                                       r_in=config['RSKYIN'] * fwhm,
-                                       r_out=config['RSKYOUT'] * fwhm)
+                                       r_in=val + config['RSKYIN'] * fwhm,
+                                       r_out=val + config['RSKYOUT'] * fwhm)
 
         aper_flux_counts, aper_flux_count_err, _, aper_bkg_counts, _ = phot_res
         res_cat[f'flux_counts_{key}'] = aper_flux_counts

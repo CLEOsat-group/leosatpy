@@ -81,14 +81,25 @@ else:
     # mpl.rcParams['font.family'] = 'Arial'
 
 # Project modules
-from leosatpy.utils.arguments import ParseArguments
-from leosatpy.utils.dataset import DataSet
-from leosatpy.utils.tables import ObsTables
-import leosatpy.utils.sources as sext
-import leosatpy.utils.transformations as imtrans
-from leosatpy.utils.version import __version__
+try:
+    import leosatpy
+except ModuleNotFoundError:
+    from utils.arguments import ParseArguments
+    from utils.dataset import DataSet
+    from utils.tables import ObsTables
+    from utils.version import __version__
+    import utils.sources as sext
+    import utils.transformations as imtrans
+    import utils.base_conf as _base_conf
+else:
 
-import leosatpy.utils.base_conf as _base_conf
+    from leosatpy.utils.arguments import ParseArguments
+    from leosatpy.utils.dataset import DataSet
+    from leosatpy.utils.tables import ObsTables
+    from leosatpy.utils.version import __version__
+    import leosatpy.utils.sources as sext
+    import leosatpy.utils.transformations as imtrans
+    import leosatpy.utils.base_conf as _base_conf
 
 # -----------------------------------------------------------------------------
 
@@ -218,7 +229,8 @@ class CalibrateObsWCS(object):
         inst_data = ds.instruments
 
         time_stamp = self.get_time_stamp()
-        fail_fname = Path(self._config['RESULT_TABLE_PATH']) / f'fails_calibrateSatObs_{time_stamp}.log'
+        fail_path = Path(self._config['RESULT_TABLE_PATH']).expanduser().resolve()
+        fail_fname = fail_path / f'fails_calibrateSatObs_{time_stamp}.log'
 
         N_inst = len(inst_list)
         for i in range(N_inst):
@@ -368,7 +380,6 @@ class CalibrateObsWCS(object):
                              _cutouts=self._cutouts,
                              _src_cat_fname=self._src_cat_fname,
                              _ref_cat_fname=self._ref_cat_fname,
-                             _photo_ref_cat_fname=None,
                              image_mask=img_mask,
                              estimate_bkg=estimate_bkg,
                              n_ref_sources=self._config['REF_SOURCES_MAX_NO'],
@@ -385,13 +396,11 @@ class CalibrateObsWCS(object):
 
         # extract sources on detector
         extraction_result, state = sext.get_src_and_cat_info(fbase, cat_path,
-                                                             imgarr, hdr, init_wcsprm, catalog,
-                                                             mode='astro',
+                                                             imgarr, hdr, init_wcsprm,
                                                              silent=self._silent,
                                                              **config)
         # unpack extraction result tuple
-        (src_tbl, ref_tbl, ref_catalog, _, _,
-         src_cat_fname, ref_cat_fname, _,
+        (src_tbl, ref_tbl, ref_catalog, src_cat_fname, ref_cat_fname,
          kernel_fwhm, psf, segmap, _) = extraction_result
 
         # check execution state
@@ -410,16 +419,17 @@ class CalibrateObsWCS(object):
                       obsparams['ra']: ra,
                       obsparams['dec']: dec,
                       'AST_CAL': False}
+
             self._obsTable.update_obs_table(file=fbase, kwargs=kwargs, obsparams=obsparams)
+
             return
 
         # get reference positions before the transformation
-        ref_positions_before = init_wcsprm.s2p(ref_tbl[["RA", "DEC"]].values, 0)['pixcrd']
+        # ref_positions_before = init_wcsprm.s2p(ref_tbl[["RA", "DEC"]].values, 0)['pixcrd']
 
-        # test with lower number of stars
-        # src_tbl = src_tbl.head(170)
         max_wcs_iter = self._config['MAX_WCS_FUNC_ITER']
 
+        # set the match radius
         match_radius = self._config['MATCH_RADIUS']
         match_radius = kernel_fwhm[0] if match_radius == 'fwhm' else match_radius
 
@@ -479,6 +489,26 @@ class CalibrateObsWCS(object):
                                    destination=cal_path,
                                    wcsprm=wcsprm,
                                    report=report, hdul_idx=hdu_idx)
+            # plot final figures
+            src_positions = list(zip(src_tbl['xcentroid'], src_tbl['ycentroid']))
+
+            # match results within 1 fwhm radius for plot
+            matches = imtrans.find_matches(src_tbl,
+                                           ref_tbl_adjusted,
+                                           wcsprm,
+                                           threshold=match_radius)
+            _, _, _, ref_positions_after, _, _, _ = matches
+
+            if not self._silent:
+                self._log.info("> Plot WCS calibration result")
+
+            config['match_radius_px'] = match_radius
+            self._plot_final_result(imgarr=imgarr, src_pos=src_positions,
+                                    ref_pos=ref_positions_after,
+                                    file_name=file_name, fig_path=plt_path_final,
+                                    wcsprm=wcsprm, **config)
+            del src_positions, ref_positions_after, matches
+
         else:
             ra = hdr[obsparams['ra']]
             dec = hdr[obsparams['dec']]
@@ -493,31 +523,13 @@ class CalibrateObsWCS(object):
                       'AST_CAL': False}
             self._obsTable.update_obs_table(file=fbase, kwargs=kwargs, obsparams=obsparams)
 
-        # plot final figures
-        src_positions = list(zip(src_tbl['xcentroid'], src_tbl['ycentroid']))
-
-        # match results within 1 fwhm radius for plot
-        matches = imtrans.find_matches(src_tbl,
-                                       ref_tbl_adjusted,
-                                       wcsprm,
-                                       threshold=match_radius)
-        _, _, _, ref_positions_after, _, _, _ = matches
-
-        if not self._silent:
-            self._log.info("> Plot and save before after comparison")
-        self._plot_comparison(imgarr=imgarr, src_pos=src_positions,
-                              ref_pos_before=ref_positions_before,
-                              ref_pos_after=ref_positions_after,
-                              file_name=file_name, fig_path=plt_path_final,
-                              wcsprm=wcsprm, **config)
-
         self._converged = converged
         self._dic_rms = dic_rms
 
-        del imgarr, dic_rms, converged, src_positions, ref_positions_before, ref_positions_after, \
+        del imgarr, dic_rms, converged, \
             src_tbl, ref_tbl, ref_catalog, _, src_cat_fname, ref_cat_fname, \
             kernel_fwhm, psf, segmap, extraction_result, report, \
-            state, matches
+            state
         gc.collect()
 
     def get_wcs(self, source_df, ref_df, initial_wcsprm,
@@ -698,7 +710,7 @@ class CalibrateObsWCS(object):
         ref_sources_to_add = self.match_catalogs(remaining_sources,
                                                  ref_cat_orig_adjusted,
                                                  radius=10., N=3)
-        # print(ref_sources_to_add)
+
         #
         ref_cat_orig_matched = self.match_catalogs(ref_cat_matched,
                                                    ref_cat_original,
@@ -706,14 +718,7 @@ class CalibrateObsWCS(object):
 
         ref_catalog_subset = pd.concat([ref_cat_orig_matched, ref_sources_to_add],
                                        ignore_index=True)
-        # print(ref_catalog_subset)
-        # print(len(ref_catalog_subset))
-        # self.plot_catalog_positions(source_catalog=remaining_sources,
-        #                             reference_catalog=ref_sources_to_add)
-        # self.plot_catalog_positions(source_catalog=source_cat_original,
-        #                             reference_catalog=ref_catalog_subset,
-        #                             wcsprm=wcsprm)
-        # plt.show()
+
         return ref_catalog_subset
 
     @staticmethod
@@ -1031,7 +1036,7 @@ class CalibrateObsWCS(object):
                    "complete": result[1],
                    "radius_px": r,
                    "rms": rms}
-        # print(dic_rms)
+
         if not self._silent:
             self._log.info("  Within {} pixel or {:.3g} arcsec {}/{} ({:.1f}%) sources where matched. "
                            "The rms is {:.3g} pixel or "
@@ -1144,7 +1149,6 @@ class CalibrateObsWCS(object):
         # test if the current pixel scale makes sense
         wcs_pixscale = self._get_wcs_pixelscale(wcsprm)
 
-        # print(pc, cdelt, wcs_pixscale)
         test_wcs1 = ((np.abs(wcs_pixscale[0])) < 1e-7 or (np.abs(wcs_pixscale[1])) < 1e-7 or
                      (np.abs(wcs_pixscale[0])) > 5e-3 or (np.abs(wcs_pixscale[1])) > 5e-3)
         if test_wcs1:
@@ -1311,8 +1315,8 @@ class CalibrateObsWCS(object):
 
         self._obsTable.update_obs_table(filename_base, fits_header, obsparams)
 
-    def _plot_comparison(self, imgarr, src_pos, ref_pos_before, ref_pos_after,
-                         file_name, fig_path, wcsprm, norm='lin', cmap='Greys', **config):
+    def _plot_final_result(self, imgarr, src_pos, ref_pos,
+                           file_name, fig_path, wcsprm, cmap='Greys', **config):
         """Plot before and after images"""
 
         # load fits file
@@ -1321,18 +1325,148 @@ class CalibrateObsWCS(object):
             hdul.verify('fix')
             bkg_background = hdul[0].data.astype('float32')
 
-        # subtract background
-        imgarr = imgarr - bkg_background
+        # subtract the background from the image
+        imgarr -= bkg_background
+
+        # get y-axis length as limit
+        plim = imgarr.shape[0]
 
         # get the scale and angle
         scale = wcsprm.cdelt[0]
         angle = np.arccos(wcsprm.pc[0][0])
-        theta = angle / 2. / np.pi * 360.
+        theta = angle / np.pi * 180.
         if wcsprm.pc[0][0] < 0.:
             theta *= -1.
 
-        # get y-axis length as limit
-        plim = imgarr.shape[0]
+        obs_xy = np.array(src_pos)
+        cat_xy = ref_pos
+
+        # calculate the distances
+        dist_xy = np.sqrt((obs_xy[:, 0] - cat_xy[:, 0, np.newaxis]) ** 2
+                          + (obs_xy[:, 1] - cat_xy[:, 1, np.newaxis]) ** 2)
+
+        idx_arr = np.where(dist_xy == np.min(dist_xy, axis=0))
+        min_dist_xy = dist_xy[idx_arr]
+        del dist_xy
+
+        mask = min_dist_xy > config['match_radius_px']
+        obs_idx = idx_arr[1][mask]
+        obs_xy = obs_xy[obs_idx, :]
+
+        # adjust position offset
+        adjusted_ref_pos = [(x + 0.5, y + 0.5) for x, y in ref_pos]
+        apertures_catalog = CircularAperture(adjusted_ref_pos, r=10.)
+
+        # Define normalization and the colormap
+        vmin = np.percentile(imgarr, 50)
+        vmax = np.percentile(imgarr, 99.)
+        nm = mpl.colors.Normalize(vmin=vmin, vmax=vmax, clip=True)
+
+        figsize = self._config['FIG_SIZE']
+        fig = plt.figure(figsize=figsize)
+        fig.canvas.manager.set_window_title(f'Input for {file_name}')
+
+        gs = gridspec.GridSpec(1, 1)
+        ax = fig.add_subplot(gs[0, 0])
+
+        im = ax.imshow(imgarr, origin='lower', norm=nm, cmap=cmap)
+
+        if list(obs_xy):
+            # adjust position offset
+            adjusted_src_pos = [(x + 0.5, y + 0.5) for x, y in obs_xy]
+            apertures = CircularAperture(adjusted_src_pos, r=10.)
+            apertures.plot(axes=ax, **{'color': 'red', 'lw': 1.25, 'alpha': 0.85})
+
+        apertures_catalog.plot(axes=ax, **{'color': 'green', 'lw': 1.25, 'alpha': 0.85})
+
+        # add image scale
+        self._add_image_scale(ax=ax, plim=plim, scale=scale)
+
+        # Add compass
+        self._add_compass(ax=ax, plim=plim, theta=theta)
+
+        # -----------------------------------------------------------------------------
+        # Make color bar
+        # -----------------------------------------------------------------------------
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("top", size="5%", pad=0.075)
+        cbar = plt.colorbar(im, cax=cax, orientation='horizontal')
+
+        cbar.ax.tick_params(
+            axis='both',  # changes apply to the x-axis
+            which='both',  # both major and minor ticks are affected
+            direction='in',
+            left=True,  # ticks along the bottom edge are off
+            right=True,  # ticks along the top edge are off
+            top=True,
+            bottom=True,
+            width=1.,
+            color='w')
+
+        cax.xaxis.set_ticks_position("top")
+        cax.xaxis.set_label_position("top")
+
+        cbar.ax.set_xlabel("Flux (counts)")
+
+        plt.setp(cbar.ax.xaxis.get_ticklabels(), fontsize='smaller')
+        cbar.update_ticks()
+
+        ax.set_xlim(xmin=0, xmax=imgarr.shape[1])
+        ax.set_ylim(ymin=0, ymax=imgarr.shape[0])
+
+        ax.tick_params(
+            axis='both',  # changes apply to the x-axis
+            which='both',  # both major and minor ticks are affected
+            direction='in',  # inward or outward ticks
+            left=True,  # ticks along the left edge are off
+            right=True,  # ticks along the right edge are off
+            top=True,  # ticks along the top edge are off
+            bottom=True,  # ticks along the bottom edge are off
+            width=1.,
+            color='k'  # tick color
+        )
+
+        minorlocatorx = AutoMinorLocator(5)
+        minorlocatory = AutoMinorLocator(5)
+
+        ax.xaxis.set_minor_locator(minorlocatorx)
+        ax.yaxis.set_minor_locator(minorlocatory)
+
+        ax.set_ylabel(r'Pixel y direction')
+        ax.set_xlabel(r'Pixel x direction')
+
+        fig.tight_layout(h_pad=0.4, w_pad=0.5, pad=1.)
+
+        # Save the plot
+        fname = f"plot.astrometry.final_{file_name}"
+        fname = os.path.join(fig_path, fname)
+
+        self._save_plot(fname)
+
+        if self._plot_images:
+            plt.show()
+
+        plt.close(fig=fig)
+
+    def _add_image_scale(self, ax, plim, scale):
+        """Make a scale for the image"""
+
+        length = self._config['LINE_LENGTH']
+        xlemark = length / (scale * 60.)
+        xstmark = 0.025 * plim
+        xenmark = xstmark + xlemark
+        ystmark = plim * (1. - 0.975)
+
+        ax.plot([xstmark, xenmark], [ystmark, ystmark], color='k', lw=1.25)
+        ax.annotate(text=r"{0:.0f}'".format(length),
+                    xy=(((xstmark + xenmark) / 2.), ystmark + 5), xycoords='data',
+                    textcoords='data', ha='center', c='k')
+
+        return ax
+
+    def _add_compass(self, ax, plim, theta, color='black'):
+        """Make a Ds9 like compass for image"""
+
         x0 = plim * 0.955
         y0 = plim * 0.955
         if self._telescope == 'DK-1.54':
@@ -1349,153 +1483,6 @@ class CalibrateObsWCS(object):
                 y0 = plim * 0.955
 
         larr = self._config['ARROW_LENGTH'] * plim  # 15% of the image size
-        length = self._config['LINE_LENGTH']
-        xlemark = length / (scale * 60.)
-        xstmark = 0.025 * plim
-        xenmark = xstmark + xlemark
-        ystmark = plim * (1. - 0.975)
-
-        adjusted_src_pos = [(x + 0.5, y + 0.5) for x, y in src_pos]
-        adjusted_ref_pos_before = [(x + 0.5, y + 0.5) for x, y in ref_pos_before]
-        adjusted_ref_pos_after = [(x + 0.5, y + 0.5) for x, y in ref_pos_after]
-
-        apertures = CircularAperture(adjusted_src_pos, r=7)
-        apertures_catalog_before = CircularAperture(adjusted_ref_pos_before, r=10)
-        apertures_catalog_after = CircularAperture(adjusted_ref_pos_after, r=10.)
-
-        # Define normalization and the colormap
-        vmin = np.percentile(imgarr, 50)
-        vmax = np.percentile(imgarr, 99.)
-        if norm == 'lin':
-            nm = ImageNormalize(vmin=vmin, vmax=vmax, stretch=LinearStretch())
-        elif norm == 'log':
-            nm = ImageNormalize(vmin=vmin, vmax=vmax, stretch=LogStretch())
-        else:
-            nm = ImageNormalize(vmin=vmin, vmax=vmax, stretch=SqrtStretch())
-        if cmap is None:
-            cmap = 'Greys_r'
-
-        figsize = self._config['FIG_SIZE']
-        fig = plt.figure(figsize=figsize)
-        fig.canvas.manager.set_window_title(f'Input for {file_name}')
-
-        gs = gridspec.GridSpec(1, 2)
-        ax1 = fig.add_subplot(gs[0, 0])
-
-        im1 = ax1.imshow(imgarr, origin='lower', norm=nm, cmap=cmap)
-
-        apertures.plot(axes=ax1, **{'color': 'blue', 'lw': 1.25, 'alpha': 0.75})
-        apertures_catalog_before.plot(axes=ax1, **{'color': 'red', 'lw': 1.25, 'alpha': 0.75})
-
-        ax2 = fig.add_subplot(gs[0, 1])
-
-        im2 = ax2.imshow(imgarr, origin='lower', norm=nm, cmap=cmap)
-
-        # apertures.plot(axes=ax2, color='blue', lw=1.5, alpha=0.75)
-        apertures_catalog_after.plot(axes=ax2, **{'color': 'green', 'lw': 1.25, 'alpha': 0.75})
-
-        ax2.plot([xstmark, xenmark], [ystmark, ystmark], color='k', lw=1.25)
-        ax2.annotate(text=r"{0:.0f}'".format(length),
-                     xy=(((xstmark + xenmark) / 2.), ystmark + 5), xycoords='data',
-                     textcoords='data', ha='center', c='k')
-
-        # Add compass
-        self._add_compass(ax=ax2, x0=x0, y0=y0, larr=larr, theta=theta)
-
-        # format axes
-        ax_list = [ax1, ax2]
-        im_list = [im1, im2]
-        for i in range(len(ax_list)):
-            ax = ax_list[i]
-            im = im_list[i]
-
-            # -----------------------------------------------------------------------------
-            # Make color bar
-            # -----------------------------------------------------------------------------
-            divider = make_axes_locatable(ax)
-            cax = divider.append_axes("top", size="5%", pad=0.075)
-            cbar = plt.colorbar(im, cax=cax, orientation='horizontal')
-
-            cbar.ax.tick_params(
-                axis='both',  # changes apply to the x-axis
-                which='both',  # both major and minor ticks are affected
-                direction='in',
-                left=True,  # ticks along the bottom edge are off
-                right=True,  # ticks along the top edge are off
-                top=True,
-                bottom=True,
-                width=1.,
-                color='w')
-
-            cax.xaxis.set_ticks_position("top")
-            cax.xaxis.set_label_position("top")
-
-            cbar.ax.set_xlabel("Flux (counts)")
-
-            plt.setp(cbar.ax.xaxis.get_ticklabels(), fontsize='smaller')
-            cbar.update_ticks()
-
-            ax.set_xlim(xmin=0, xmax=imgarr.shape[1])
-            ax.set_ylim(ymin=0, ymax=imgarr.shape[0])
-
-            ax.tick_params(
-                axis='both',  # changes apply to the x-axis
-                which='both',  # both major and minor ticks are affected
-                direction='in',  # inward or outward ticks
-                left=True,  # ticks along the left edge are off
-                right=True,  # ticks along the right edge are off
-                top=True,  # ticks along the top edge are off
-                bottom=True,  # ticks along the bottom edge are off
-                width=1.,
-                color='k'  # tick color
-            )
-
-            minorlocatorx = AutoMinorLocator(5)
-            minorlocatory = AutoMinorLocator(5)
-
-            ax.xaxis.set_minor_locator(minorlocatorx)
-            ax.yaxis.set_minor_locator(minorlocatory)
-
-            if i == 1:
-                ax.set_yticklabels([])
-            else:
-                ax.set_ylabel(r'Pixel y direction')
-
-            ax.set_xlabel(r'Pixel x direction')
-
-        fig.tight_layout(h_pad=0.4, w_pad=0.5, pad=1.)
-
-        # Save the plot
-        fname = f"plot.astrometry.final_{file_name}"
-        fname = os.path.join(fig_path, fname)
-
-        fig_type = self._config['FIG_TYPE']
-        fig_dpi = self._config['FIG_DPI']
-        if fig_type == 'png':
-            plt.savefig(fname + '.png', format='png', dpi=fig_dpi)
-            os.system(f'mogrify -trim {fname}.png ')
-        elif fig_type == 'pdf':
-            self._log.setLevel("critical".upper())
-            plt.savefig(fname + '.pdf', format='pdf', dpi=fig_dpi)
-            self._log.setLevel("info".upper())
-            os.system('pdfcrop ' + fname + '.pdf ' + fname + '.pdf')
-        else:
-            self._log.info(f"Figure will be saved as .png and.pdf")
-            plt.savefig(fname + '.png', format='png', dpi=fig_dpi)
-            os.system(f'mogrify -trim {fname}.png ')
-            self._log.setLevel("critical".upper())
-            plt.savefig(fname + '.pdf', format='pdf', dpi=fig_dpi)
-            self._log.setLevel("info".upper())
-            os.system('pdfcrop ' + fname + '.pdf ' + fname + '.pdf')
-
-        if self._plot_images:
-            plt.show()
-
-        plt.close(fig=fig)
-
-    @staticmethod
-    def _add_compass(ax, x0, y0, larr, theta, color='black'):
-        """Make a Ds9 like compass for image"""
 
         # East
         theta = theta * np.pi / 180.
@@ -1508,7 +1495,30 @@ class CalibrateObsWCS(object):
         x1, y1 = larr * np.cos(theta), larr * np.sin(theta)
         ax.arrow(x0, y0, x1, y1, head_width=10, color=color, zorder=2)
         ax.text(x0 + 1.25 * x1, y0 + 1.25 * y1, 'N', color=color)
+
         return ax
+
+    def _save_plot(self, fname: str):
+        """Save plots"""
+
+        fig_type = self._config['FIG_TYPE']
+        fig_dpi = self._config['FIG_DPI']
+        if fig_type == 'png':
+            plt.savefig(fname + '.png', format='png', dpi=fig_dpi)
+            os.system(f'mogrify -trim {fname}.png ')
+        elif fig_type == 'pdf':
+            self._log.setLevel("warning".upper())
+            plt.savefig(fname + '.pdf', format='pdf', dpi=fig_dpi)
+            self._log.setLevel("info".upper())
+            os.system('pdfcrop ' + fname + '.pdf ' + fname + '.pdf')
+        else:
+            self._log.info(f"Figure will be saved as .png and.pdf")
+            plt.savefig(fname + '.png', format='png', dpi=fig_dpi)
+            os.system(f'mogrify -trim {fname}.png ')
+            self._log.setLevel("warning".upper())
+            plt.savefig(fname + '.pdf', format='pdf', dpi=fig_dpi)
+            self._log.setLevel("info".upper())
+            os.system('pdfcrop ' + fname + '.pdf ' + fname + '.pdf')
 
 
 def main():

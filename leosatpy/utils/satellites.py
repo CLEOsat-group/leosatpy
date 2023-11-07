@@ -39,6 +39,8 @@ from lmfit import Model
 import ephem
 
 from scipy import ndimage as nd
+from scipy.sparse import csr_matrix
+
 from skimage.draw import line
 from skimage.measure import regionprops_table
 from skimage.transform import hough_line_peaks
@@ -49,7 +51,7 @@ from astropy.coordinates import Angle
 from photutils.aperture import RectangularAperture
 from astropy.stats import (sigma_clipped_stats, sigma_clip, mad_std)
 
-from photutils.segmentation import (SegmentationImage, detect_sources, detect_threshold)
+from photutils.segmentation import (SegmentationImage, detect_sources, detect_threshold, SourceCatalog)
 
 from sklearn.cluster import AgglomerativeClustering
 
@@ -366,7 +368,7 @@ def calculate_trail_parameter(fit_result):
     """ Calculate length, width and orientation.
 
     Reference: Closed form line-segment extraction using the Hough transform
-               Xu, Zezhong ; Shin, Bok-Suk ; Klette, Reinhard
+               Xu, Zezhong; Shin, Bok-Suk; Klette, Reinhard
     Bibcode: 2015PatRe..48.4012X
     """
 
@@ -557,35 +559,37 @@ def create_hough_space_vectorized(image: np.ndarray,
     # get step-size for rho and theta
     d = np.sqrt(np.square(edge_height) + np.square(edge_width))
 
-    N_theta = math.ceil(180 / dtheta)
-    N_theta += 1
-    thetas, binwidth_theta = np.linspace(-90, 90,
-                                         N_theta, retstep=True, dtype='float32')
     N_rho = math.ceil(2 * d / drho)
     N_rho += 1
-    rhos, binwidth_rho = np.linspace(-d, d,
-                                     N_rho, retstep=True, dtype='float32')
+    rhos, binwidth_rho = np.linspace(-d, d, N_rho,
+                                     retstep=True, dtype='float32')
+
+    N_theta = math.ceil(180 / dtheta)
+    N_theta += 1
+    thetas, binwidth_theta = np.linspace(-90, 90, N_theta,
+                                         retstep=True, dtype='float32')
 
     # get cosine and sinus
     cos_thetas = np.cos(np.deg2rad(thetas)).astype('float32')
     sin_thetas = np.sin(np.deg2rad(thetas)).astype('float32')
 
-    # extract edge points which are at least larger than sigma * background rms and convert them
-    edge_points = np.argwhere(image != 0.)
-    edge_points = edge_points - np.array([[edge_height_half, edge_width_half]])
+    # extract edge points
+    edge_sparse = csr_matrix(image)
+    edge_points = np.vstack(edge_sparse.nonzero()).T
+    edge_points -= np.array([[edge_height_half, edge_width_half]])
 
     # calculate matrix product
     rho_values = np.matmul(edge_points, np.array([sin_thetas, cos_thetas],
-                                                 dtype='float32')).astype('float32')
+                                                 dtype='float32'))
     del image, cos_thetas, sin_thetas, edge_points
 
-    # get the hough space
+    # get the hough space using fast histogram
     bins = [len(thetas), len(rhos)]
     vals = np.array([np.tile(thetas, rho_values.shape[0]),
-                     rho_values.ravel().astype('float32')], dtype='float32')
-
+                     rho_values.ravel()], dtype='float32')
     ranges = np.array([[np.min(thetas), np.max(thetas)],
-                       [np.min(rhos), np.max(rhos)]]).astype('float32')
+                       [np.min(rhos), np.max(rhos)]], dtype='float32')
+
     accumulator = fhist.histogram2d(*vals, bins=bins, range=ranges).astype('float32')
 
     # rhos in rows and thetas in columns (rho, theta)
@@ -663,7 +667,8 @@ def detect_sat_trails(image: np.ndarray,
                   'axis_major_length',
                   'axis_minor_length',
                   'eccentricity',
-                  'feret_diameter_max', 'coords']
+                  # 'feret_diameter_max', 'coords'
+                  ]
 
     trail_data = {'reg_info_lst': []}
 
@@ -682,26 +687,26 @@ def detect_sat_trails(image: np.ndarray,
         m = np.where(mask, 0, 1)
         image *= m
 
+    # apply un-sharpen mask
     blurred_f = nd.gaussian_filter(image, 2.)
     filter_blurred_f = nd.gaussian_filter(blurred_f, sigma_blurr)
     sharpened = blurred_f + alpha * (blurred_f - filter_blurred_f)
+    plt.figure()
+    plt.imshow(sharpened)
 
-    mean, _, std = sigma_clipped_stats(sharpened, grow=False)
-    # sharpened -= mean
-
-    # threshold = detect_threshold(sharpened, 1., mean, std)
     threshold = detect_threshold(sharpened, 1.)
+    sharpened[sharpened < threshold] = 0
 
     sources = detect_sources(sharpened, threshold=threshold,
                              npixels=9, connectivity=8, mask=mask)
+
     segm = SegmentationImage(sources.data)
 
     # only for CTIO BW3 2022-11-10
     if config['use_sat_mask']:
-
         raper = RectangularAperture([[959.63, 1027.3], [903.93, 1073.75]],
-                                    w=2755,
-                                    h=10, theta=Angle(47.1, u.degree))
+                                    w=2755, h=10,
+                                    theta=Angle(47.1, u.degree))
         m = raper.to_mask('center')
         m0 = m[0].to_image(segm.shape)
         m1 = m[1].to_image(segm.shape)
@@ -712,19 +717,19 @@ def detect_sat_trails(image: np.ndarray,
 
     segm_init = segm.copy()
 
-    # create regions
-    regs = regionprops_table(segm.data, properties=properties)
-    df_init = pd.DataFrame(regs)
-    df_init['orientation_deg'] = df_init['orientation'] * 180. / np.pi
-
     # first filter roundish objects
-    labels = df_init.query("eccentricity >= 0.985 and area > @min_trail_length")['label']
+    cat = SourceCatalog(sharpened, segm)
+
+    ecc_mask = cat.eccentricity >= np.percentile(cat.eccentricity, 99.5)
+    area_mask = cat.segment_area.data > min_trail_length
+    combined_mask = ecc_mask & area_mask
+
+    labels = cat.labels[combined_mask]
     if labels.size == 0:
         if not silent:
-            log.info("  ==> NO satellite trails detected.")
+            log.info("  ==> NO satellite trail(s) detected.")
         del image, blurred_f, filter_blurred_f, sharpened, \
-            threshold, sources, segm, segm_init, \
-            regs, df_init
+            threshold, sources, segm, segm_init
         gc.collect()
         return None, False
 
@@ -738,7 +743,7 @@ def detect_sat_trails(image: np.ndarray,
         if df['eccentricity'].values[0] >= 0.999 and \
                 df['axis_major_length'].values[0] > min_trail_length:
             if not silent:
-                log.info("  ==> 1 satellite trails detected.")
+                log.info("  ==> 1 satellite trail detected.")
             reg_dict = get_trail_properties(segm, df, config, silent=True)
             if config['roi_offset'] is not None:
                 coords = np.array(reg_dict['coords'])
@@ -753,7 +758,7 @@ def detect_sat_trails(image: np.ndarray,
             n_trail = 1
         else:
             if not silent:
-                log.info("  ==> NO satellite trails detected.")
+                log.info("  ==> NO satellite trail(s) detected.")
             del image, blurred_f, filter_blurred_f, sharpened, \
                 threshold, sources, segm, segm_init, \
                 regs, df
@@ -780,7 +785,10 @@ def detect_sat_trails(image: np.ndarray,
         res = s[s['axis_major_length'] == s.groupby(['groups'])['axis_major_length'].transform('max')]
         ind = res.sort_values(by='axis_major_length', ascending=False)['groups'].values
 
-        # !!! select only the longest for now !!!
+        # !select only the longest for now!
+        if not silent:
+            log.info(f"  ==> 1 satellite trail(s) detected.")
+
         ind = ind[0]
         df2 = grouped.get_group(ind)
 
@@ -941,12 +949,20 @@ def get_hough_transform(image: np.ndarray, sigma: float = 2.,
                         silent: bool = False):
     """ Perform a Hough transform on the selected region and fit parameter """
 
+
     # generate Hough space H(theta, rho)
     res = create_hough_space_vectorized(image=image,
                                         dtheta=theta_bin_size,
                                         drho=rho_bin_size,
                                         silent=silent)
     hspace, dist, theta, _, _ = res
+
+    # starttime = time.perf_counter()
+    # endtime = time.perf_counter()
+    # dt = endtime - starttime
+    # td = timedelta(seconds=dt)
+    # print(f"Program execution time in hh:mm:ss: {td}")
+
     # apply gaussian filter to smooth the image
     hspace_smooth = nd.gaussian_filter(hspace, sigma)
 

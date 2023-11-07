@@ -53,6 +53,7 @@ dk154_params = {
 
     # detector keywords
     'extent': ('NAXIS1', 'NAXIS2'),  # N_pixels in x/y
+    'n_ext': 0,  # Number of Extensions in the calibrated image
     'n_amps': 1,  # the number of amplifiers on the chip
     'namps_yx': {'1x1': None},
     'amplist': {'1x1': None},  # amplifier list keyword
@@ -149,6 +150,7 @@ cbnuo_params = {
 
     # detector keywords
     'extent': ('NAXIS1', 'NAXIS2'),  # N_pixels in x/y
+    'n_ext': 0,  # Number of Extensions in the calibrated image
     'n_amps': 1,  # number of chips on detector
     'namps_yx': {'1x1': None},
     'amplist': {'1x1': None},  # amplifier list keyword
@@ -235,6 +237,7 @@ ca123dlrmkiii_param = {
 
     # detector keywords
     'extent': ('NAXIS1', 'NAXIS2'),  # N_pixels in x/y
+    'n_ext': 0,  # Number of Extensions in the calibrated image
     'n_amps': 1,  # number of chips on detector
     'namps_yx': {'1x1': None},
     'amplist': {'1x1': None},  # amplifier list keyword
@@ -327,6 +330,7 @@ ckoir_param = {
     'instrume': 'INSTRUME',  # instrument keyword
 
     'extent': ('NAXIS1', 'NAXIS2'),  # N_pixels in x/y
+    'n_ext': 0,  # Number of Extensions in the calibrated image
     'n_amps': 1,  # number of chips on detector
     'namps_yx': {'1x1': None},
     'amplist': {'1x1': None},  # amplifier list keyword
@@ -408,7 +412,7 @@ ckoir_param = {
 }
 
 # CTIO 0.9 m telescope
-ctio_params = {
+ctio_90cm_params = {
 
     # telescope location information
     "name": "Cerro Tololo Interamerican Observatory",
@@ -427,6 +431,7 @@ ctio_params = {
     'instrume': 'INSTRUME',  # instrument keyword
 
     'extent': ('NAXIS1', 'NAXIS2'),  # N_pixels in x/y
+    'n_ext': 0,  # Number of Extensions in the calibrated image
     'n_amps': 4,  # number of chips/amplifier on detector
     'namps_yx': {'1x1': {4: [2, 2]}},
     'amplist': {'1x1': ['11', '12', '21', '22']},  # amplifier list keyword
@@ -513,6 +518,67 @@ ctio_params = {
 
 }
 
+ctio_400cm_params = {
+
+    # telescope location information
+    "name": "Cerro Tololo Interamerican Observatory",
+    "longitude": -70.81489,
+    "latitude": -30.16606,
+    "altitude": 2215.0,
+    "tz": -4,
+
+    # telescope keywords
+    'telescope_instrument': 'CTIO',  # telescope/instrument name
+    'telescope_keyword': 'CTIO 4.0-m telescope',  # telescope/instrument keyword
+    'observatory_code': '807',  # MPC observatory code
+
+    # instrument-specific FITS header keywords
+    'telescop': 'TELESCOP',  # telescope keyword
+    'instrume': 'INSTRUME',  # instrument keyword
+    'detector': 'DETPOS',  # detector name keyword
+
+    'extent': ('NAXIS1', 'NAXIS2'),  # Number of pixel in x/y,
+    'n_ext': 61,  # Number of Extensions in the calibrated image
+    'n_amps': 1,  # number of chips on detector
+    'namps_yx': {'1x1': None},
+    'amplist': {'1x1': None},  # amplifier list keyword
+    'secpix': (0.27, 0.27),  # pixel size (arcsec)
+    'binning': ('CCDBIN1', 'CCDBIN2'),  # binning in x/y
+
+    # telescope pointing keywords
+    'ra': 'RA',  # telescope pointing, RA
+    'dec': 'DEC',  # telescope pointing, Dec
+    'radec_separator': ':',  # RA/Dec hms separator, use 'XXX' if already in degrees
+    'equinox': 'EQUINOX',
+
+    # keyword; use 'date|time' if separate
+    'date_keyword': 'DATE-OBS',  # obs date/time
+
+    'imagetyp': 'IMAGETYP',
+    'object': 'OBJECT',  # object name keyword
+    'filter': 'BAND',  # filter keyword
+
+    # filtername translation dictionary
+    'filter_translations': {'u': 'u', 'g': 'g',
+                            'r': 'r', 'i': 'i',
+                            'z': 'z'},
+
+    'exptime': 'EXPTIME',  # exposure time keyword (s)
+    'airmass': 'AIRMASS',  # airmass keyword
+
+    # keywords to exclude from the header update while preparing the file
+    'keys_to_exclude': None,
+
+    # keywords for info_dict
+    'obs_keywords': ['telescop', 'instrume', 'object', 'date-obs', 'filter', 'exptime',
+                     'ra', 'dec', 'airmass', 'binning'],
+
+    # source extractor settings
+    'saturation_limit': 6.5e4,
+    'apply_mask': False
+
+}
+
 spm_params = {
 
     # telescope location information
@@ -532,6 +598,7 @@ spm_params = {
     'instrume': 'INSTRUME',  # instrument keyword
 
     'extent': ('NAXIS1', 'NAXIS2'),  # N_pixels in x/y
+    'n_ext': 0,  # Number of Extensions in the calibrated image
     'n_amps': 1,  # number of chips/amplifier on detector
     'namps_yx': {'1x1': None},
     'amplist': {'1x1': None},  # amplifier list keyword
@@ -615,6 +682,7 @@ ouka_params = {
     'instrume': 'INSTRUME',  # instrument keyword
 
     'extent': ('NAXIS1', 'NAXIS2'),  # N_pixels in x/y
+    'n_ext': 0,  # Number of Extensions in the calibrated image
     'n_amps': 1,  # number of chips/amplifier on detector
     'namps_yx': {'1x1': None},
     'amplist': {'1x1': None},  # amplifier list keyword
@@ -682,7 +750,7 @@ ouka_params = {
 }
 
 # currently available telescopes
-IMPLEMENTED_TELESCOPES = ['CA123DLRMKIII', 'CBNUO-JC', 'CKOIR', 'DK154_DFOSC', 'CTIO09',
+IMPLEMENTED_TELESCOPES = ['CA123DLRMKIII', 'CBNUO-JC', 'CKOIR', 'DK154_DFOSC', 'CTIO90', 'CTIO400',
                           'OUKA', 'SPM']
 
 # translate INSTRUME header keyword
@@ -690,7 +758,8 @@ INSTRUMENT_IDENTIFIERS = OrderedDict({'DFOSC_FASU': 'DK154_DFOSC',
                                       'DLR-MKIII': 'CA123DLRMKIII',
                                       'FLI': 'CKOIR',
                                       'SBIG STX-16803 CCD Camera': 'CBNUO-JC',
-                                      'cfccd': 'CTIO09', 'ZWO ASI2600MM Pro': 'OUKA',
+                                      'cfccd': 'CTIO90', 'DECam': 'CTIO400',
+                                      'ZWO ASI2600MM Pro': 'OUKA',
                                       'C1': 'SPM', 'C2': 'SPM', 'C3': 'SPM', 'C4': 'SPM'
                                       })
 
@@ -699,7 +768,8 @@ TELESCOPE_PARAMETERS = OrderedDict({'CA123DLRMKIII': ca123dlrmkiii_param,
                                     'CBNUO-JC': cbnuo_params,
                                     'CKOIR': ckoir_param,
                                     'DK154_DFOSC': dk154_params,
-                                    'CTIO09': ctio_params,
+                                    'CTIO90': ctio_90cm_params,
+                                    'CTIO400': ctio_400cm_params,
                                     'OUKA': ouka_params,
                                     'SPM': spm_params
                                     })
