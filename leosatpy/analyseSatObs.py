@@ -304,17 +304,17 @@ class AnalyseSatObs(object):
                         f"observed with the {self._telescope} telescope")
                 self._sat_id = sat_name
 
-                # result, error = self._analyse_sat_trails(files=files, sat_name=sat_name)
-                try:
-                    result, error = self._analyse_sat_trails(files=files, sat_name=sat_name)
-                except Exception as e:
-                    exc_type, exc_obj, exc_tb = sys.exc_info()
-                    fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-                    self._log.critical(f"Unexpected behaviour: {e} in file {fname}, "
-                                       f"line {exc_tb.tb_lineno}")
-                    error = [str(e), f'file: {fname}, line: {exc_tb.tb_lineno}',
-                             'Please report to christian.adam84@gmail.com']
-                    result = False
+                result, error = self._analyse_sat_trails(files=files, sat_name=sat_name)
+                # try:
+                #     result, error = self._analyse_sat_trails(files=files, sat_name=sat_name)
+                # except Exception as e:
+                #     exc_type, exc_obj, exc_tb = sys.exc_info()
+                #     fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                #     self._log.critical(f"Unexpected behaviour: {e} in file {fname}, "
+                #                        f"line {exc_tb.tb_lineno}")
+                #     error = [str(e), f'file: {fname}, line: {exc_tb.tb_lineno}',
+                #              'Please report to christian.adam84@gmail.com']
+                #     result = False
 
                 if result:
                     self._log.info(f">> Report: Satellite detection and analysis was {pass_str}")
@@ -815,11 +815,14 @@ class AnalyseSatObs(object):
                                      threshold=threshold,
                                      npixels=5, connectivity=8)
 
+            del ref_img_warped
+
             if sources is not None:
                 segm = SegmentationImage(sources.data)
                 src_mask = segm.make_source_mask(footprint=None)
 
-            src_mask = image_mask + src_mask
+            # if image_mask is not None:
+            #     src_mask = image_mask + src_mask
 
         # loop over each detected trail to get optimum aperture and photometry
         for i in range(n_trails):
@@ -946,7 +949,7 @@ class AnalyseSatObs(object):
                                            obsparams=obspar)
             self._obj_info = self._obsTable.obj_info
 
-        del trail_image, ref_img_warped, df, config, obspar, trail_image_bkg, trail_image_hdr, data_dict, img_dict
+        del trail_image, df, config, obspar, trail_image_bkg, trail_image_hdr, data_dict, img_dict
         gc.collect()
 
         return sat_phot_dict
@@ -1343,12 +1346,15 @@ class AnalyseSatObs(object):
         bkg_data_dict_list = [[] for _ in range(n_imgs)]
         for f in range(n_imgs):
             file_loc = files[f]
+
             # split file string into a path and filename
             file_name = Path(file_loc).stem
             file_name_clean = file_name.replace('_cal', '')
+
+            # load extensions of interest iv available
             self._obsTable.get_ext_oi(file_name_clean)
             est_oi_data = self._obsTable.ext_oi_data
-            if est_oi_data:
+            if list(est_oi_data):
                 hdu_idx_list = est_oi_data
 
         for f in range(n_imgs):
