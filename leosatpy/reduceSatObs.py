@@ -27,7 +27,7 @@ import collections
 import gc
 import logging
 import os
-# STDLIB
+
 import re
 import sys
 import time
@@ -36,15 +36,14 @@ from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
 
-# ccdproc
 import ccdproc
-# THIRD PARTY
+
 import numpy as np
 import pandas as pd
-# photutils
+
 import photutils
+
 from astropy import units as u
-# astropy
 from astropy.io import fits
 from astropy.stats import (
     mad_std, SigmaClip, sigma_clipped_stats)
@@ -56,11 +55,20 @@ from photutils.segmentation import (detect_sources,
                                     detect_threshold)
 
 # Project modules
-from leosatpy.utils import arguments
-from leosatpy.utils import dataset
-from leosatpy.utils import tables
-from leosatpy.utils import version
-from leosatpy.utils import base_conf as _base_conf
+try:
+    import leosatpy
+except ModuleNotFoundError:
+    from utils import arguments
+    from utils import dataset
+    from utils import tables
+    from utils import version
+    from utils import base_conf as _base_conf
+else:
+    from leosatpy.utils import arguments
+    from leosatpy.utils import dataset
+    from leosatpy.utils import tables
+    from leosatpy.utils import version
+    from leosatpy.utils import base_conf as _base_conf
 
 # -----------------------------------------------------------------------------
 
@@ -150,7 +158,7 @@ class ReduceSatObs(object):
         """Run full-reduction routine on the input path.
 
         Prepare science files, find calibration files,
-        i.e. master_bias, master_dark, and master_flat
+        i.e., master_bias, master_dark, and master_flat
         and run reduction for a given set of data.
         """
 
@@ -262,7 +270,7 @@ class ReduceSatObs(object):
         obs_date, filters, binnings = self._prepare_fits_files(new_file_paths,
                                                                self._telescope,
                                                                self._obsparams, 'science')
-
+        # print(obs_date, filters, binnings)
         # loop binnings and prepare calibration files
         for binxy in binnings:
 
@@ -556,7 +564,8 @@ class ReduceSatObs(object):
         if readnoise is not None and not isinstance(readnoise, u.Quantity):
             readnoise = readnoise * u.Unit("electron")
 
-        dfilter = {'imagetyp': _base_conf.IMAGETYP_LIGHT} if dfilter is None else dfilter
+        dfilter = {'imagetyp': _base_conf.IMAGETYP_LIGHT,
+                   'binning': self._bin_str} if dfilter is None else dfilter
         if dfilter is not None and key_filter is not None and image_filter is not None:
             dfilter = add_keys_to_dict(dfilter, {key_filter: image_filter})
         files_list = self._get_file_list(files_list, dfilter,
@@ -1583,7 +1592,6 @@ class ReduceSatObs(object):
 
                 if binning_x == int(binnings[0]) and binning_y == int(binnings[1]):
                     files.append(file_path)
-        frmt = "%Y-%m-%dT%H:%M:%S.%f"
 
         same_date = []
         diff_date = []
@@ -1600,10 +1608,10 @@ class ReduceSatObs(object):
             else:
                 time_string = prim_hdr['date-obs'.upper()]
 
-            frmt = _base_conf.has_fractional_seconds(time_string)
+            # frmt = _base_conf.has_fractional_seconds(time_string)
 
             t = pd.to_datetime(time_string,
-                               format=frmt, utc=False)
+                               format='ISO8601', utc=False)
 
             t_short = t.strftime('%Y-%m-%d')
             if t_short == obs_date.strftime('%Y-%m-%d'):
@@ -1711,11 +1719,6 @@ class ReduceSatObs(object):
                                                          key_find=key_find, invert_find=invert_find, dkeys=dkeys)
 
         return file_list
-
-    @staticmethod
-    def truncate(num, n):
-        integer = int(num * 10 ** n) / (10 ** n)
-        return float(integer)
 
     def _prepare_fits_files(self, file_names, telescope, obsparams, imagetyp):
         """ Create uniform data structure.
@@ -2182,40 +2185,6 @@ def get_binning(header, obsparams):
 
     return binning_x, binning_y
 
-
-def _add_keys_to_dict(ldict, dkeys, copy=True, force=False):
-    """Add dictionary content to the list of dictionaries.
-
-    Parameters
-    ----------
-    ldict: list, dict
-        List of dictionary to which the dict of keys is added.
-    dkeys: dict
-        Dictionary of keys and values to add to the given list of dictionary
-    copy: bool
-        Make a deepcopy of the input list of dictionary
-    force: bool, optional
-        Force replacement of the key in dictionary if True. Default is True.
-
-    Returns
-    -------
-    ldict: dict
-        List of dictionaries with added data
-    """
-    if ldict is not None and dkeys is not None:
-        if not isinstance(ldict, (list, tuple)):
-            ldict = [ldict]
-        if copy:
-            ldict = deepcopy(ldict)
-        for i, v in enumerate(ldict):
-            if v is not None and isinstance(v, dict):
-                for key in dkeys:
-                    if key is not None:
-                        if key not in v or (key in v and force):
-                            ldict[i][key] = dkeys[key]
-    return ldict
-
-
 def get_filename(ccd_file, key='FILENAME'):
     """ Get file name from string or ccd object.
 
@@ -2271,7 +2240,7 @@ def ammend_hdr(header):
 
     Returns
     -------
-    header:  astropy.io.fits.Header
+    header: astropy.io.fits.Header
         The same fits header object with trailing blanks removed
     """
     if '' in header:

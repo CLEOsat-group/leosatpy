@@ -14,6 +14,7 @@
 # -----------------------------------------------------------------------------
 
 """ Modules """
+import gc
 import os
 import logging
 import warnings
@@ -77,6 +78,9 @@ class BCOLORS:
     UNDERLINE = '\033[4m'
 
 
+pass_str = BCOLORS.PASS + "SUCCESSFUL" + BCOLORS.ENDC
+fail_str = BCOLORS.FAIL + "FAILED" + BCOLORS.ENDC
+
 # potential FITS header keywords for looking up the instrument
 # any unique header keyword works as a potential identifier
 INSTRUMENT_KEYS = ['PPINSTRU', 'LCAMMOD', 'INSTRUME',
@@ -102,6 +106,12 @@ def has_fractional_seconds(time_string):
         return FRMT
 
 
+def clean_up(*args):
+    for arg in args:
+        del arg
+    gc.collect()
+
+
 ROUND_DECIMAL = 5
 
 IMAGETYP_LIGHT = 'science'
@@ -122,11 +132,11 @@ MEM_LIMIT_COMBINE = 6e9
 
 # Default result table column names.
 DEF_RES_TBL_COL_NAMES = ['File', 'Object', 'Sat-Name', 'AltID', 'UniqueID',
-                         'Instrument',
+                         'Instrument', 'HDU_idx', 'DetPosID',
                          'Telescope', 'RA', 'DEC', 'Date-Obs', 'Filter', 'ExpTime',
                          'Airmass', 'Binning',
                          'Obs-Start', 'Obs-Mid', 'Obs-Stop',
-                         'HasTrail', 'HasRef', 'NRef',
+                         'HasTrail', 'NTrail', 'HasRef', 'NRef',
                          'UT Date', 'UT time',
                          'SatLon', 'SatLat', 'SatAlt',
                          'SatAz', 'SatElev', 'SatRA', 'SatDEC',
@@ -136,8 +146,14 @@ DEF_RES_TBL_COL_NAMES = ['File', 'Object', 'Sat-Name', 'AltID', 'UniqueID',
                          'ObsTrailLength', 'e_ObsTrailLength', 'EstTrailLength', 'e_EstTrailLength',
                          'SunSatAng', 'SunPhaseAng', 'SunIncAng', 'ObsAng',
                          'ObsMag', 'e_ObsMag', 'EstMag', 'e_EstMag',
-                         'EstScaleMag', 'e_EstScaleMag', 'SunAzAng', 'SunElevAng',
-                         'FluxScale', 'MagScale', 'MagCorrect', 'e_MagCorrect', 'dt_tle-obs',
+                         'EstScaleMag', 'e_EstScaleMag',
+                         'HasZp', 'MagZp',
+                         'ObsMag_zp', 'e_ObsMag_zp',
+                         'EstMag_zp', 'e_EstMag_zp',
+                         'EstScaleMag_zp', 'e_EstScaleMag_zp',
+                         'SunAzAng', 'SunElevAng',
+                         'FluxScale', 'MagScale', 'MagCorrect', 'e_MagCorrect', 'MagCorrectSat',
+                         'dt_tle-obs',
                          'TrailCX', 'e_TrailCX', 'TrailCY', 'e_TrailCY',
                          'TrailCRA', 'e_TrailCRA', 'TrailCDEC', 'e_TrailCDEC',
                          'TrailANG', 'e_TrailANG', 'OptAperHeight',
@@ -177,7 +193,9 @@ DEF_KEY_TRANSLATIONS = {
     'Object': ['OBJECT', 'BLKNM'],
     'Instrument': ['INSTRUME'],
     'Telescope': ['TELESCOP', 'OBSERVAT'],
-    'Filter': ['FILTER'],
+    'HDU_idx': ['HDU_IDX'],
+    'DetPosID': ['DETPOS'],
+    'Filter': ['FILTER', 'BAND'],
     'ExpTime': ['EXPTIME'],
     'RA': ['RA', 'OBSRA', 'OBJRA', 'OBJCTRA', 'STRRQRA'],
     'DEC': ['DEC', 'OBSDEC', 'OBJDEC', 'OBJCTDEC', 'STRRQDE'],
@@ -195,8 +213,9 @@ DEF_KEY_TRANSLATIONS = {
     'bias_cor': ['BIAS_COR'],
     'dark_cor': ['DARK_COR'],
     'flat_cor': ['FLAT_COR'],
-    'WCS_cal': ['AST_CAL'],
-    'HasTrail': ['HASTRAIL']
+    'WCS_cal': ['AST_CAL', 'WCSCAL'],
+    'HasTrail': ['HASTRAIL'],
+    'NTrail': ['NTRAIL']
 }
 
 # list of available catalogs for photometry
@@ -273,7 +292,7 @@ SUPPORTED_BANDS = {
     "U": ["GSC243", "GSC242"], "B": ["GSC243", "GSC242"],
     "V": ["GSC243", "GSC242"], "R": ["GSC243", "GSC242"], "I": ["GSC243", "GSC242"],
     "J": ["2MASS"], "H": ["2MASS"], "K": ["2MASS"], "Ks": ["2MASS"],
-    "g": ["GSC243", "GSC242"], "r": ["GSC243", "GSC242"], "i": ["GSC243", "GSC242"],
+    "g": ["GSC243", "GSC242"], "r": ["GSC243", "GSC242"], "i": ["GSC243", "GSC242"], "u": ["GSC243", "GSC242"],
     "w": ["GSC243", "GSC242"], "y": ["GSC243", "GSC242"], "z": ["GSC243", "GSC242"]
 }
 
@@ -287,7 +306,8 @@ CATALOG_FILTER_EXT = {
               "H": {'Prim': [['h_m', 'h_cmsig']], 'Alt': None},
               "K": {'Prim': [['k_m', 'k_cmsig']], 'Alt': None},
               "Ks": {'Prim': [['k_m', 'k_cmsig']], 'Alt': None}},
-    'PS1DR2': {"g": {'Prim': [['SDSSgMag', 'SDSSgMagErr']], 'Alt': None},
+    'PS1DR2': {"u": {'Prim': [['SDSSuMag', 'SDSSuMagErr']], 'Alt': None},
+               "g": {'Prim': [['SDSSgMag', 'SDSSgMagErr']], 'Alt': None},
                "r": {'Prim': [['SDSSrMag', 'SDSSrMagErr']], 'Alt': None},
                "i": {'Prim': [['SDSSiMag', 'SDSSiMagErr']], 'Alt': None},
                "z": {'Prim': [['SDSSzMag', 'SDSSzMagErr']], 'Alt': None},
@@ -313,6 +333,7 @@ CATALOG_FILTER_EXT = {
                "g": {'Prim': [['SDSSgMag', 'SDSSgMagErr']], 'Alt': None},
                "r": {'Prim': [['SDSSrMag', 'SDSSrMagErr']], 'Alt': None},
                "i": {'Prim': [['SDSSiMag', 'SDSSiMagErr']], 'Alt': None},
+               "u": {'Prim': [['SDSSuMag', 'SDSSuMagErr']], 'Alt': None},
                "w": {'Prim': [['SDSSgMag', 'SDSSgMagErr'],
                               ['SDSSrMag', 'SDSSrMagErr']], 'Alt': None},
                "z": {'Prim': [['SDSSzMag', 'SDSSzMagErr']], 'Alt': None}},

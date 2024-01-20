@@ -6,6 +6,7 @@ Alongside the packages listed in the ``requirements.txt``, this project uses wor
 
 * `Astrometry <https://github.com/lukaswenzl/astrometry>`_ under the GPLv3 License, Lukas Wenzl (2022), `Zenodo <https://doi.org/10.5281/zenodo.6462441>`_
 * `AutoPhOT <https://github.com/Astro-Sean/autophot>`_ under the GPLv3 License, Brennan & Fraser (2022), `NASA ADS <https://ui.adsabs.harvard.edu/abs/2022A%26A...667A..62B/abstract>`_
+* `Ccdproc <https://ccdproc.readthedocs.io/en/stable/index.html>`_, an Astropy package for image reduction (`Craig et al. 2023 <https://doi.org/10.5281/zenodo.593516>`_).
 
 The authors of these packages and code are gratefully acknowledged.
 

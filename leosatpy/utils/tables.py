@@ -75,15 +75,24 @@ class ObsTables(object):
         self._sat_info = pd.DataFrame()
         self._roi_info = pd.DataFrame()
         self._roi_data = pd.DataFrame()
+        self._ext_oi_info = pd.DataFrame()
+        self._ext_oi_data = pd.DataFrame()
+        self._glint_mask_info = pd.DataFrame()
+        self._glint_mask_data = pd.DataFrame()
 
         self._vis_info = pd.DataFrame()
         self._def_path = Path(config['RESULT_TABLE_PATH']).expanduser().resolve()
         self._def_tbl_name = config['RESULT_TABLE_NAME']
         self._def_roi_name = config['ROI_TABLE_NAME']
+        self._def_ext_oi_name = config['EXT_OI_TABLE_NAME']
+        self._def_glint_mask_name = config['GLINT_MASK_TABLE_NAME']
+
         self._def_cols = _base_conf.DEF_RES_TBL_COL_NAMES
         self._def_col_units = _base_conf.DEF_RES_TBL_COL_UNITS
         self._fname_res_table = self._def_path / self._def_tbl_name
         self._fname_roi_table = self._def_path / self._def_roi_name
+        self._fname_ext_oi_table = self._def_path / self._def_ext_oi_name
+        self._fname_glint_mask_table = self._def_path / self._def_glint_mask_name
         self._def_key_transl = _base_conf.DEF_KEY_TRANSLATIONS
         self._create_obs_table()
 
@@ -92,8 +101,16 @@ class ObsTables(object):
         return self._obs_info
 
     @property
+    def glint_mask_data(self):
+        return self._glint_mask_data
+
+    @property
     def roi_data(self):
         return self._roi_data
+
+    @property
+    def ext_oi_data(self):
+        return self._ext_oi_data
 
     @property
     def obj_info(self):
@@ -107,10 +124,27 @@ class ObsTables(object):
     def vis_data(self):
         return self._vis_info
 
+    def find_satellite_in_tle(self, tle_loc, sat_name):
+        matches = []
+        with open(tle_loc, 'r') as file:
+            for line in file:
+                if sat_name in line:
+                    matches.append(line.strip())  # Add the matching line to the list
+
+        if matches:
+            match = matches[0]
+            self._log.info(f"    Found match for {sat_name}: {match}")
+            return match
+        else:
+            self._log.warning(f"{sat_name} not found in TLE file!!! "
+                              "TBW: Get TLE. "
+                              "Exiting for now!!!")
+            return None
+
     def find_tle_file(self, sat_name: str,
                       img_filter: str,
                       src_loc: str):
-        """ Check for tle file location """
+        """ Check for TLE file location """
         tle_filenames = []
         level_up = 0
         datetime_in_folder = ('morning' in src_loc or 'evening' in src_loc)
@@ -134,27 +168,27 @@ class ObsTables(object):
         if 'BLUEWALKER' in sat_name:
             sat_type = 'bluewalker'
 
-        regex = re.compile(rf'tle_{sat_type}_{obs_date[0]}[-_]{obs_date[1]}[-_]{obs_date[2]}.+.txt')
+        regex = re.compile(rf'tle_{sat_type}_{obs_date[0]}[-_]{obs_date[1]}[-_]{obs_date[2]}.*\.txt')
 
         path = os.walk(search_path)
         for root, dirs, files in path:
             f = sorted([s for s in files if re.search(regex, s)])
-            # f = sorted([s for s in files if f'tle_{sat_type}' in s])
+
             if len(f) > 0:
                 [tle_filenames.append((root, s, Path(os.path.join(root, s)))) for s in f]
 
         if not tle_filenames:
-            self._log.warning("NO tle file found!!! "
-                              "TBW: Get tle. "
+            self._log.warning("NO TLE file found!!! "
+                              "TBW: Get TLE. "
                               "Exiting for now!!!")
             return None
-            # sys.exit(1)
+        
         elif len(tle_filenames) > 1:
             # first check if one file has unique in name
             idx_arr = np.array([i[0].find('unique') for i in tle_filenames])
             unique_idx = np.where(idx_arr == 0)[0]
             if unique_idx and len(unique_idx) > 1:
-                self._log.warning("Multiple unique tle files found. "
+                self._log.warning("Multiple unique TLE files found. "
                                   "This really should not happen!!! TBW: select")
             elif unique_idx and len(unique_idx) == 1:
                 return tle_filenames[unique_idx[0]]
@@ -195,7 +229,7 @@ class ObsTables(object):
 
         if not vis_filenames:
             self._log.warning("NO visibility file found!!! "
-                              "TBW: calculate visibility from tle file for obs-mid time. "
+                              "TBW: calculate visibility from TLE file for obs-mid time. "
                               "Exiting for now!!!")
             return False
 
@@ -204,18 +238,44 @@ class ObsTables(object):
 
         return True
 
+    def load_glint_mask_table(self):
+        """Load table with regions of glints that should be masked and excluded"""
+        glint_info = self._glint_mask_info
+
+        # files info
+        fname = self._fname_glint_mask_table
+        if fname.exists():
+            if not self._silent:
+                self._log.info(f'> Read glint mask from: {self._def_glint_mask_name}')
+            glint_info = pd.read_csv(fname, header=0, delimiter=',')
+
+        self._glint_mask_info = glint_info
+
     def load_roi_table(self):
-        """Load the observation info table"""
+        """Load the regions of interest info table"""
         roi_info = self._roi_info
 
         # files info
         fname = self._fname_roi_table
         if fname.exists():
             if not self._silent:
-                self._log.info(f'> Read Region-of-Interest {self._def_roi_name}')
+                self._log.info(f'> Read Region-of-Interest from: {self._def_roi_name}')
             roi_info = pd.read_csv(fname, header=0, delimiter=',')
 
         self._roi_info = roi_info
+
+    def load_ext_oi_table(self):
+        """Load the extensions of interest info table"""
+        ext_oi_info = self._ext_oi_info
+
+        # files info
+        fname = self._fname_ext_oi_table
+        if fname.exists():
+            if not self._silent:
+                self._log.info(f'> Read Extensions-of-Interest from: {self._def_ext_oi_name}')
+            ext_oi_info = pd.read_csv(fname, header=0, delimiter=',')
+
+        self._ext_oi_info = ext_oi_info
 
     def load_obs_table(self):
         """Load the observation info table"""
@@ -225,7 +285,7 @@ class ObsTables(object):
         fname = self._fname_res_table
         if fname.exists():
             if not self._silent:
-                self._log.info(f'> Read {self._def_tbl_name}')
+                self._log.info(f'> Read observation info from: {self._def_tbl_name}')
             obs_info = pd.read_csv(fname, header=0, delimiter=',')
             # obs_info.drop([0], axis=0, inplace=True)
             # obs_info.reset_index(drop=True)
@@ -252,9 +312,60 @@ class ObsTables(object):
                 pos_df = roi_info[pos_mask]
                 self._roi_data = pos_df
 
-    def get_object_data(self, fname, kwargs, obsparams):
+    def get_ext_oi(self, fname):
+        """Get extension(s) of interest"""
+        ext_oi_info = self._ext_oi_info
+
+        if not ext_oi_info.empty:
+            pos_df = ext_oi_info.copy()
+
+            # convert file name to uppercase
+            pos_df['File'] = ext_oi_info['File'].str.upper()
+            fname_upper = fname.upper()
+
+            # check position
+            pos_mask = pos_df['File'] == fname_upper
+            pos = np.flatnonzero(pos_mask)
+
+            if list(pos):
+
+                pos_df = ext_oi_info[pos_mask]['Array_N'][pos[0]]
+                self._ext_oi_data = eval(pos_df)
+            else:
+                self._ext_oi_data = []
+
+    def get_glint_mask(self, fname, hdu_idx):
+        """Get Glint masks"""
+
+        glint_info = self._glint_mask_info
+
+        if not glint_info.empty:
+            pos_df = glint_info.copy()
+
+            # convert file name to uppercase
+            pos_df['File'] = glint_info['File'].str.upper()
+            fname_upper = fname.upper()
+
+            # check position
+            pos_mask = (pos_df['File'] == fname_upper)
+            pos = np.flatnonzero(pos_mask)
+
+            if list(pos):
+                df = glint_info[pos_mask]
+                hdu_match = (df['HDU'] == hdu_idx)
+                if np.any(hdu_match):
+
+                    if len(np.array(hdu_match)) == 1:
+                        idx = pos[hdu_match]
+                        self._glint_mask_data = glint_info.iloc[idx]
+                    else:
+                        idx = pos[np.where(hdu_match)[0]]
+                        self._glint_mask_data = glint_info.iloc[idx]
+
+    def get_object_data(self, fname, kwargs, obsparams, hdu_idx):
         """Extract a row from the obs info table"""
         obs_info = self._obs_info
+        n_ext = obsparams['n_ext']
 
         # make a copy
         obs_info_tmp = obs_info.copy()
@@ -272,15 +383,20 @@ class ObsTables(object):
         inst_key, inst_val = self._get_position_data(kwargs, obsparams, 'instrume', 'Instrument')
         obj_key, obj_val = self._get_position_data(kwargs, obsparams, 'object', 'Object')
 
+        key_list = ['RA', 'DEC', 'Instrument', 'Object']
+        key_dict = {'RA': [ra_val], 'DEC': [de_val], 'Instrument': [inst_val],
+                    'Object': [obj_val]}
+
+        if n_ext > 1:
+            key_list = ['RA', 'DEC', 'Instrument', 'Object', 'HDU_idx']
+            key_dict['HDU_idx'] = [f"{hdu_idx:.1f}"]
+
         if list(pos):
             self._log.debug("  Possible match with previous entry found. Check RA and DEC.")
 
-            df = obs_info[mask][['RA', 'DEC', 'Instrument', 'Object']].astype(str)
+            df = obs_info[mask][key_list].astype(str)
 
-            coord_match = df.isin({'RA': [ra_val],
-                                   'DEC': [de_val],
-                                   'Instrument': [inst_val],
-                                   'Object': [obj_val]}).all(axis=1)
+            coord_match = df.isin(key_dict).all(axis='columns')
 
             if coord_match.any():
                 if len(coord_match) == 1:
@@ -411,6 +527,10 @@ class ObsTables(object):
 
         obs_info = self._obs_info
         fname = self._fname_res_table
+        n_ext = obsparams['n_ext']
+
+        # exposure time
+        expt = kwargs['EXPTIME']
 
         # update the columns in case the table was changed
         for col in self._def_cols:
@@ -422,10 +542,7 @@ class ObsTables(object):
         obs_info = obs_info[self._def_cols]
 
         # replace all None values with NAN
-        obs_info.replace(to_replace=[None], value=np.nan, inplace=True)
-
-        # exposure time
-        expt = kwargs['EXPTIME']
+        obs_info = obs_info.replace(to_replace=[None], value=np.nan, inplace=False)
 
         # make a copy
         obs_info_tmp = obs_info.copy()
@@ -443,6 +560,16 @@ class ObsTables(object):
         inst_key, inst_val = self._get_position_data(kwargs, obsparams, 'instrume', 'Instrument')
         obj_key, obj_val = self._get_position_data(kwargs, obsparams, 'object', 'Object')
 
+        key_list = ['RA', 'DEC', 'Instrument', 'Object']
+        key_dict = {'RA': [ra_val], 'DEC': [de_val], 'Instrument': [inst_val],
+                    'Object': [obj_val]}
+
+        if n_ext > 1:
+            # hdu index
+            hdu_idx = str(float(kwargs['HDU_IDX']))
+            key_list = ['RA', 'DEC', 'Instrument', 'Object', 'HDU_idx']
+            key_dict['HDU_idx'] = [hdu_idx]
+
         if not list(pos):
             self._log.debug("  File name not found. Adding new entry.")
             obs_info = self._add_row(obs_info, file, kwargs, self._def_cols,
@@ -451,13 +578,9 @@ class ObsTables(object):
             self._log.debug("  Possible match with previous entry found. "
                             "Check RA, DEC, object and instrument.")
 
-            df = obs_info[mask][['RA', 'DEC', 'Instrument', 'Object']].astype(str)
+            df = obs_info[mask][key_list].astype(str)
 
-            coord_match = df.isin({'RA': [ra_val],
-                                   'DEC': [de_val],
-                                   'Instrument': [inst_val],
-                                   'Object': [obj_val]}).all(axis=1)
-
+            coord_match = df.isin(key_dict).all(axis=1)
             if coord_match.any():
 
                 self._log.debug("  Coordinate/Pointing, object and instrument match found. Updating.")
@@ -507,7 +630,7 @@ class ObsTables(object):
                         obs_info.loc[idx, 'Obs-Mid'] = t_mid.strftime('%H:%M:%S.%f')[:-3]
                         obs_info.loc[idx, 'Obs-Stop'] = t_stop.strftime('%H:%M:%S.%f')[:-3]
                     elif dcol_name == 'WCS_cal':
-                        obs_info.loc[idx, dcol_name] = 'T' if value else 'F'
+                        obs_info.loc[idx, dcol_name] = 'T' if value or value == 'successful' else 'F'
                     elif dcol_name == 'RA':
                         obs_info.loc[idx, dcol_name] = ra
                     elif dcol_name == 'DEC':
@@ -541,7 +664,7 @@ class ObsTables(object):
                         new_dict['Obs-Mid'] = t_mid.strftime('%H:%M:%S.%f')[:-3]
                         new_dict['Obs-Stop'] = t_stop.strftime('%H:%M:%S.%f')[:-3]
                     elif dcol_name == 'WCS_cal':
-                        new_dict[dcol_name] = 'T' if value else 'F'
+                        new_dict[dcol_name] = 'T' if value or value == 'successful' else 'F'
                     elif dcol_name == 'RA':
                         new_dict[dcol_name] = ra
                     elif dcol_name == 'DEC':
@@ -600,7 +723,7 @@ class ObsTables(object):
             for line in lines[1:]:
 
                 # split line using regex
-                row = re.split(r'\s\s|\s|\t', line[0])
+                row = re.split(pattern=r'\s\s|\s|\t', string=line[0])
                 l_row = len(row)
 
                 if two_lines:
@@ -653,7 +776,8 @@ class ObsTables(object):
     def _update_times(self, value, expt, kwargs):
         """ Update Observation date, start, mid, and end times."""
         self._log.debug("  Check Obs-Date")
-        if 'time-obs'.upper() in kwargs:
+        if ('time-obs'.upper() in kwargs and 'telescop'.upper() in kwargs and
+                kwargs['telescop'.upper()] != 'CTIO 4.0-m telescope'):
             t = pd.to_datetime(f"{kwargs['date-obs'.upper()]}T{kwargs['time-obs'.upper()]}",
                                format=frmt, utc=False)
         else:

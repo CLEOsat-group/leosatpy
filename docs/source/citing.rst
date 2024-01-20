@@ -5,7 +5,7 @@ Citing LEOSatpy
 
 .. code-block:: bib
 
-        @inprep{your_publication,
+        @inprep{oneweb_adam,
           author = {{Adam}, C., },
           title = "{Estimating the impact to astronomy from the Oneweb satellite constellation using multicolour observations}",
           journal = {Nature Astronomy},
@@ -19,7 +19,7 @@ Citing LEOSatpy
         @software{your_software_project,
           author = {{Adam}, C., },
           title = {LEOSatpy},
-          version = {1.0.0},
+          version = {latest},
           url = {https://github.com/CLEOsat-group/leosatpy},
-          doi = {10.5281/zenodo.7991917}
+          doi = {https://doi.org/10.5281/zenodo.8012131}
         }

@@ -402,8 +402,10 @@ class DataSet(object):
             add_filters = {"telescop": telescope}
             if telescope == 'CBNUO-JC':
                 add_filters = {'observat': telescope}
-            if telescope == 'CTIO 0.9 meter telescope':
+            if telescope in ['CTIO 0.9 meter telescope', 'CTIO 4.0-m telescope']:
                 add_filters = {'observat': 'CTIO'}
+            # if telescope == 'CTIO 4.0-m telescope':
+            #     add_filters = {'observat': 'CTIO'}
 
             add_filters[obsparams['instrume'].lower()] = inst
 
@@ -416,6 +418,8 @@ class DataSet(object):
 
             if telescope == 'DDOTI 28-cm f/2.2':
                 add_filters['exptype'] = imagetyp
+            elif telescope == 'CTIO 4.0-m telescope':
+                add_filters['obstype'] = imagetyp
             else:
                 add_filters["imagetyp"] = imagetyp
 
@@ -432,7 +436,10 @@ class DataSet(object):
             elif mode == 'calibWCS':
                 add_filters = {"combined": True, "ast_cal": None}
             elif mode == 'satPhotometry':
-                add_filters = {"combined": True, "ast_cal": True}
+                if telescope == 'CTIO 4.0-m telescope':
+                    add_filters = {"combined": None, "wcscal": 'successful'}
+                else:
+                    add_filters = {"combined": True, "ast_cal": True}
             else:
                 log.error("Mode must be either `reduceSatObs`, `reduceCalibObs`, "
                           "`calibWCS` or `satPhotometry`. "
@@ -500,6 +507,8 @@ class DataSet(object):
     @staticmethod
     def _grouped_by_pointing(data: ccdproc.ImageFileCollection, inst):
         """Group files by telescope pointing"""
+
+        # convert to pandas dataframe
         df = data.summary.to_pandas()
 
         # use only the current instrument
@@ -509,14 +518,22 @@ class DataSet(object):
         df.sort_values(by='file', inplace=True)
 
         def to_bin(x):
-            step = 2.778e-3  # 10 arcsecond
+            if inst == 'DECam':
+                step = 8.333e-2  # 300 arcsecond
+            else:
+                step = 3.333e-2  # 60 arcsecond
             return np.floor(x / step) * step
 
-        # step = 2.778e-3  # 10 arcsecond
-        # to_bin = lambda x: np.floor(x / step) * step
-        df['RA_bin'] = df.crval1.map(to_bin)
-        df['DEC_bin'] = df.crval2.map(to_bin)
+        if inst == 'DECam':
 
+            df['RA_bin'] = df.centra.map(to_bin)
+            df['DEC_bin'] = df.centdec.map(to_bin)
+        else:
+
+            df['RA_bin'] = df.crval1.map(to_bin)
+            df['DEC_bin'] = df.crval2.map(to_bin)
+
+        # group files by selected bins
         by_dist = df.groupby(["RA_bin", "DEC_bin"])
 
         return by_dist

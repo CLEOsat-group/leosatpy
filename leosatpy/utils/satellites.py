@@ -22,23 +22,33 @@
 """ Modules """
 from __future__ import annotations
 
-import os
+import cv2
+import ephem
+import fast_histogram as fhist
 import inspect
 import logging
-import gc
+import math
 import numpy as np
+import os
 import pandas as pd
-from pyorbital import astronomy
-from geopy import distance
+import requests
+
 from datetime import datetime
 from dateutil import parser
-import requests
-import math
-import fast_histogram as fhist
+from geopy import distance
 from lmfit import Model
-import ephem
+from lmfit.models import (ConstantModel, GaussianModel, Gaussian2dModel,
+                          ExponentialGaussianModel, LognormalModel)
+
+from pyorbital import astronomy
 
 from scipy import ndimage as nd
+from scipy.sparse import csr_matrix
+from scipy.special import erf
+from scipy.integrate import quad
+from scipy.optimize import brentq
+from scipy.stats import norm
+
 from skimage.draw import line
 from skimage.measure import regionprops_table
 from skimage.transform import hough_line_peaks
@@ -47,9 +57,10 @@ from astropy import constants as const
 from astropy import units as u
 from astropy.coordinates import Angle
 from photutils.aperture import RectangularAperture
-from astropy.stats import (sigma_clipped_stats, sigma_clip, mad_std)
+from astropy.stats import (sigma_clip, mad_std, gaussian_fwhm_to_sigma)
 
-from photutils.segmentation import (SegmentationImage, detect_sources, detect_threshold)
+from photutils.segmentation import (SegmentationImage, detect_sources,
+                                    detect_threshold, SourceCatalog)
 
 from sklearn.cluster import AgglomerativeClustering
 
@@ -59,6 +70,8 @@ except ImportError:
     plt = None
 else:
     import matplotlib
+    import matplotlib as mpl
+    from matplotlib import cm
     from matplotlib import pyplot as plt
     import matplotlib.lines as mlines
     import matplotlib.gridspec as gridspec  # GRIDSPEC !
@@ -66,6 +79,7 @@ else:
     from astropy.visualization import LinearStretch, LogStretch, SqrtStretch
     from astropy.visualization.mpl_normalize import ImageNormalize
     from mpl_toolkits.axes_grid1 import make_axes_locatable
+    from matplotlib.collections import PolyCollection
 
     # matplotlib parameter
     matplotlib.use('Qt5Agg')
@@ -97,6 +111,8 @@ log = logging.getLogger(__name__)
 
 MODULE_PATH = os.path.dirname(inspect.getfile(inspect.currentframe()))
 
+norm_type = cv2.NORM_MINMAX
+
 
 # -----------------------------------------------------------------------------
 
@@ -120,19 +136,22 @@ def get_angular_distance(observer: ephem.Observer,
     return dtheta
 
 
-def get_average_magnitude(flux, flux_err, std_fluxes, std_mags, mag_corr, mag_scale=None):
+def get_average_magnitude(flux, flux_err, std_fluxes, std_mags, mag_corr, mag_corr_sat=0.,
+                          mag_scale=None, area=None):
     """Calculate mean magnitude"""
 
-    # get difference magnitude and magnitude difference
-    _error = ((flux + flux_err) / (std_fluxes[:, 0] - std_fluxes[:, 1])) / \
-             (flux / std_fluxes[:, 0])
+    # Calculate the error in the magnitude difference using error propagation
+    flux_ratio = flux / std_fluxes[:, 0]
+    flux_ratio_err = np.sqrt((flux_err / flux) ** 2 + (std_fluxes[:, 1] / std_fluxes[:, 0]) ** 2) * flux_ratio
 
     diff_mag = -2.5 * np.log10(flux / std_fluxes[:, 0])
-    diff_mag_err = np.sqrt((-2.5 * np.log10(flux * _error / std_fluxes[:, 0]) - diff_mag) ** 2)
+    diff_mag_err = 2.5 / np.log(10) * flux_ratio_err / flux_ratio
 
     # observed satellite magnitude relative to std stars
-    mag = std_mags[:, 0] + diff_mag + mag_corr[0]
+    mag = diff_mag + std_mags[:, 0] + mag_corr[0] + mag_corr_sat
     mag = mag + mag_scale if mag_scale is not None else mag
+    mag = mag + 2.5 * np.log10(area) if area is not None else mag
+
     mag_err = np.sqrt(diff_mag_err ** 2 + std_mags[:, 1] ** 2 + mag_corr[1] ** 2)
 
     mask = np.array(sigma_clip(mag,
@@ -144,14 +163,27 @@ def get_average_magnitude(flux, flux_err, std_fluxes, std_mags, mag_corr, mag_sc
     mag_cleaned = mag[~mask]
     mag_err_cleaned = mag_err[~mask]
 
-    # mag_avg_w = np.average(mag_cleaned, weights=1. / mag_err_cleaned ** 2)
     mag_avg_w = np.nanmean(mag_cleaned)
     mag_avg_err = np.nanmean(mag_err_cleaned)
 
-    del flux, flux_err, std_fluxes, std_mags, mag_corr
-    gc.collect()
+    _base_conf.clean_up(flux, flux_err, std_fluxes, std_mags, mag_corr)
 
     return mag_avg_w, mag_avg_err
+
+
+def get_magnitude_zpmag(flux, flux_err, zp_mag, mag_corr_sat=0., mag_scale=None, area=None):
+    """Calculate satellite magnitude using the zero-point magnitude from the header
+    https://www.gnu.org/software/gnuastro/manual/html_node/Brightness-flux-magnitude.html
+    """
+    # the flux = counts * t_exp -> zp_mag in mag
+    mag = -2.5 * np.log10(flux) + zp_mag + mag_corr_sat
+    mag = mag + mag_scale if mag_scale is not None else mag
+    mag = mag + 2.5 * np.log10(area) if area is not None else mag
+
+    # Calculate uncertainty
+    mag_err = 2.5 / np.log(10) * (flux_err / flux)
+
+    return mag, mag_err
 
 
 def sun_inc_elv_angle(obsDate: str | datetime, geo_loc: tuple):
@@ -274,7 +306,7 @@ def get_observer_angle(sat_lat, geo_lat, sat_h_orb_km, h_obs_km, sat_range_km):
     # Initialize logging for this user-callable function
     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
 
-    # get radius of Earth for a given observation site latitude
+    # get the radius of Earth for a given observation site latitude
     Rearth_obs = get_radius_earth(geo_lat)
     Rearth_h_obs = Rearth_obs + h_obs_km
 
@@ -299,7 +331,7 @@ def get_obs_range(sat_elev, h_orb, h_obs_km, lat):
     # Initialize logging for this user-callable function
     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
 
-    # get radius of Earth for a given observation site latitude
+    # get the radius of Earth for a given observation site latitude
     Rearth_obs = get_radius_earth(lat)
     Rearth = Rearth_obs + h_obs_km
 
@@ -366,7 +398,7 @@ def calculate_trail_parameter(fit_result):
     """ Calculate length, width and orientation.
 
     Reference: Closed form line-segment extraction using the Hough transform
-               Xu, Zezhong ; Shin, Bok-Suk ; Klette, Reinhard
+               Xu, Zezhong; Shin, Bok-Suk; Klette, Reinhard
     Bibcode: 2015PatRe..48.4012X
     """
 
@@ -403,7 +435,6 @@ def calculate_trail_parameter(fit_result):
     e = np.sqrt(1. - ((T / 2.) ** 2. / (L / 2.) ** 2.))
 
     del fit_result
-    gc.collect()
 
     return (L, err_L,
             T, err_T, theta_p, theta_p_err,
@@ -510,7 +541,6 @@ def fit_trail_params(Hij, rhos, thetas, theta_0, image_size, cent_ind, win_size,
         yc_err = lin_fit_result.params['a0'].stderr
 
     del Hij, h_peak_win
-    gc.collect()
 
     result = ((xc, yc), (xc_err, yc_err),
               L, err_L, T, err_T, theta_p_rad + np.pi / 2., e_theta_p_rad,
@@ -546,10 +576,6 @@ def create_hough_space_vectorized(image: np.ndarray,
     # Initialize logging for this user-callable function
     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
 
-    if not silent:
-        log.info("  > Perform Hough transform to determine "
-                 "the length, width and orientation of the detected satellite trail.")
-
     # image properties
     edge_height, edge_width = image.shape[:2]
     edge_height_half, edge_width_half = edge_height // 2, edge_width // 2
@@ -557,42 +583,43 @@ def create_hough_space_vectorized(image: np.ndarray,
     # get step-size for rho and theta
     d = np.sqrt(np.square(edge_height) + np.square(edge_width))
 
-    N_theta = math.ceil(180 / dtheta)
-    N_theta += 1
-    thetas, binwidth_theta = np.linspace(-90, 90,
-                                         N_theta, retstep=True, dtype='float32')
     N_rho = math.ceil(2 * d / drho)
     N_rho += 1
-    rhos, binwidth_rho = np.linspace(-d, d,
-                                     N_rho, retstep=True, dtype='float32')
+    rhos, binwidth_rho = np.linspace(-d, d, N_rho,
+                                     retstep=True, dtype='float32')
+
+    N_theta = math.ceil(180 / dtheta)
+    N_theta += 1
+    thetas, binwidth_theta = np.linspace(-90, 90, N_theta,
+                                         retstep=True, dtype='float32')
 
     # get cosine and sinus
     cos_thetas = np.cos(np.deg2rad(thetas)).astype('float32')
     sin_thetas = np.sin(np.deg2rad(thetas)).astype('float32')
 
-    # extract edge points which are at least larger than sigma * background rms and convert them
-    edge_points = np.argwhere(image != 0.)
-    edge_points = edge_points - np.array([[edge_height_half, edge_width_half]])
+    # extract edge points
+    edge_sparse = csr_matrix(image.astype(np.int8))
+    edge_points = np.vstack(edge_sparse.nonzero()).T
+    edge_points -= np.array([[edge_height_half, edge_width_half]])
 
     # calculate matrix product
-    rho_values = np.matmul(edge_points, np.array([sin_thetas, cos_thetas],
-                                                 dtype='float32')).astype('float32')
+    rho_values = np.matmul(edge_points.astype(np.int16),
+                           np.array([sin_thetas, cos_thetas],
+                                    dtype='float32')).astype('float32')
+
     del image, cos_thetas, sin_thetas, edge_points
 
-    # get the hough space
+    # get the hough space using fast histogram
     bins = [len(thetas), len(rhos)]
-    vals = np.array([np.tile(thetas, rho_values.shape[0]),
-                     rho_values.ravel().astype('float32')], dtype='float32')
+    vals = [np.tile(thetas, rho_values.shape[0]), rho_values.ravel()]
+    ranges = [[np.min(thetas), np.max(thetas)], [np.min(rhos), np.max(rhos)]]
 
-    ranges = np.array([[np.min(thetas), np.max(thetas)],
-                       [np.min(rhos), np.max(rhos)]]).astype('float32')
-    accumulator = fhist.histogram2d(*vals, bins=bins, range=ranges).astype('float32')
+    accumulator = fhist.histogram2d(*vals, bins=bins, range=ranges)
 
     # rhos in rows and thetas in columns (rho, theta)
     accumulator = np.transpose(accumulator)
 
-    del rho_values, vals, ranges, bins
-    gc.collect()
+    _base_conf.clean_up(rho_values, ranges, bins)
 
     return accumulator, rhos, thetas, drho, dtheta
 
@@ -609,7 +636,6 @@ def quantize(df, colname='orientation', tolerance=0.005):
           )
 
     del model
-    gc.collect()
 
     return df
 
@@ -630,13 +656,13 @@ def get_min_trail_length(config: dict):
     R = const.R_earth.value + H_sat
     y = np.sqrt(const.G.value * const.M_earth.value / R ** 3)
     y *= 6.2831853
-    return np.rad2deg(y) * 3600. / pixscale * 0.1
+    return np.rad2deg(y) * 3600. / pixscale * 0.05  # 10% of the angular distance
 
 
 def detect_sat_trails(image: np.ndarray,
                       config: dict,
                       alpha: float = 10.,
-                      sigma_blurr: float = 3.,
+                      sigma_blurr: float = 4.,
                       borderLen: int = 1,
                       mask: np.ndarray = None,
                       silent: bool = False):
@@ -658,50 +684,66 @@ def detect_sat_trails(image: np.ndarray,
     if not isinstance(image, np.ndarray):
         raise ValueError("Input image not ndarray object.")
 
-    n_trail = 0
     properties = ['label', 'centroid', 'area', 'orientation',
                   'axis_major_length',
                   'axis_minor_length',
                   'eccentricity',
-                  'feret_diameter_max', 'coords']
+                  # 'feret_diameter_max', 'coords'
+                  ]
 
     trail_data = {'reg_info_lst': []}
 
     # get minimum expected trail length for satellite
     min_trail_length = get_min_trail_length(config)
 
-    # zero out the borders with width given by borderLen
-    if borderLen > 0:
-        len_x, len_y = image.shape
-        image[0:borderLen, 0:len_y] = 0
-        image[len_x - borderLen:len_x, 0:len_y] = 0
-        image[0:len_x, 0:borderLen] = 0
-        image[0:len_x, len_y - borderLen:len_y] = 0
+    # mask saturated pixel
+    saturation_limit = config['sat_lim']
+    saturation_mask = (image >= 0.90 * saturation_limit)
+    image[saturation_mask] = 0.
 
+    # combine masks
     if mask is not None:
-        m = np.where(mask, 0, 1)
-        image *= m
+        mask |= saturation_mask
+    else:
+        mask = saturation_mask
+    if not silent:
+        log.info("    Create segmentation map from image")
 
-    blurred_f = nd.gaussian_filter(image, 2.)
+    # apply un-sharpen mask
+    blurred_f = nd.gaussian_filter(image, 3.)
     filter_blurred_f = nd.gaussian_filter(blurred_f, sigma_blurr)
     sharpened = blurred_f + alpha * (blurred_f - filter_blurred_f)
 
-    mean, _, std = sigma_clipped_stats(sharpened, grow=False)
-    # sharpened -= mean
+    # apply gaussian to get rid of unwanted edges
+    sharpened = nd.gaussian_filter(sharpened, 3.)
 
-    # threshold = detect_threshold(sharpened, 1., mean, std)
-    threshold = detect_threshold(sharpened, 1.)
+    # zero out the borders with width given by borderLen
+    if borderLen > 0:
+        len_x, len_y = sharpened.shape
+        sharpened[0:borderLen, 0:len_y] = 0.
+        sharpened[len_x - borderLen:len_x, 0:len_y] = 0.
+        sharpened[0:len_x, 0:borderLen] = 0.
+        sharpened[0:len_x, len_y - borderLen:len_y] = 0.
 
+    if mask is not None:
+        m = np.where(mask, 0, 1)
+        sharpened *= m
+
+    del blurred_f, filter_blurred_f  # zero out the borders with width given by borderLen
+
+    # determine the detection threshold
+    threshold = detect_threshold(sharpened, background=None, nsigma=1.5, mask=mask)
+
+    # get sources and create a segmentation map
     sources = detect_sources(sharpened, threshold=threshold,
                              npixels=9, connectivity=8, mask=mask)
     segm = SegmentationImage(sources.data)
 
     # only for CTIO BW3 2022-11-10
     if config['use_sat_mask']:
-
         raper = RectangularAperture([[959.63, 1027.3], [903.93, 1073.75]],
-                                    w=2755,
-                                    h=10, theta=Angle(47.1, u.degree))
+                                    w=2755, h=10,
+                                    theta=Angle(47.1, u.degree))
         m = raper.to_mask('center')
         m0 = m[0].to_image(segm.shape)
         m1 = m[1].to_image(segm.shape)
@@ -710,106 +752,127 @@ def detect_sat_trails(image: np.ndarray,
 
         segm = SegmentationImage(m0.astype(int))
 
+    # make a copy
     segm_init = segm.copy()
 
-    # create regions
+    # first filter roundish objects
+    cat = SourceCatalog(sharpened, segm)
+
+    # mask almost horizontal segments close to x-axis
+    border_mask_ang_x = np.abs(cat.orientation.data) > 5.
+    border_mask_x1 = cat.centroid[:, 0] > 50.
+    border_mask_x2 = cat.centroid[:, 0] < sharpened.shape[1] - 50.
+    border_mask_x = border_mask_ang_x & border_mask_x1 & border_mask_x2
+    # mask almost vertical segments close to y-axis
+    border_mask_ang_y = 90. - np.abs(cat.orientation.data) > 5.
+    border_mask_y1 = cat.centroid[:, 1] > 50.
+    border_mask_y2 = cat.centroid[:, 1] < sharpened.shape[0] - 50.
+    border_mask_y = border_mask_ang_y & border_mask_y1 & border_mask_y2
+
+    # combine the border masks
+    border_mask_combined = border_mask_x | border_mask_y
+
+    # eccentricity mask
+    e_lim = np.percentile(cat.eccentricity, 99.9)
+    if not silent:
+        log.info(f"    Initial filter. Keep segments with ecc >= {e_lim:.4f}")
+    ecc_mask = cat.eccentricity.data >= e_lim
+
+    combined_mask = ecc_mask & border_mask_combined
+
+    # create labels
+    labels = cat.labels[combined_mask]
+
+    _base_conf.clean_up(cat, ecc_mask, combined_mask)
+
+    # first check if there are any labels
+    if labels.size == 0:
+        if not silent:
+            log.info("  ==> NO satellite trail(s) detected.")
+        _base_conf.clean_up(sharpened, labels, segm, segm_init)
+        return None, False
+
+    # keep only the good label
+    segm.keep_labels(labels=labels, relabel=False)
+
+    # create an initial regions dataframe
     regs = regionprops_table(segm.data, properties=properties)
     df_init = pd.DataFrame(regs)
     df_init['orientation_deg'] = df_init['orientation'] * 180. / np.pi
+    del regs
 
-    # first filter roundish objects
-    labels = df_init.query("eccentricity >= 0.985 and area > @min_trail_length")['label']
-    if labels.size == 0:
-        if not silent:
-            log.info("  ==> NO satellite trails detected.")
-        del image, blurred_f, filter_blurred_f, sharpened, \
-            threshold, sources, segm, segm_init, \
-            regs, df_init
-        gc.collect()
-        return None, False
-
-    segm.keep_labels(labels=labels, relabel=False)
-
-    regs = regionprops_table(segm.data, properties=properties)
-    df = pd.DataFrame(regs)
-    df['orientation_deg'] = df['orientation'] * 180. / np.pi
-
-    if df.shape[0] == 1:
-        if df['eccentricity'].values[0] >= 0.999 and \
-                df['axis_major_length'].values[0] > min_trail_length:
+    if df_init.shape[0] == 1:
+        if df_init['eccentricity'].values[0] < 0.999:
             if not silent:
-                log.info("  ==> 1 satellite trails detected.")
-            reg_dict = get_trail_properties(segm, df, config, silent=True)
-            if config['roi_offset'] is not None:
-                coords = np.array(reg_dict['coords'])
-                coords[0] = coords[0] + config['roi_offset'][0]
-                coords[1] = coords[1] + config['roi_offset'][1]
-                reg_dict['coords'] = tuple(coords)
-
-            reg_dict['detection_imgs'].update({'img_sharp': sharpened,
-                                               'segm_map': segm_init})
-
-            trail_data['reg_info_lst'].append(reg_dict)
-            n_trail = 1
+                log.info("  ==> NO satellite trail(s) detected.")
+            _base_conf.clean_up(sharpened, segm, segm_init, labels, df_init)
+            return None, False
         else:
-            if not silent:
-                log.info("  ==> NO satellite trails detected.")
-            del image, blurred_f, filter_blurred_f, sharpened, \
-                threshold, sources, segm, segm_init, \
-                regs, df
-            gc.collect()
-            return None, False
+            df_search = df_init.copy()
     else:
-        df1 = quantize(df, colname='orientation_deg', tolerance=config['MAX_DISTANCE'])
-        grouped = df1.groupby(by='groups')
+        df_quantize = quantize(df_init, colname='orientation_deg',
+                               tolerance=config['MAX_DISTANCE'])
+        grouped = df_quantize.groupby(by='groups')
         for name, group in grouped:
-            if (group['eccentricity'] <= 0.995).all() or group['axis_major_length'].sum() < min_trail_length:
-                df1 = df1.drop(grouped.get_group(name).index)
-        if df1.empty:
+            if (group['eccentricity'] < 0.995).all() or group['axis_major_length'].sum() < min_trail_length:
+                df_quantize = df_quantize.drop(grouped.get_group(name).index)
+
+        if df_quantize.empty:
             if not silent:
                 log.info("  ==> NO satellite trails detected.")
-
-            del image, blurred_f, filter_blurred_f, sharpened, \
-                threshold, sources, segm, segm_init, \
-                regs, df
-            gc.collect()
-
+            _base_conf.clean_up(sharpened, segm, segm_init,
+                                labels, df_init, df_quantize, grouped)
             return None, False
+        else:
+            # sort groups according to the total length in the group
+            s = df_quantize.groupby(by='groups')['axis_major_length'].sum().reset_index()  # sum of lengths
+            res = s[s['axis_major_length'] == s.groupby(['groups'])['axis_major_length'].transform('max')]
+            idx_sorted = res.sort_values(by='axis_major_length', ascending=False)['groups'].values
 
-        s = df1.groupby(by='groups')['axis_major_length'].sum().reset_index()
-        res = s[s['axis_major_length'] == s.groupby(['groups'])['axis_major_length'].transform('max')]
-        ind = res.sort_values(by='axis_major_length', ascending=False)['groups'].values
+            # !select only the longest for now
+            ind = idx_sorted[0]
+            df_search = grouped.get_group(ind)
 
-        # !!! select only the longest for now !!!
-        ind = ind[0]
-        df2 = grouped.get_group(ind)
+            _base_conf.clean_up(df_quantize, s, res, ind, grouped)
 
-        segm.keep_labels(labels=df['label'], relabel=False)
-        reg_dict = get_trail_properties(segm, df2, config, silent=True)
+    reg_dict, n_trail_total = get_trail_properties(segm, df_search, config, silent=silent)
 
-        if config['roi_offset'] is not None:
-            coords = np.array(reg_dict['coords'])
-            coords[0] = coords[0] + config['roi_offset'][0]
-            coords[1] = coords[1] + config['roi_offset'][1]
-            reg_dict['coords'] = tuple(coords)
+    # check results of fit for non-finite results
+    check_props = np.array([reg_dict['width'], reg_dict['e_width'],
+                            reg_dict['height'], reg_dict['e_height']])
 
-        reg_dict['detection_imgs'].update({'img_sharp': sharpened,
-                                           'segm_map': segm_init})
+    if not np.isfinite(check_props).all():
+        if not silent:
+            log.warning(f"    => Trail parameter fit {_base_conf.fail_str} ")
+        has_trail = False
+        n_trail_total -= 1
+    else:
+        if not silent:
+            log.info(f"    => Trail parameter fit was {_base_conf.pass_str}")
+        has_trail = True
 
-        trail_data['reg_info_lst'].append(reg_dict)
+    if config['roi_offset'] is not None:
+        coords = np.array(reg_dict['coords'])
+        coords[0] = coords[0] + config['roi_offset'][0]
+        coords[1] = coords[1] + config['roi_offset'][1]
+        reg_dict['coords'] = tuple(coords)
 
-        del df1, df2, reg_dict
-        gc.collect()
+    reg_dict['detection_imgs'].update({'img_sharp': sharpened,
+                                       'segm_map': [segm_init.data,
+                                                    segm_init.make_cmap(seed=12345)]})
 
-    trail_data['N_trails'] = n_trail
+    trail_data['reg_info_lst'].append(reg_dict)
 
-    del image, blurred_f, filter_blurred_f, sharpened, \
-        threshold, sources, segm, segm_init, \
-        regs, df
+    del df_search, reg_dict
 
-    gc.collect()
+    trail_data['N_trails'] = n_trail_total
+    if not silent:
+        log.info(f"  ==> Total number of satellite trail(s) detected: {n_trail_total}")
 
-    return trail_data, True
+    # del image, sharpened, segm, segm_init, df, labels
+    _base_conf.clean_up(sharpened, segm, segm_init, df_init, labels)
+
+    return trail_data, has_trail
 
 
 def get_distance(loc1, loc2):
@@ -828,26 +891,37 @@ def get_trail_properties(segm_map, df, config,
     theta_bin_size = config['THETA_BIN_SIZE']
     rho_bin_size = config['RHO_BIN_SIZE']
 
+    # create a binary image
     binary_img = np.zeros(segm_map.shape)
     for row in df.itertuples(name='label'):
         binary_img[segm_map.data == row.label] = 1
 
     # apply dilation
-    footprint = np.ones((1, 1))
-    dilated = nd.binary_dilation(binary_img, structure=footprint, iterations=3)
+    struct1 = nd.generate_binary_structure(2, 1)
+    dilated = nd.binary_dilation(binary_img, structure=struct1, iterations=1)
 
+    del binary_img
+
+    if not silent:
+        log.info(f"    Create Hough space accumulator array")
     # create hough space and get peaks
     hspace_smooth, peaks, dist, theta = get_hough_transform(dilated,
                                                             theta_bin_size=theta_bin_size,
                                                             rho_bin_size=rho_bin_size,
                                                             silent=silent)
 
+    n_trail = 0
     if len(peaks) > 1:
+        df_tmp = df.copy()
+
         edge_height, edge_width = dilated.shape[:2]
         edge_height_half, edge_width_half = edge_height // 2, edge_width // 2
         del hspace_smooth
 
-        sel_dict = {i: [] for i in range(len(peaks))}
+        # Calculate the image diagonal
+        image_diagonal = np.sqrt(edge_height ** 2 + edge_width ** 2)
+
+        sel_dict = {}
         for i in range(len(peaks)):
             angle = peaks[i][1]
             dist = peaks[i][2]
@@ -856,26 +930,28 @@ def get_trail_properties(segm_map, df, config,
             b = np.sin(np.deg2rad(angle))
             x0 = (a * dist) + edge_width_half
             y0 = (b * dist) + edge_height_half
-            x1 = int(x0 + edge_width * (-b))
-            y1 = int(y0 + edge_height * a)
-            x2 = int(x0 - edge_width * (-b))
-            y2 = int(y0 - edge_height * a)
+
+            x1 = int(x0 + image_diagonal * b)
+            y1 = int(y0 - image_diagonal * a)
+            x2 = int(x0 - image_diagonal * b)
+            y2 = int(y0 + image_diagonal * a)
 
             rr, cc = line(y1, x1, y2, x2)
 
-            # check that columns are within image boundaries
-            idx = (cc > 0) & (cc < dilated.shape[1])
-            rr = rr[idx]
-            cc = cc[idx]
-
-            # check that rows are within image boundaries
-            idx = (rr > 0) & (rr < dilated.shape[0])
-            rr = rr[idx]
-            cc = cc[idx]
+            # Clip the line to the image dimensions
+            rr, cc = rr.clip(0, edge_height - 1), cc.clip(0, edge_width - 1)
 
             # find the unique labels that make up the particular trail
             label_list = np.unique(segm_map.data[rr, cc])
-            [sel_dict[i].append(row.Index) for row in df.itertuples(name='label') if row.label in label_list]
+            index_list = []
+            if not df_tmp.empty:
+                [index_list.append(row.Index) for row in df_tmp.itertuples(name='label') if row.label in label_list]
+                df_tmp.drop(index_list, inplace=True)
+            else:
+                break
+            sel_dict[i] = index_list
+            n_trail += 1
+            del rr, cc
 
         # select only the label that belong to the first peak
         # this can be extended later to let the user choose which to pick
@@ -885,16 +961,20 @@ def get_trail_properties(segm_map, df, config,
         binary_img = np.zeros(segm_map.shape)
         for row in _df.itertuples(name='label'):
             binary_img[segm_map.data == row.label] = 1
+        del _df
 
         # apply dilation
-        footprint = np.ones((1, 1))
-        dilated = nd.binary_dilation(binary_img, structure=footprint, iterations=5)
+        struct1 = nd.generate_binary_structure(2, 1)
+        dilated = nd.binary_dilation(binary_img, structure=struct1, iterations=1)
 
         # create hough space and get peaks
         hspace_smooth, peaks, dist, theta = get_hough_transform(dilated,
                                                                 theta_bin_size=theta_bin_size,
                                                                 rho_bin_size=rho_bin_size,
                                                                 silent=silent)
+        del binary_img
+    else:
+        n_trail = 1
 
     indices = np.where(hspace_smooth == peaks[0][0])
     row_ind, col_ind = indices[0][0], indices[1][0]
@@ -908,10 +988,13 @@ def get_trail_properties(segm_map, df, config,
     sub_win_size = (rho_sub_win_size, theta_sub_win_size)
 
     theta_init = np.deg2rad(theta[col_ind])
+    if not silent:
+        log.info("    Determine trail parameter: length, width, and orientation")
     fit_res = fit_trail_params(hspace_smooth, dist, theta, theta_init,
                                dilated.shape, center_idx, sub_win_size,
                                config['TRAIL_PARAMS_FITTING_METHOD'])
 
+    segm_map.relabel_consecutive(start_label=1)
     reg_dict = {'coords': fit_res[0],  # 'coords':  reg.centroid[::-1],
                 'coords_err': fit_res[1],
                 'width': fit_res[2], 'e_width': fit_res[3],
@@ -924,15 +1007,14 @@ def get_trail_properties(segm_map, df, config,
                 'detection_imgs': {
                     'img_sharp': None,
                     'segm_map': None,
-                    'img_labeled': segm_map,
+                    'img_labeled': [segm_map.data,
+                                    segm_map.make_cmap(seed=12345)],
                     'trail_mask': dilated
                 }}
 
-    del segm_map, binary_img, fit_res, dilated, df, hspace_smooth, \
-        indices, row_ind, col_ind, dist, theta
-    gc.collect()
-
-    return reg_dict
+    _base_conf.clean_up(segm_map, fit_res, dilated, df, hspace_smooth,
+                        indices, row_ind, col_ind, dist, theta)
+    return reg_dict, n_trail
 
 
 def get_hough_transform(image: np.ndarray, sigma: float = 2.,
@@ -947,6 +1029,7 @@ def get_hough_transform(image: np.ndarray, sigma: float = 2.,
                                         drho=rho_bin_size,
                                         silent=silent)
     hspace, dist, theta, _, _ = res
+
     # apply gaussian filter to smooth the image
     hspace_smooth = nd.gaussian_filter(hspace, sigma)
 
@@ -957,3 +1040,328 @@ def get_hough_transform(image: np.ndarray, sigma: float = 2.,
     peaks = list(zip(*hough_line_peaks(hspace_smooth, theta, dist)))
 
     return hspace_smooth, peaks, dist, theta
+
+
+def perpendicular_line_profile(center, L, theta, perp_length, num_samples=10, use_pixel_sampling=False):
+    """
+    Calculate the start and end points of line profiles perpendicular to a main line,
+    centered at the main line's midpoint, evenly spaced along it.
+
+    :param center: Tuple (x, y) representing the center point of the main line.
+    :param L: The total length of the main line.
+    :param theta: The angle in degrees from the horizontal to the main line.
+    :param perp_length: The length of each perpendicular line profile.
+    :param num_samples: The number of perpendicular profiles to calculate.
+    :param use_pixel_sampling: If True, adjust num_samples to equal the pixel distance
+                               between the start and end points of the main line.
+                               Defaults to False.
+    :return: A list of tuples, where each tuple contains the start and end points
+             (x, y) of a perpendicular line profile.
+
+    If use_pixel_sampling is True, the function calculates the number of samples
+    based on the pixel distance between the start and end points of the main line.
+    This ensures that a sample is taken for every pixel along the main line.
+
+    The perpendicular lines are calculated to be symmetrically spaced about the center
+    point of the main line, with one line passing through the center if the number
+    of samples is odd, or evenly spaced on either side if the number is even.
+    """
+
+    # Convert theta to radians
+    theta_rad = np.radians(theta)
+
+    # Calculate start, end, and center points of the main line
+    half_length = L / 2
+    start_point = [center[0] - half_length * np.cos(theta_rad), center[1] - half_length * np.sin(theta_rad)]
+    end_point = [center[0] + half_length * np.cos(theta_rad), center[1] + half_length * np.sin(theta_rad)]
+    center_point = [center[0], center[1]]
+
+    # Calculate the number of samples if using pixel sampling
+    if use_pixel_sampling:
+        pixel_distance = int(np.hypot(end_point[0] - start_point[0], end_point[1] - start_point[1]))
+        num_samples = max(pixel_distance, 1)  # Ensure at least one sample
+
+    # Slope of the main line
+    m = np.tan(theta_rad)
+
+    # Slope of the perpendicular line
+    perp_slope = -1 / m if m != 0 else np.inf
+
+    # Calculate the spacing and positions of the perpendicular lines
+    if num_samples > 1:
+        spacing = L / (num_samples - 1)
+        line_points = [start_point]
+        for i in range(1, num_samples - 1):
+            offset = i * spacing - half_length
+            point = [center[0] + offset * np.cos(theta_rad), center[1] + offset * np.sin(theta_rad)]
+            line_points.append(point)
+        line_points.append(end_point)
+    else:
+        line_points = [center_point]
+
+    # Calculate points on the perpendicular lines
+    perp_profiles = []
+    half_perp_length = perp_length / 2
+    for point in line_points:
+        if perp_slope != np.inf:  # Non-vertical lines
+            dx = half_perp_length / np.sqrt(1 + perp_slope ** 2)
+            dy = perp_slope * dx
+        else:  # Vertical lines
+            dx = 0
+            dy = half_perp_length
+
+        perp_start = [point[0] - dx, point[1] - dy]
+        perp_end = [point[0] + dx, point[1] + dy]
+
+        perp_profiles.append((perp_start, perp_end))
+
+    return perp_profiles
+
+
+def get_pixel_values(img_array, line_profiles, length):
+    """
+    Extract pixel values from an image array along specified line profiles.
+
+    This function iterates over line profiles, each defined by a start and end point,
+    extracts the pixel values along these lines from the image array, and pads or trims
+    the results to ensure a consistent profile length.
+
+    :param img_array: The image array from which to extract pixel values.
+    :param line_profiles: A list of tuples, where each tuple contains the start and
+                          end points (x, y) defining each line profile.
+    :param length: The desired length of the perpendicular profiles.
+
+    :return: A list of 1D arrays, each containing the pixel values along the
+             corresponding line profile.
+    """
+
+    profiles_pixel_values = []
+    for start, end in line_profiles:
+        # Calculate the coordinates of the line using skimage's line function
+        rr, cc = line(int(round(start[1])), int(round(start[0])),
+                      int(round(end[1])), int(round(end[0])))
+
+        # Create an array of NaN values
+        line_values = np.full(length, np.nan)
+
+        # Replace values within the image bounds
+        valid_indices = (rr >= 0) & (rr < img_array.shape[0]) & \
+                        (cc >= 0) & (cc < img_array.shape[1])
+        valid_rr, valid_cc = rr[valid_indices], cc[valid_indices]
+        line_values[:len(valid_rr)] = img_array[valid_rr, valid_cc]
+
+        profiles_pixel_values.append(line_values)
+        del rr, cc
+
+    profiles_pixel_values = np.array(profiles_pixel_values).T
+    del img_array,
+    return profiles_pixel_values
+
+
+def fit_single_model(x, y, fwhm, yerr=None, model_type='gaussian'):
+    """
+    Fits a line profile using a single specified model type.
+
+    :param x: The x data (array-like).
+    :param y: The y data (array-like).
+    :param fwhm: Full width at half-maximum (float).
+    :param model_type: Type of model to use for fitting.
+    Options are 'gaussian', 'lognormal', or 'expgaussian' (str).
+    :param yerr: The y error data (array-like, optional).
+
+    :return: The result of the fit (lmfit.model.ModelResult).
+    """
+
+    sky_mod = ConstantModel(prefix='const_', independent_vars=['x'], nan_policy='omit')
+    sky_mod.set_param_hint(name='c', value=0.)
+    pars = sky_mod.make_params()
+
+    center_init = x[np.nanargmax(y)]
+    sigma_init = fwhm * gaussian_fwhm_to_sigma
+    amp = np.nanmax(y)
+    xmin = 0
+    xmax = len(x)
+
+    if model_type == 'gaussian':
+        model = GaussianModel(prefix='m_', nan_policy='omit')
+        model_params = dict(center=dict(value=center_init,
+                                        min=xmin, max=xmax
+                                        ),
+                            sigma=dict(value=sigma_init, min=0.),
+                            amplitude=dict(value=amp, min=0.))
+    elif model_type == 'lognormal':
+        model = LognormalModel(prefix='m_', nan_policy='omit')
+        model_params = dict(center=dict(value=center_init,
+                                        min=xmin, max=xmax
+                                        ),
+                            sigma=dict(value=sigma_init, min=0.),
+                            amplitude=dict(value=amp, min=0.))
+    elif model_type == 'expgaussian':
+        model = ExponentialGaussianModel(prefix='m_', nan_policy='omit')
+        model_params = dict(center=dict(value=center_init,
+                                        min=xmin, max=xmax
+                                        ),
+                            sigma=dict(value=sigma_init, min=0.),
+                            amplitude=dict(value=amp),
+                            gamma=dict(value=1, min=0.))
+    else:
+        raise ValueError("Invalid model type. "
+                         "Choose 'gaussian', 'lognormal', or 'expgaussian'.")
+
+    pars.update(model.make_params(**model_params))
+
+    mod = model + sky_mod
+
+    weights = 1. / yerr if yerr is not None else None
+
+    fitting_method = 'nelder'
+
+    result = mod.fit(data=y, x=x,
+                     params=pars,
+                     method=fitting_method,
+                     weights=weights,
+                     calc_covar=True,
+                     scale_covar=True,
+                     nan_policy='omit')
+
+    return result
+
+
+def adjust_center_init(x, center_init, shift_percentage=10.):
+    x_min, x_max = np.min(x), np.max(x)
+    x_range = x_max - x_min
+    max_shift = x_range * shift_percentage
+    shift_direction = np.random.choice([-1, -1])
+    shift_amount = np.random.uniform(0, max_shift)
+    new_center = center_init + shift_direction * shift_amount
+    new_center = np.clip(new_center, x_min, x_max)
+    return new_center
+
+
+def fit_line_profile_two_comps(x, y, fwhm, model_type='gaussian',
+                               yerr=None,
+                               shift_percentage=10.):
+
+    sky_mod = ConstantModel(prefix='const_', independent_vars=['x'], nan_policy='omit')
+    sky_mod.set_param_hint(name='c', value=0.)
+    pars = sky_mod.make_params()
+
+    center_init = x[np.nanargmax(y)]
+    sigma_init = fwhm * gaussian_fwhm_to_sigma
+    amp = np.nanmax(y)
+    xmin = 0.
+    xmax = len(x)
+
+    if model_type == 'gaussian':
+        mod1 = GaussianModel(prefix='m1_', nan_policy='omit')
+        mod2 = GaussianModel(prefix='m2_', nan_policy='omit')
+    elif model_type == 'lognormal':
+        mod1 = LognormalModel(prefix='m1_', nan_policy='omit')
+        mod2 = LognormalModel(prefix='m2_', nan_policy='omit')
+    elif model_type == 'expgaussian':
+        mod1 = ExponentialGaussianModel(prefix='m1_', nan_policy='omit')
+        mod2 = ExponentialGaussianModel(prefix='m2_', nan_policy='omit')
+    else:
+        raise ValueError("Invalid model type. "
+                         "Choose 'gaussian', 'lognormal', or 'expgaussian'.")
+
+    # Parameters for the first model component
+    common_params_1 = dict(center=dict(value=center_init,
+                                       min=xmin, max=xmax
+                                       ),
+                           sigma=dict(value=sigma_init, min=1e-5),
+                           amplitude=dict(value=amp, min=0.))
+    if model_type == 'expgaussian':
+        common_params_1['gamma'] = dict(value=1., min=1e-15)
+
+    pars.update(mod1.make_params(**common_params_1))
+
+    # Adjusted center for the second model component
+    adjusted_center = adjust_center_init(x, center_init, shift_percentage)
+    common_params_2 = dict(center=dict(value=adjusted_center,
+                                       min=xmin, max=xmax
+                                       ),
+                           sigma=dict(value=1.5 * sigma_init, min=1e-5),
+                           amplitude=dict(value=amp, min=0.))
+    if model_type == 'expgaussian':
+        common_params_2['gamma'] = dict(value=1., min=1e-15)
+
+    pars.update(mod2.make_params(**common_params_2))
+
+    mod = mod1 + mod2 + sky_mod
+
+    weights = 1. / yerr if yerr is not None else None
+
+    fitting_method = 'nelder'
+
+    result = mod.fit(data=y, x=x,
+                     params=pars,
+                     method=fitting_method,
+                     weights=weights,
+                     calc_covar=True,
+                     scale_covar=True,
+                     nan_policy='omit')
+
+    return result
+
+
+def composite_gaussian(x, params):
+    return sum(p['A'] * np.exp(-0.5 * ((x - p['mu']) / p['sigma'])**2) for p in params.values())
+
+
+def find_gaussian_bounds(params, sigma, xtol=1e-5, rtol=1e-5, maxiter=500):
+
+    total_area, _ = quad(composite_gaussian, -np.inf, np.inf, args=(params,))
+
+    lower_percentile = norm.cdf(-sigma)
+    upper_percentile = norm.cdf(sigma)
+
+    def find_bound(target_area):
+        def integral(x):
+            return quad(composite_gaussian, -np.inf, x, args=(params,))[0] - target_area
+        return integral
+
+    # Adjusting the bounds based on the parameters
+    mu_values = [p['mu'] for p in params.values()]
+    sigma_values = [p['sigma'] for p in params.values()]
+    min_bound = min(mu_values) - 5 * max(sigma_values)
+    max_bound = max(mu_values) + 5 * max(sigma_values)
+
+    x_low = brentq(find_bound(lower_percentile * total_area), min_bound, max_bound,
+                   xtol=xtol, rtol=rtol, maxiter=maxiter)
+    x_up = brentq(find_bound(upper_percentile * total_area), min_bound, max_bound,
+                  xtol=xtol, rtol=rtol, maxiter=maxiter)
+
+    return x_low, x_up
+
+# Normalize and convert to 8-bit format
+# normalized_image = cv2.normalize(src=image,
+#                                  dst=None, alpha=0.,
+#                                  beta=2.**16-1.,
+#                                  norm_type=norm_type)
+# uint8_image = normalized_image.astype('uint16')
+#
+# # adaptive histogram equalization
+# clahe = cv2.createCLAHE(clipLimit=0, tileGridSize=(3, 3))
+# clahe_image = clahe.apply(uint8_image)
+#
+# # get segments
+# threshold = detect_threshold(clahe_image, background=None,
+#                              nsigma=1., mask=mask)
+#
+# clahe_image[clahe_image <= threshold] = 0
+# sources = detect_sources(clahe_image, threshold=threshold,
+#                          npixels=9, connectivity=8, mask=mask)
+#
+# segm = SegmentationImage(sources.data)
+#
+# sharpened = clahe_image.copy()
+#
+# del clahe_image, normalized_image, uint8_image, mask, sources, threshold
+
+
+# starttime = time.perf_counter()
+# endtime = time.perf_counter()
+# dt = endtime - starttime
+# td = timedelta(seconds=dt)
+# print(f"Program execution time in hh:mm:ss: {td}")

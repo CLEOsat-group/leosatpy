@@ -12,9 +12,13 @@
 
 .. |ckoir_2| replace:: *Ckoirama Observatory*
 
-.. _ctio: http://www.astro.yale.edu/smarts/0.9m.html
+.. _ctio: https://noirlab.edu/science/programs/ctio/telescopes/smarts-consortium/smarts-consortium-09-meter-telescope
 
 .. |ctio| replace:: Small and Moderate Aperture Research Telescope System
+
+.. _ctio_4m: https://noirlab.edu/science/programs/ctio/telescopes/victor-blanco-4m-telescope
+
+.. |ctio_4m| replace:: Víctor M. Blanco 4-meter Telescope
 
 .. _dk154: https://www.eso.org/public/teles-instr/lasilla/danish154/
 
@@ -40,8 +44,9 @@
 
 .. |ca123| replace:: 1.23-metre telescope
 
-Welcome to LEOSatpy's documentation!
-====================================
+========
+LEOSatpy
+========
 
 **LEOSatpy** (Low Earth Orbit satellite python) is an end-to-end pipeline to process and analyse
 satellite trail observations from different telescopes.
@@ -60,16 +65,16 @@ satellite trail observations from different telescopes.
    The position and path predicted by the TLE orbital elements are shown in blue.*
 
 Contents
---------
+========
 
 .. toctree::
    :maxdepth: 1
 
    Home <self>
    installation
-   configfile
-   usage
    example
+   usage
+   configfile
    contributing
    citing
    todo
@@ -84,13 +89,13 @@ The pipeline is written in Python 3 and provides the following functionalities:
 Module                       Function
 ===========================  ==========================================================================
 ``reduceSatObs``             Full reduction of raw-FITS images including bias, dark, and flat reduction.
-``calibrateSatObs``          WCS calibration, i.e. plate solving, using `GAIA DR3 <https://ui.adsabs.harvard.edu/abs/2020yCat.1350....0G/abstract>`_ positions via the `Astroquery <https://astroquery.readthedocs.io/en/latest/#>`_ tool.
+``calibrateSatObs``          WCS calibration, i.e. plate solving, using `GAIA DR3 <https://ui.adsabs.harvard.edu/abs/2020yCat.1350....0G/abstract>`_ positions, obtained via the `Astroquery <https://astroquery.readthedocs.io/en/latest/#>`_ tool.
 ``analyseSatObs``            Satellite trail(s) detection and aperture photometry using
                              comparison stars from the `GSC v2.4.3 <https://ui.adsabs.harvard.edu/#abs/2008AJ....136..735L>`_ catalog.
 ===========================  ==========================================================================
 
 Supported Telescopes
---------------------
+====================
 
 .. figure:: ./figs/home_cleosat_network.png
    :width: 750px
@@ -103,7 +108,8 @@ LEOSatpy currently supports the following telescopes:
 
 
 * 0.6-metre Chakana telescope at the |ckoir|_ of the Universidad de Antofagasta, Antofagasta, Chile.
-* 0.9-metre |ctio|_ (SMARTS) at Cerro Tololo Inter-american Observatory (CTIO), Chile.
+* 0.9-metre |ctio|_ (SMARTS) at the Cerro Tololo Inter-american Observatory (CTIO), Chile.
+* |ctio_4m|_ at the Cerro Tololo Inter-american Observatory (CTIO), Chile.
 * |dk154|_ at the La Silla Observatory, Chile.
 * 0.28-metre DDOTI (Deca-Degree Optical Transient Imager) telescopes at the |spm|_ (OAN) in Sierra San Pedro Martír (SPM), Baja California, México.
 * 0.5-metre |ouka|_ at the Oukaïmeden Observatory, Morocco.
@@ -121,7 +127,7 @@ LEOSatpy currently supports the following telescopes:
 
 
 Copyright notice:
------------------
+=================
 
 The LEOSat Python package is free software: you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software Foundation,
