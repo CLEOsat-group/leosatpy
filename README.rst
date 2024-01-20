@@ -4,9 +4,13 @@
 
 .. |ckoir| replace:: Ckoirama Observatory
 
-.. _ctio: http://www.astro.yale.edu/smarts/0.9m.html
+.. _ctio: https://noirlab.edu/science/programs/ctio/telescopes/smarts-consortium/smarts-consortium-09-meter-telescope
 
 .. |ctio| replace:: Small and Moderate Aperture Research Telescope System
+
+.. _ctio_4m: https://noirlab.edu/science/programs/ctio/telescopes/victor-blanco-4m-telescope
+
+.. |ctio_4m| replace:: Víctor M. Blanco 4-meter Telescope
 
 .. _dk154: https://www.eso.org/public/teles-instr/lasilla/danish154/
 
@@ -83,7 +87,7 @@ The pipeline is written in Python 3 and provides the following functionalities:
 Module                       Function
 ===========================  ==========================================================================
 ``reduceSatObs``             Full reduction of raw-FITS images including bias, dark, and flat reduction.
-``calibrateSatObs``          WCS calibration, i.e. plate solving, using `GAIA DR3 <https://ui.adsabs.harvard.edu/abs/2020yCat.1350....0G/abstract>`_ positions via the `Astroquery <https://astroquery.readthedocs.io/en/latest/#>`_ tool.
+``calibrateSatObs``          WCS calibration, i.e. plate solving, using `GAIA DR3 <https://ui.adsabs.harvard.edu/abs/2020yCat.1350....0G/abstract>`_ positions, obtained via the `Astroquery <https://astroquery.readthedocs.io/en/latest/#>`_ tool.
 ``analyseSatObs``            Satellite trail(s) detection and aperture photometry using
                              comparison stars from the `GSC v2.4.3 <https://ui.adsabs.harvard.edu/#abs/2008AJ....136..735L>`_ catalog.
 ===========================  ==========================================================================
@@ -96,7 +100,8 @@ LEOSatpy is distributed under the GNU General Public License v3. See the
 Currently supported telescopes:
     * 0.6-metre Chakana telescope at the |ckoir|_ of the Universidad de Antofagasta, Antofagasta, Chile.
     * 0.9-metre |ctio|_ (SMARTS)
-      at Cerro Tololo Inter-american Observatory (CTIO), Chile.
+      at the Cerro Tololo Inter-american Observatory (CTIO), Chile.
+    * |ctio_4m|_ at the Cerro Tololo Inter-american Observatory (CTIO), Chile.
     * |dk154|_ at the La Silla Observatory, Chile.
     * 0.28-metre DDOTI (Deca-Degree Optical Transient Imager) telescopes at the |spm|_ (OAN) in Sierra San Pedro Martír (SPM), Baja California, México.
     * 0.5-metre |ouka|_ at the Oukaïmeden Observatory, Morocco.
@@ -242,8 +247,8 @@ Possible formats are, e.g., 20221110, 2022-11-20, tel_20221011_satxy, 2022-11-26
     However, the difference in date should not exceed 7 days. For example, data observed on 2022-11-11 UTC
     might be located in a folder named 2022-11-10. <-- This is detected.
 
-It is furthermore recommended to separate the raw calibration files, i.e., bias, darks, and flats,
-from the science observation files and place them into separate folder.
+It is also recommended to separate the raw calibration files, i.e., bias, darks, and flats from the science observation files
+and place them into separate folder, named accordingly ``/bias``, ``/darks``, ``/flats``, and ``science/raw``, respectively.
 
 Once all programs have been executed, the final folder structure should look like this:
 
@@ -303,17 +308,10 @@ To reduce all data from a telescope at once with:
 
     $ (leosatpy_env) reduceSatObs PATH/TO/TELESCOPE/DATA
 
-.. note::
+.. hint::
 
     The usage of partial and multiple inputs as shown above also works for the other programs in the package.
 
-
-..    During the reduction the following steps are performed:
-
-        * Image registration and validation
-        * Master calibration file creation
-        * Removal of instrumental signatures to create and save the reduced FITS-image(s)
-        * Save results to result table.
 
 
 Astrometric calibration
@@ -325,14 +323,6 @@ To apply the astrometric calibration type:
 
     $ (leosatpy_env) calibrateSatObs PATH/TO/DATA
 
-..    During the astrometric calibration the following steps are performed:
-
-        * Registration and validation of the reduced FITS-files
-        * 2D background estimation and source detection
-        * Determination of the pixel scale and detector rotation angle by comparing the detected sources with precise positions from the GAIA eDR3 catalog
-        * Update the FITS-files World Coordinate System (WCS) with found transformation.
-        * Save results to the result table
-
 
 Satellite trail detection and analysis
 """"""""""""""""""""""""""""""""""""""
@@ -343,12 +333,6 @@ To run the satellite detection and analysis on all files in the input type:
 
     $ (leosatpy_env) analyseSatObs PATH/TO/DATA
 
-..  During the analysis the following steps are performed:
-
-    * Registration and validation of the calibrated FITS-files
-    * `Xu et al. (2015) <https://ui.adsabs.harvard.edu/abs/2015PatRe..48.4012X/abstract>`_
-    * Save results to result table
-
 
 
 Citing LEOSatpy
@@ -358,7 +342,7 @@ When publishing data processed and analysed with LEOSatpy, please cite:
 
 ::
 
-    Adam et al. (2023) (in preparation). "Estimating the impact to astronomy from the Oneweb satellite constellation using multicolour observations".
+    Adam et al. (2023) (in preparation). "Estimating the impact to astronomy from the Oneweb satellite constellation using multicolour observations". https://doi.org/10.5281/zenodo.8012131
     Software pipeline available at https://github.com/CLEOsat-group/leosatpy.
 
 Acknowledgements
@@ -368,9 +352,9 @@ Alongside the packages listed in the ``requirements.txt``, this project uses wor
 
 * `Astrometry <https://github.com/lukaswenzl/astrometry>`_ under the GPLv3 License, Lukas Wenzl (2022), `Zenodo <https://doi.org/10.5281/zenodo.6462441>`_
 * `AutoPhOT <https://github.com/Astro-Sean/autophot>`_ under the GPLv3 License, Brennan & Fraser (2022), `NASA ADS <https://ui.adsabs.harvard.edu/abs/2022A%26A...667A..62B/abstract>`_
+* `Ccdproc <https://ccdproc.readthedocs.io/en/stable/index.html>`_, an Astropy package for image reduction (`Craig et al. 2023 <https://doi.org/10.5281/zenodo.593516>`_).
 
 .. * `reduceccd <https://github.com/rgbIAA/reduceccd/tree/master>`_ under the BSD-3-Clause license
-
 .. * `wht_reduction_scripts <https://github.com/crawfordsm/wht_reduction_scripts>`_ under the BSD-3-Clause license
 
 
