@@ -25,13 +25,11 @@
 
 # STDLIB
 import os
-import gc
 import sys
 import logging
 import warnings
 import time
-from datetime import (
-    timedelta, datetime, timezone)
+from datetime import (timedelta, datetime, timezone)
 import collections
 from pathlib import Path
 import argparse
@@ -47,8 +45,8 @@ from astropy.utils.exceptions import AstropyUserWarning
 from astropy.wcs import WCS
 from astropy.coordinates import (FK5, ICRS, SkyCoord)
 from astropy.time import Time
-from astropy.visualization import (LinearStretch, LogStretch, SqrtStretch)
-from astropy.visualization.mpl_normalize import ImageNormalize
+# from astropy.visualization import (LinearStretch, LogStretch, SqrtStretch)
+# from astropy.visualization.mpl_normalize import ImageNormalize
 
 # photutils
 from photutils.aperture import CircularAperture
@@ -238,6 +236,7 @@ class CalibrateObsWCS(object):
             self._instrument = inst
             self._telescope = inst_data[inst]['telescope']
             self._obsparams = inst_data[inst]['obsparams']
+
             ds.get_valid_sci_observations(inst, prog_typ="calibWCS")
             obsfile_list = ds.valid_sci_obs
             self._dataset_object = obsfile_list
@@ -258,8 +257,8 @@ class CalibrateObsWCS(object):
                 pass_str = _base_conf.BCOLORS.PASS + "SUCCESSFUL" + _base_conf.BCOLORS.ENDC
                 fail_str = _base_conf.BCOLORS.FAIL + "FAILED" + _base_conf.BCOLORS.ENDC
                 for row_index, file_df in files.iterrows():
-
-                    self._run_single_calibration(src_path, file_df, catalog=self._catalog,
+                    progress = f"{row_index+1}/{len(files)}"
+                    self._run_single_calibration(src_path, file_df, progress, catalog=self._catalog,
                                                  hdu_idx=self._hdu_idx)
 
                     result = self._converged
@@ -302,7 +301,7 @@ class CalibrateObsWCS(object):
 
         return time_stamp
 
-    def _run_single_calibration(self, file_src_path, file_df, catalog="GAIADR3", hdu_idx=0):
+    def _run_single_calibration(self, file_src_path, file_df, progress, catalog="GAIADR3", hdu_idx=0):
         """Run astrometric calibration on a given dataset.
 
         Create the required folder and run full calibration procedure.
@@ -338,7 +337,7 @@ class CalibrateObsWCS(object):
         if not aux_path.exists():
             aux_path.mkdir(exist_ok=True)
 
-        self._log.info(f"> Run astrometric calibration for {file_name} ")
+        self._log.info(f"==> Run astrometric calibration for {file_name} [{progress}] <==")
 
         # set background file name and create folder
         bkg_fname_short = file_name.replace('_red', '_bkg')
@@ -394,13 +393,18 @@ class CalibrateObsWCS(object):
         for key, value in self._config.items():
             config[key] = value
 
+        sat_lim = config['saturation_limit']
+        if isinstance(config['saturation_limit'], str) and config['saturation_limit'] in hdr:
+            sat_lim = hdr[obsparams['saturation_limit']]
+        config['sat_lim'] = sat_lim
+
         # extract sources on detector
         extraction_result, state = sext.get_src_and_cat_info(fbase, cat_path,
                                                              imgarr, hdr, init_wcsprm,
                                                              silent=self._silent,
                                                              **config)
         # unpack extraction result tuple
-        (src_tbl, ref_tbl, ref_catalog, src_cat_fname, ref_cat_fname,
+        (src_tbl_raw, ref_tbl, ref_catalog, src_cat_fname, ref_cat_fname,
          kernel_fwhm, psf, segmap, _) = extraction_result
 
         # check execution state
@@ -427,6 +431,11 @@ class CalibrateObsWCS(object):
         # get reference positions before the transformation
         # ref_positions_before = init_wcsprm.s2p(ref_tbl[["RA", "DEC"]].values, 0)['pixcrd']
 
+        # use only the entries with good fwhm values
+        src_tbl = src_tbl_raw.query('include_fwhm')
+        if len(src_tbl) < 5:
+            src_tbl = src_tbl_raw
+
         max_wcs_iter = self._config['MAX_WCS_FUNC_ITER']
 
         # set the match radius
@@ -438,13 +447,12 @@ class CalibrateObsWCS(object):
                                               match_radius,
                                               max_wcs_iter)
 
-        # Move scaling to cdelt and out of the pc matrix
-        best_wcsprm, scales = imtrans.translate_wcsprm(wcsprm=best_wcsprm)
-
         status_str = _base_conf.BCOLORS.PASS + "PASS" + _base_conf.BCOLORS.ENDC
-        if not converged:
+        if not converged or best_wcsprm is None:
             status_str = _base_conf.BCOLORS.FAIL + "FAIL" + _base_conf.BCOLORS.ENDC
         else:
+            # Move scaling to cdelt and out of the pc matrix
+            best_wcsprm, scales = imtrans.translate_wcsprm(wcsprm=best_wcsprm)
             wcsprm = best_wcsprm
 
         if not self._silent:
@@ -457,7 +465,6 @@ class CalibrateObsWCS(object):
         ref_tbl_adjusted["ycentroid"] = pos_on_det[:, 1]
 
         # update file header and save
-        dic_rms = {"radius_px": None, "matches": None, "rms": None}
         if converged:
             # check goodness
             if not self._silent:
@@ -507,9 +514,11 @@ class CalibrateObsWCS(object):
                                     ref_pos=ref_positions_after,
                                     file_name=file_name, fig_path=plt_path_final,
                                     wcsprm=wcsprm, **config)
-            del src_positions, ref_positions_after, matches
+
+            _base_conf.clean_up(src_positions, ref_positions_after, matches)
 
         else:
+            dic_rms = {"radius_px": None, "matches": None, "rms": None}
             ra = hdr[obsparams['ra']]
             dec = hdr[obsparams['dec']]
             if obsparams['radec_separator'] == 'XXX':
@@ -526,11 +535,10 @@ class CalibrateObsWCS(object):
         self._converged = converged
         self._dic_rms = dic_rms
 
-        del imgarr, dic_rms, converged, \
-            src_tbl, ref_tbl, ref_catalog, _, src_cat_fname, ref_cat_fname, \
-            kernel_fwhm, psf, segmap, extraction_result, report, \
-            state
-        gc.collect()
+        _base_conf.clean_up(imgarr, dic_rms, converged,
+                            src_tbl, ref_tbl, ref_catalog, _, src_cat_fname, ref_cat_fname,
+                            kernel_fwhm, psf, segmap, extraction_result, report,
+                            state)
 
     def get_wcs(self, source_df, ref_df, initial_wcsprm,
                 match_radius=1, max_iter=6):
@@ -539,6 +547,8 @@ class CalibrateObsWCS(object):
         # make a copy to work with
         source_cat = source_df.copy()
         reference_cat = ref_df.copy()
+
+        # source_cat = source_df.query('include_fwhm')
 
         # make sure the catalogs are sorted
         source_cat = source_cat.sort_values(by='mag', ascending=True)
@@ -549,10 +559,9 @@ class CalibrateObsWCS(object):
 
         self._log.info("> Run WCS calibration")
 
-        # number of detected sources
-        Nobs = len(source_cat)
-        Nref = len(reference_cat)
-        source_ratio = (Nobs / Nref) * 100.
+        Nobs = len(source_cat)  # number of detected sources
+        Nref = len(reference_cat)  # number of reference stars
+        source_ratio = (Nobs / Nref) * 100.  # source ratio in percent
         percent_to_select = np.ceil(source_ratio * 10)
         n_percent = percent_to_select if percent_to_select < 100 else 100
 
@@ -577,6 +586,11 @@ class CalibrateObsWCS(object):
         has_converged = False
         use_initial_ref_cat = False
 
+        # dist_bin_size = 3
+        # ang_bin_size = 0.3
+        dist_bin_size = self._config['DISTANCE_BIN_SIZE'],
+        ang_bin_size = self._config['ANG_BIN_SIZE'],
+
         # apply the found wcs to the original reference catalog
         ref_cat_orig_adjusted = reference_cat.copy()
         pos_on_det = initial_wcsprm.s2p(reference_cat[["RA", "DEC"]].values, 0)['pixcrd']
@@ -586,11 +600,47 @@ class CalibrateObsWCS(object):
         # select initial reference sample based on the current best result
         initial_reference_cat_subset = ref_cat_orig_adjusted.head(num_rows)
 
+        data = initial_reference_cat_subset['mag'].values
+        # Calculate weights inversely proportional to the value
+        # Adding a small constant to avoid division by zero for very small values
+        weights = np.max(data) - data
+
+        # Normalize weights
+        weights /= weights.sum()
+
+        # Draw a weighted random sample
+        # sample = np.random.choice(len(initial_reference_cat_subset), size=num_samples, p=weights)
+
+        # # Number of repetitions for drawing samples
+        # num_repetitions = 4
+        #
+        # # Set up the plot
+        # fig, axs = plt.subplots(num_repetitions, 2, figsize=(12, num_repetitions * 3))
+        #
+        # for i in range(num_repetitions):
+        #     # Draw a weighted random sample
+        #     sample = np.random.choice(data, size=num_samples, p=weights)
+        #
+        #     # Plot original data
+        #     axs[i, 0].hist(data, bins=30, color='blue', alpha=0.7)
+        #     axs[i, 0].set_title('Original Data Distribution')
+        #     axs[i, 0].set_xlabel('Value')
+        #     axs[i, 0].set_ylabel('Frequency')
+        #
+        #     # Plot sampled data
+        #     axs[i, 1].hist(sample, bins=30, color='green', alpha=0.7)
+        #     axs[i, 1].set_title('Weighted Sample Distribution')
+        #     axs[i, 1].set_xlabel('Value')
+        #     axs[i, 1].set_ylabel('Frequency')
+        #
+        # plt.tight_layout()
+        # plt.show()
+
         current_reference_cat_subset = initial_reference_cat_subset
         current_wcsprm = initial_wcsprm
-
+        current_threshold = match_radius
         # setup best values
-        # best_rms = 1
+        # best_rms = 999
         # best_score = 0
         best_Nobs = 0
         best_completeness = 0
@@ -599,7 +649,7 @@ class CalibrateObsWCS(object):
         if not self._silent:
             self._log.info(f'  Find scale, rotation, and offset.')
 
-        while True:
+        while not has_converged:
             if progress == max_iter:
                 break
             else:
@@ -607,64 +657,100 @@ class CalibrateObsWCS(object):
 
             if use_initial_ref_cat:
                 current_reference_cat_subset = initial_reference_cat_subset
+                if progress > 1:
+                    current_reference_cat_subset = (initial_reference_cat_subset
+                                                    .sample(int(len(initial_reference_cat_subset) * 0.95)))
+                    # num_samples = int(len(initial_reference_cat_subset) * 0.95)
+                    # sample = np.random.choice(len(initial_reference_cat_subset), size=num_samples, p=weights)
+                    # current_reference_cat_subset = initial_reference_cat_subset.iloc[sample]
 
             # get wcs transformation
             try:
                 tform_result = self._get_transformations(source_cat=source_cat,
                                                          ref_cat=current_reference_cat_subset,
-                                                         wcsprm=current_wcsprm)
+                                                         wcsprm=current_wcsprm,
+                                                         dist_bin_size=dist_bin_size,
+                                                         ang_bin_size=ang_bin_size)
             except IndexError:
                 current_reference_cat_subset = (initial_reference_cat_subset
                                                 .sample(int(len(initial_reference_cat_subset) * 0.95)))
+                # sample = np.random.choice(Nref, size=num_samples, p=weights)
+                # current_reference_cat_subset = ref_cat_orig_adjusted.iloc[sample]
                 current_wcsprm = initial_wcsprm
                 continue
 
             # extract variables
             new_wcsprm, new_wcsprm_vals, tform_params, offsets, is_fine_tuned = tform_result
 
-            # match results within 1 pixel radius for plot, consider fwhm
+            # match catalogs
             matches = imtrans.find_matches(source_cat,
                                            current_reference_cat_subset,
                                            new_wcsprm,
-                                           threshold=match_radius)
+                                           # threshold=1.
+                                           threshold=current_threshold
+                                           )
             source_cat_matched, ref_cat_matched, obs_xy, _, distances, _, _ = matches
-            # update the wcsprm variable
-            current_wcsprm = new_wcsprm
 
             # check if any matches were found
             if obs_xy is None or len(obs_xy[:, 0]) == 0:
                 if not self._silent:
                     self._log.info(f'  Try [ {progress}/{max_iter} ] No matches found. Trying again.')
                 use_initial_ref_cat = True
+                # best_wcsprm = initial_wcsprm
+                current_wcsprm = initial_wcsprm
                 continue
 
             # get convergence criteria
             Nobs_matched = len(obs_xy[:, 0])
             new_completeness = Nobs_matched / Nobs
-            new_rms = np.sqrt(np.mean(np.square(distances))) / Nobs_matched
+            new_rms = np.sqrt(np.nanmean(np.square(distances))) / Nobs_matched
             new_score = Nobs_matched / new_rms
 
             message = f'  Try [ {progress}/{max_iter} ] ' \
                       f'Found matches: {Nobs_matched}/{Nobs} ({new_completeness * 100:.1f}%), ' \
                       f'Score: {new_score:.0f}, ' \
                       f'RMS: {new_rms:.3f}'
-
+            # plt.figure()
+            # plt.hist(np.sqrt(np.square(distances))/Nobs_matched, bins='auto')
+            # plt.axvline(x=new_rms)
+            # # plt.axvline(x=np.sqrt(np.nanmedian(np.square(distances))) / Nobs_matched)
+            # plt.title('angles_cat')
+            # plt.show()
             if not self._silent:
                 self._log.info(message)
 
+            # print(dist_bin_size, ang_bin_size)
+            if new_rms < 1e-5:
+                use_initial_ref_cat = True
+                continue
+
+            # delta_matches = Nobs_matched - best_Nobs
+            # print("delta_matches", delta_matches)
             if Nobs_matched > 3:
                 delta_matches = Nobs_matched - best_Nobs
-
+                # print("delta_matches", delta_matches)
                 # update best values
+                update_cat = False
                 if Nobs_matched > best_Nobs:
                     best_wcsprm = new_wcsprm
                     best_Nobs = Nobs_matched
                     # best_score = new_score
                     # best_rms = new_rms
                     best_completeness = new_completeness
+                    # print(current_threshold)
+                    update_cat = True
+                    # update the wcsprm variable
+                    current_wcsprm = new_wcsprm
+                    dist_bin_size = 1
+                    ang_bin_size = 0.1
+                else:
+                    ang_bin_size = np.max([ang_bin_size - 0.1, 0.1])
+                    dist_bin_size = np.max([dist_bin_size - 1, 1])
+                    # current_threshold = current_threshold + 0.1
+                    current_wcsprm = best_wcsprm
 
-                # the best case, all sources were matched
-                if best_completeness == 1.:
+                if (Nobs_matched >= self._config['MIN_SOURCE_NO_CONVERGENCE'] and new_completeness >
+                        self._config['THRESHOLD_CONVERGENCE']):
                     has_converged = True
                     break
 
@@ -678,23 +764,195 @@ class CalibrateObsWCS(object):
 
                 if no_changes == 3:
                     if not self._silent:
-                        self._log.info(f'  No improvement in the last 3 iterations. Using best result.')
+                        self._log.info(f'    No improvement in the last 3 iterations. Using best result.')
                     has_converged = True
                     break
-                # Use the remaining detected sources and find close sources in the ref catalog
-                current_reference_cat_subset = self._update_ref_cat_subset(source_cat_matched,
-                                                                           ref_cat_matched,
-                                                                           source_cat, reference_cat,
-                                                                           new_wcsprm)
-                # current_wcsprm = initial_wcsprm
-                use_initial_ref_cat = False
+
+                if update_cat:
+                    # Use the remaining detected sources and find close sources in the ref catalog
+                    current_reference_cat_subset = self._update_ref_cat_subset(source_cat_matched,
+                                                                               ref_cat_matched,
+                                                                               source_cat, reference_cat,
+                                                                               new_wcsprm, match_radius)
+                    # current_wcsprm = initial_wcsprm
+                    use_initial_ref_cat = False
+
             else:
+                dist_bin_size = np.max([dist_bin_size - 1, 1])
+                ang_bin_size = np.max([ang_bin_size - 0.1, 0.1])
                 use_initial_ref_cat = True
+                current_threshold = current_threshold * 1.5
 
         return best_wcsprm, has_converged
 
+    # def get_wcs_working(self, source_df, ref_df, initial_wcsprm,
+    #             match_radius=1, max_iter=6):
+    #     """"""
+    #
+    #     # make a copy to work with
+    #     source_cat = source_df.copy()
+    #     reference_cat = ref_df.copy()
+    #
+    #     # make sure the catalogs are sorted
+    #     source_cat = source_cat.sort_values(by='mag', ascending=True)
+    #     source_cat.reset_index(inplace=True, drop=True)
+    #
+    #     reference_cat = reference_cat.sort_values(by='mag', ascending=True)
+    #     reference_cat.reset_index(inplace=True, drop=True)
+    #
+    #     self._log.info("> Run WCS calibration")
+    #
+    #     # number of detected sources
+    #     Nobs = len(source_cat)
+    #     Nref = len(reference_cat)
+    #     source_ratio = (Nobs / Nref) * 100.
+    #     percent_to_select = np.ceil(source_ratio * 10)
+    #     n_percent = percent_to_select if percent_to_select < 100 else 100
+    #
+    #     # Calculate the number of rows to select based on the percentage
+    #     num_rows = int(Nref * (n_percent / 100))
+    #
+    #     # Select at least the first 100 entries
+    #     num_rows = 100 if num_rows < 100 else num_rows
+    #
+    #     if not self._silent:
+    #         self._log.info(f'  Number of detected sources: {Nobs}')
+    #         self._log.info(f'  Number of reference sources (total): {Nref}')
+    #         self._log.info(f'  Ratio of detected sources to reference sources: {source_ratio:.3f}%')
+    #         # self._log.info(f'Select: {np.ceil(source_ratio * 10):.2f}%')
+    #         self._log.info(f'  Initial number of reference sources selected: {num_rows}')
+    #         self._log.info(f'  Source match radius = {match_radius:.2f} px')
+    #
+    #     # keep track of progress
+    #     progress = 0
+    #     no_changes = 0
+    #     # match_radius = 1
+    #     has_converged = False
+    #     use_initial_ref_cat = False
+    #
+    #     # apply the found wcs to the original reference catalog
+    #     ref_cat_orig_adjusted = reference_cat.copy()
+    #     pos_on_det = initial_wcsprm.s2p(reference_cat[["RA", "DEC"]].values, 1)['pixcrd']
+    #     ref_cat_orig_adjusted["xcentroid"] = pos_on_det[:, 0]
+    #     ref_cat_orig_adjusted["ycentroid"] = pos_on_det[:, 1]
+    #
+    #     # select initial reference sample based on the current best result
+    #     initial_reference_cat_subset = ref_cat_orig_adjusted.head(num_rows)
+    #
+    #     current_reference_cat_subset = initial_reference_cat_subset
+    #     current_wcsprm = initial_wcsprm
+    #
+    #     # setup best values
+    #     # best_rms = 1
+    #     # best_score = 0
+    #     best_Nobs = 0
+    #     best_completeness = 0
+    #     best_wcsprm = None
+    #
+    #     if not self._silent:
+    #         self._log.info(f'  Find scale, rotation, and offset.')
+    #
+    #     while True:
+    #         if progress == max_iter:
+    #             break
+    #         else:
+    #             progress += 1
+    #
+    #         if use_initial_ref_cat:
+    #             current_reference_cat_subset = initial_reference_cat_subset
+    #             if progress > 1:
+    #                 current_reference_cat_subset = (initial_reference_cat_subset
+    #                                                 .sample(int(len(initial_reference_cat_subset) * 0.95)))
+    #
+    #         # get wcs transformation
+    #         try:
+    #             tform_result = self._get_transformations(source_cat=source_cat,
+    #                                                      ref_cat=current_reference_cat_subset,
+    #                                                      wcsprm=current_wcsprm)
+    #         except IndexError:
+    #             current_reference_cat_subset = (initial_reference_cat_subset
+    #                                             .sample(int(len(initial_reference_cat_subset) * 0.95)))
+    #             current_wcsprm = initial_wcsprm
+    #             continue
+    #
+    #         # extract variables
+    #         new_wcsprm, new_wcsprm_vals, tform_params, offsets, is_fine_tuned = tform_result
+    #
+    #         # match catalogs
+    #         matches = imtrans.find_matches(source_cat,
+    #                                        current_reference_cat_subset,
+    #                                        new_wcsprm,
+    #                                        threshold=match_radius)
+    #         source_cat_matched, ref_cat_matched, obs_xy, _, distances, _, _ = matches
+    #
+    #         # check if any matches were found
+    #         if obs_xy is None or len(obs_xy[:, 0]) == 0:
+    #             if not self._silent:
+    #                 self._log.info(f'  Try [ {progress}/{max_iter} ] No matches found. Trying again.')
+    #             use_initial_ref_cat = True
+    #             best_wcsprm = initial_wcsprm
+    #             continue
+    #
+    #         # get convergence criteria
+    #         Nobs_matched = len(obs_xy[:, 0])
+    #         new_completeness = Nobs_matched / Nobs
+    #         new_rms = np.sqrt(np.nanmean(np.square(distances))) / Nobs_matched
+    #         new_score = Nobs_matched / new_rms
+    #
+    #         message = f'  Try [ {progress}/{max_iter} ] ' \
+    #                   f'Found matches: {Nobs_matched}/{Nobs} ({new_completeness * 100:.1f}%), ' \
+    #                   f'Score: {new_score:.0f}, ' \
+    #                   f'RMS: {new_rms:.3f}'
+    #
+    #         if not self._silent:
+    #             self._log.info(message)
+    #
+    #         if Nobs_matched > 3:
+    #             delta_matches = Nobs_matched - best_Nobs
+    #             print("delta_matches", delta_matches)
+    #             # update best values
+    #             if Nobs_matched > best_Nobs:
+    #                 best_wcsprm = new_wcsprm
+    #                 best_Nobs = Nobs_matched
+    #                 # best_score = new_score
+    #                 # best_rms = new_rms
+    #                 best_completeness = new_completeness
+    #
+    #             # the best case, all sources were matched
+    #             if new_completeness == 1.:
+    #                 has_converged = True
+    #                 break
+    #
+    #             if Nobs_matched >= self._config['MIN_SOURCE_NO_CONVERGENCE'] and delta_matches == 0.:
+    #                 if best_completeness > self._config['THRESHOLD_CONVERGENCE'] or best_completeness <= \
+    #                         self._config['THRESHOLD_CONVERGENCE']:
+    #                     has_converged = True
+    #                     break
+    #             elif Nobs_matched >= self._config['MIN_SOURCE_NO_CONVERGENCE'] and delta_matches < 0:
+    #                 no_changes += 1
+    #
+    #             if no_changes == 3:
+    #                 if not self._silent:
+    #                     self._log.info(f'    No improvement in the last 3 iterations. Using best result.')
+    #                 has_converged = True
+    #                 break
+    #             # Use the remaining detected sources and find close sources in the ref catalog
+    #             current_reference_cat_subset = self._update_ref_cat_subset(source_cat_matched,
+    #                                                                        ref_cat_matched,
+    #                                                                        source_cat, reference_cat,
+    #                                                                        new_wcsprm)
+    #             # current_wcsprm = initial_wcsprm
+    #             use_initial_ref_cat = False
+    #             # update the wcsprm variable
+    #             current_wcsprm = new_wcsprm
+    #
+    #         else:
+    #             use_initial_ref_cat = True
+    #
+    #     return best_wcsprm, has_converged
+
     def _update_ref_cat_subset(self, source_cat_matched, ref_cat_matched,
-                               source_cat_original, ref_cat_original, wcsprm):
+                               source_cat_original, ref_cat_original, wcsprm, radius):
         """"""
 
         # apply the found wcs to the original reference catalog
@@ -709,12 +967,12 @@ class CalibrateObsWCS(object):
         # get the closest N sources from the reference catalog for the remaining sources
         ref_sources_to_add = self.match_catalogs(remaining_sources,
                                                  ref_cat_orig_adjusted,
-                                                 radius=10., N=3)
+                                                 radius=radius, N=3)
 
         #
         ref_cat_orig_matched = self.match_catalogs(ref_cat_matched,
                                                    ref_cat_original,
-                                                   ra_dec_tol=1e-4, N=1)
+                                                   ra_dec_tol=1e-3, N=1)
 
         ref_catalog_subset = pd.concat([ref_cat_orig_matched, ref_sources_to_add],
                                        ignore_index=True)
@@ -742,7 +1000,7 @@ class CalibrateObsWCS(object):
 
             # Find the indices of the closest points for each row in catalog2
             # based on RA/DEC coordinates
-            distances, indices = catalog1_tree.query(catalog2[['RA', 'DEC']].values, k=1)
+            distances, indices = catalog1_tree.query(catalog2[['RA', 'DEC']].values, k=N)
 
             # Create a mask for distances within the specified tolerance
             mask = distances < ra_dec_tol
@@ -790,7 +1048,8 @@ class CalibrateObsWCS(object):
         plt.title('Source Catalog and Reference Catalog Positions')
         # plt.show()
 
-    def _get_transformations(self, source_cat: pd.DataFrame, ref_cat: pd.DataFrame, wcsprm):
+    def _get_transformations(self, source_cat: pd.DataFrame, ref_cat: pd.DataFrame, wcsprm,
+                             dist_bin_size=1, ang_bin_size=0.2):
         """ Determine rotation, scale and offset using image transformations
 
         Parameters
@@ -814,8 +1073,11 @@ class CalibrateObsWCS(object):
                                                                   catalog=ref_cat,
                                                                   wcsprm=wcsprm,
                                                                   scale_guessed=PIXSCALE_UNCLEAR,
-                                                                  dist_bin_size=self._config['DISTANCE_BIN_SIZE'],
-                                                                  ang_bin_size=self._config['ANG_BIN_SIZE'])
+                                                                  # dist_bin_size=self._config['DISTANCE_BIN_SIZE'],
+                                                                  # ang_bin_size=self._config['ANG_BIN_SIZE'],
+                                                                  dist_bin_size=dist_bin_size,
+                                                                  ang_bin_size=ang_bin_size
+                                                                  )
 
         if self._xy_transformation:
             # if not self._silent:
@@ -824,6 +1086,8 @@ class CalibrateObsWCS(object):
             wcsprm, offsets, _, _ = imtrans.get_offset_with_orientation(observation=source_cat,
                                                                         catalog=ref_cat,
                                                                         wcsprm=wcsprm)
+
+        wcsprm, scales = imtrans.translate_wcsprm(wcsprm=wcsprm)
 
         # update reference catalog
         ref_cat_corrected = ref_cat.copy()
@@ -836,9 +1100,7 @@ class CalibrateObsWCS(object):
                                                                              ref_cat=ref_cat_corrected,
                                                                              wcsprm=wcsprm)
 
-        del source_cat, ref_cat, ref_cat_corrected, _
-        gc.collect()
-
+        _base_conf.clean_up(source_cat, ref_cat, ref_cat_corrected)
         return wcsprm, wcsprm_vals, tform_params, offsets, fine_tune_status
 
     def _compare_results(self, imgarr, hdr, wcsprm):
@@ -848,14 +1110,6 @@ class CalibrateObsWCS(object):
 
         if not self._silent:
             self._log.info("> Compared to the input the Wcs was changed by: ")
-
-        # scales_original = utils.proj_plane_pixel_scales(WCS(hdr))
-
-        # if scales is not None:
-        #     if not self._silent:
-        #         self._log.info("  WCS got scaled by a factor of {} in x direction and "
-        #                        "{} in y direction".format(scales[0] / scales_original[0],
-        #                                                   scales[1] / scales_original[1]))
 
         # sources:
         # https://math.stackexchange.com/questions/2113634/comparing-two-rotation-matrices
@@ -876,7 +1130,7 @@ class CalibrateObsWCS(object):
 
         # bugfix: multiplying by cdelt otherwise the calculated angle is off by a tiny bit
         rotation_angle = matrix_angle(wcsprm.get_pc() @ wcsprm.get_cdelt(),
-                                      wcsprm_original.get_pc() @ wcsprm_original.get_cdelt()) / 2. / np.pi * 360.
+                                      wcsprm_original.get_pc() @ wcsprm_original.get_cdelt()) / np.pi * 180.
 
         if (wcsprm.get_pc() @ wcsprm_original.get_pc())[0, 1] > 0:
             text = "counterclockwise"
@@ -942,7 +1196,7 @@ class CalibrateObsWCS(object):
             # if not self._silent:
             #     self._log.info("  > Refine scale and rotation")
             self._log.debug("  > Refine scale and rotation")
-            lis = [2, 3, 5, 8, 10, 20, 1, 0.5, 0.2, 0.1]  # , 0.5, 0.25, 0.2, 0.1
+            lis = [2, 3, 5, 10, 20, 1, 0.5, 0.1]  # , 0.5, 0.25, 0.2, 0.1
             if self._high_res:
                 lis = [200, 300, 100, 150, 80, 40, 70, 20, 100, 30, 9, 5]
             skip_rot_scale = True
@@ -965,17 +1219,7 @@ class CalibrateObsWCS(object):
                     best_wcsprm_vals = wcsprm_vals
                     fine_transformation_success = True
 
-            # pass_str = _base_conf.BCOLORS.PASS + "PASS" + _base_conf.BCOLORS.ENDC
-            # fail_str = _base_conf.BCOLORS.FAIL + "FAIL" + _base_conf.BCOLORS.ENDC
-            # if not fine_transformation_success:
-            #     if not self._silent:
-            #         self._log.info("    Status: " + fail_str)
-            # else:
-            #     if not self._silent:
-            #         self._log.info("    Status: " + pass_str)
-
-        del source_cat, ref_cat, matches
-        gc.collect()
+        _base_conf.clean_up(source_cat, ref_cat, matches)
 
         return wcsprm, best_wcsprm_vals, fine_transformation_success
 
@@ -1012,7 +1256,7 @@ class CalibrateObsWCS(object):
             _, _, obs_xy, _, distances, _, _ = matches
             len_obs_x = len(obs_xy[:, 0])
 
-            rms = np.sqrt(np.mean(np.square(distances))) / len_obs_x
+            rms = np.sqrt(np.nanmedian(np.square(distances))) / len_obs_x
 
             result_array[i, :] = [len_obs_x, len_obs_x / N_obs, r, r * px_scale, rms, rms * px_scale]
 
@@ -1022,9 +1266,11 @@ class CalibrateObsWCS(object):
 
         # Calculate the rate of change
         rate_of_change = diff_sources / diff_pixels
-
+        # plt.figure()
+        # plt.plot(rate_of_change)
+        # plt.show()
         # Find the point where the rate of change drops below a certain threshold
-        threshold = 1.  # This is just an example value, you might need to adjust it based on your data
+        threshold = 1.
         index = np.where(np.logical_and((rate_of_change < threshold),
                                         (result_array[1:, 2] > fwhm / 2.)))[0][0]
 
@@ -1182,7 +1428,7 @@ class CalibrateObsWCS(object):
             if wcs_pixscale[0] / pixscale_x < 0.1 or wcs_pixscale[0] / pixscale_x > 10 \
                     or wcs_pixscale[1] / pixscale_y < 0.1 or wcs_pixscale[1] / pixscale_y > 10:
                 # check if there is a huge difference in the scales
-                # if yes, then replace the wcs scale with the pixel scale info
+                # if yes, then replace the wcs scale with the pixel scale information
                 wcsprm.pc = [[0, 1], [-1, 0]]
                 wcsprm.cdelt = [-pixscale_x, pixscale_y]
 
@@ -1208,7 +1454,7 @@ class CalibrateObsWCS(object):
         # check sky position
         if np.array_equal(wcsprm.crval, [0, 0]):
             INCREASE_FOV_FLAG = True
-            # If the sky position is not found check header for RA and DEC info
+            # If the sky position is not found check header for RA and DEC information
             wcsprm.crval = [ra_deg, dec_deg]
         else:
             if not self._silent:
@@ -1277,11 +1523,17 @@ class CalibrateObsWCS(object):
             wcs = WCS(wcsprm.to_header())
             hdr_file.update(wcs.to_header())
 
+            # get y-axis length as limit
+            matrix = wcsprm.pc * wcsprm.cdelt[:, np.newaxis]
+
+            # Rotation angle
+            theta = np.rad2deg(-np.arctan2(matrix[1, 0], matrix[1, 1]))
+
             # adding report
             hdr_file['PIXSCALE'] = (report["pix_scale"], 'Average pixel scale [arcsec/pixel]')
             hdr_file['SCALEX'] = (report["scale_x"], 'Pixel scale in X [arcsec/pixel]')
             hdr_file['SCALEY'] = (report["scale_y"], 'Pixel scale in Y [arcsec/pixel]')
-            hdr_file['DETROTANG'] = (report["det_rotang"], 'Detection rotation angel [deg]')
+            hdr_file['DETROTANG'] = (theta, 'Detection rotation angel [deg]')
             hdr_file['FWHM'] = (report["fwhm"], 'FWHM [pixel]')
             hdr_file['FWHMERR'] = (report["e_fwhm"], 'FWHM error [pixel]')
             hdr_file['AST_SCR'] = ("Astrometry", 'Astrometric calibration by Christian Adam')
@@ -1329,14 +1581,24 @@ class CalibrateObsWCS(object):
         imgarr -= bkg_background
 
         # get y-axis length as limit
-        plim = imgarr.shape[0]
+        matrix = wcsprm.pc * wcsprm.cdelt[:, np.newaxis]
 
-        # get the scale and angle
-        scale = wcsprm.cdelt[0]
-        angle = np.arccos(wcsprm.pc[0][0])
-        theta = angle / np.pi * 180.
-        if wcsprm.pc[0][0] < 0.:
-            theta *= -1.
+        # Scale
+        scale_x = np.sqrt(matrix[0, 0] ** 2 + matrix[0, 1] ** 2)
+
+        # Rotation angle
+        theta = -np.arctan2(matrix[1, 0], matrix[1, 1])
+
+        # get x, y-axis length as limits
+        plim = imgarr.shape[0]  # Image height
+        xplim = imgarr.shape[1]  # Image width
+
+        # # get the scale and angle
+        # scale = wcsprm.cdelt[0]
+        # angle = np.arccos(wcsprm.pc[0][0])
+        # theta = angle / np.pi * 180.
+        # if wcsprm.pc[0][0] < 0.:
+        #     theta *= -1.
 
         obs_xy = np.array(src_pos)
         cat_xy = ref_pos
@@ -1380,11 +1642,12 @@ class CalibrateObsWCS(object):
         apertures_catalog.plot(axes=ax, **{'color': 'green', 'lw': 1.25, 'alpha': 0.85})
 
         # add image scale
-        self._add_image_scale(ax=ax, plim=plim, scale=scale)
+        self._add_image_scale(ax=ax, plim_x=xplim, plim_y=plim, scale=scale_x)
 
         # Add compass
-        self._add_compass(ax=ax, plim=plim, theta=theta)
-
+        self._add_compass(ax=ax, image_shape=imgarr.shape,
+                          scale_arrow=self._config['ARROW_LENGTH'], theta_rad=theta,
+                          color='k')
         # -----------------------------------------------------------------------------
         # Make color bar
         # -----------------------------------------------------------------------------
@@ -1448,14 +1711,14 @@ class CalibrateObsWCS(object):
 
         plt.close(fig=fig)
 
-    def _add_image_scale(self, ax, plim, scale):
+    def _add_image_scale(self, ax, plim_x, plim_y, scale):
         """Make a scale for the image"""
 
         length = self._config['LINE_LENGTH']
         xlemark = length / (scale * 60.)
-        xstmark = 0.025 * plim
+        xstmark = 0.025 * plim_x
         xenmark = xstmark + xlemark
-        ystmark = plim * (1. - 0.975)
+        ystmark = plim_y * 0.025
 
         ax.plot([xstmark, xenmark], [ystmark, ystmark], color='k', lw=1.25)
         ax.annotate(text=r"{0:.0f}'".format(length),
@@ -1464,37 +1727,135 @@ class CalibrateObsWCS(object):
 
         return ax
 
-    def _add_compass(self, ax, plim, theta, color='black'):
+    @staticmethod
+    def _add_compass(ax: plt.Axes, image_shape, scale_arrow, theta_rad: float, color: str = 'black'):
         """Make a Ds9 like compass for image"""
 
-        x0 = plim * 0.955
-        y0 = plim * 0.955
-        if self._telescope == 'DK-1.54':
-            x0 = plim * 0.955
-            y0 = plim * 0.025
-            if theta < 0.:
-                x0 = plim * 0.025
-                y0 = plim * 0.955
-        if self._telescope == 'Takahashi FSQ 85':
-            x0 = plim * 1.25
-            y0 = plim * 0.025
-            if theta < 0.:
-                x0 = plim * 0.025
-                y0 = plim * 0.955
+        text_off = 0.1
 
-        larr = self._config['ARROW_LENGTH'] * plim  # 15% of the image size
+        theta_deg = np.rad2deg(theta_rad)
+
+        length_arrow = scale_arrow * min(image_shape)
+        length_box = (scale_arrow + 0.05) * image_shape[1]
+
+        theta_north_rad = theta_rad + np.pi / 2.
+        theta_east_rad = theta_rad + np.pi
+
+        dx = length_box * np.cos(theta_rad)
+        dy = length_box * np.sin(theta_rad)
+
+        north_dx = length_arrow * np.cos(theta_north_rad)
+        north_dy = length_arrow * np.sin(theta_north_rad)
+
+        east_dx = length_arrow * np.cos(theta_east_rad)
+        east_dy = length_arrow * np.sin(theta_east_rad)
+
+        sx = 0.975
+        sy = 0.025
+
+        if (45. < theta_deg <= 180.) or theta_deg < -135.:
+            sy = 0.975
+
+        x = image_shape[1]
+        y = image_shape[0]
+
+        x0 = sx * x
+        y0 = sy * y
+
+        x1 = x0
+        y1 = y0
+        if theta_deg <= 45.:
+            if y0 - dy < 0:
+                y1 = dy
+        elif 45 < theta_deg <= 90:
+            if dx > y - y0:
+                y1 = y0 - dx
+        elif 90 < theta_deg:
+            x1 = x0 + dx
+
+        if -135 <= theta_deg < 0:
+            if x - x0 < -dy:
+                x1 = x + dy
+            if y0 < -dx:
+                y1 = y0 - dx
+        elif theta_deg < -135:
+            x1 = x + dx
+            if y - y0 < -dy:
+                y1 = y0 + dy
+
+        # Draw North arrow
+        ax.annotate('', xy=(x1, y1), xycoords='data',
+                    xytext=(x1 + north_dx, y1 + north_dy), textcoords='data',
+                    arrowprops=dict(arrowstyle="<-", lw=1.5), zorder=2)
+
+        # Label North arrow
+        ax.text(x1 + north_dx + text_off * north_dx, y1 + north_dy + text_off * north_dy, 'N',
+                verticalalignment='center',
+                horizontalalignment='center', color=color, fontsize=10, zorder=2)
+
+        # Draw East arrow
+        ax.annotate('', xy=(x1, y1), xycoords='data',
+                    xytext=(x1 + east_dx, y1 + east_dy), textcoords='data',
+                    arrowprops=dict(arrowstyle="<-", color=color, lw=1.5), zorder=2)
+
+        # Label East arrow
+        ax.text(x1 + east_dx + text_off * east_dx, y1 + east_dy + text_off * east_dy, 'E', verticalalignment='center',
+                horizontalalignment='center', color=color, fontsize=10, zorder=2)
+
+        return ax
+
+    def _add_compass_old(self, ax, plim_x, plim_y, theta, color='black'):
+        """Make a Ds9 like compass for image"""
+        #
+        # x0 = plim * 0.955
+        # y0 = plim * 0.955
+        # if self._telescope == 'DK-1.54':
+        #     x0 = plim * 0.955
+        #     y0 = plim * 0.025
+        #     if theta < 0.:
+        #         x0 = plim * 0.025
+        #         y0 = plim * 0.955
+        # if self._telescope == 'Takahashi FSQ 85':
+        #     x0 = plim * 1.25
+        #     y0 = plim * 0.025
+        #     if theta < 0.:
+        #         x0 = plim * 0.025
+        #         y0 = plim * 0.955
+
+        larr = self._config['ARROW_LENGTH'] * plim_y  # 15% of the image size
+        # Default margins
+        margin_x = plim_x * 0.04
+        margin_y = plim_y * 0.04
+
+        # Determine x0 and y0 without subtracting larr
+        if 0 <= theta < np.pi / 2:
+            # First quadrant
+            x0 = plim_x - margin_x  # Subtract larr to ensure the compass fits within the right edge
+            y0 = margin_y
+        elif np.pi / 2 <= theta < np.pi:
+            # Second quadrant
+            x0 = plim_x - margin_x - larr  # No need to subtract larr because the compass orients towards the top left
+            y0 = plim_y - margin_y
+        elif -np.pi / 2 <= theta < 0:
+            # Fourth quadrant
+            x0 = plim_x - margin_x - larr  # Subtract larr to ensure the compass fits within the right edge
+            y0 = margin_y
+        else:
+            # Third quadrant
+            x0 = plim_x - margin_x  # No need to subtract larr because the compass orients towards the bottom left
+            y0 = plim_y - margin_y
 
         # East
-        theta = theta * np.pi / 180.
+        theta = theta + 90. * np.pi / 180.
         x1, y1 = larr * np.cos(theta), larr * np.sin(theta)
         ax.arrow(x0, y0, x1, y1, head_width=10, color=color, zorder=2)
-        ax.text(x0 + 1.25 * x1, y0 + 1.25 * y1, 'E', color=color)
+        ax.text(x0 + 1.25 * x1, y0 + 1.25 * y1, 'N', color=color)
 
         # North
         theta = theta + 90. * np.pi / 180.
         x1, y1 = larr * np.cos(theta), larr * np.sin(theta)
         ax.arrow(x0, y0, x1, y1, head_width=10, color=color, zorder=2)
-        ax.text(x0 + 1.25 * x1, y0 + 1.25 * y1, 'N', color=color)
+        ax.text(x0 + 1.25 * x1, y0 + 1.25 * y1, 'E', color=color)
 
         return ax
 

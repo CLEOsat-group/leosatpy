@@ -6,13 +6,6 @@ The LEOSatpy pipeline is written for use with Python >=3.9.
 To avoid unnecessary interference with the Python installed on the system, it is recommended to create a new Python environment
 to run LEOSatpy, using for example `conda <https://conda.io/projects/conda/en/latest/user-guide/install/linux.html>`_.
 
-..
-    To run LEOSatpy on a machine with a different version of python, it is recommended to use
-    LEOSatpy with a Conda environment.
-    This allows to run the package without interfering directly with the system.
-
-    To install Conda follow the instructions `Conda <https://conda.io/projects/conda/en/latest/user-guide/install/linux.html>`_.
-
 A new conda environment can be created and activated with:
 
 .. code-block:: sh
@@ -20,6 +13,9 @@ A new conda environment can be created and activated with:
     $ conda create -n leosatpy_env python=3.9
     $ conda activate leosatpy_env
 
+.. hint::
+
+    Additional package required to run LEOSatpy are installed automatically.
 
 Installing LEOSatpy
 -------------------
@@ -75,13 +71,9 @@ The successful installation of LEOSatpy can be tested by trying to access the he
 
 If no error messages are shown, LEOSatpy is most likely installed correctly.
 
-
-
 -----
 
-As a next step and before using LEOSatpy, it is recommended to edit the :ref:`configuration file <Configuration file>`.
 
-.. attention::
+As a next step and before using LEOSatpy,
+it is recommended to edit the :ref:`configuration file <Configuration file>` before running the program on the data.
 
-    Upon the first-time execution, a copy of the configuration file is placed in the ``/home/user`` directory.
-    Please modify the configuration as required before running the program on the data.
