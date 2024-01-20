@@ -27,11 +27,13 @@ import os
 from copy import copy
 import inspect
 import logging
+import fast_histogram as fhist
 
+import matplotlib.pyplot as plt
 import numpy as np
 from astropy.wcs import WCS, utils
-from fast_histogram import histogram2d
 
+from . import base_conf
 
 # -----------------------------------------------------------------------------
 
@@ -152,18 +154,17 @@ def get_scale_and_rotation(observation, catalog, wcsprm, scale_guessed,
     log.debug("    Note that there still might be a 180deg rotation. "
               "If this is the case it should be correct in the next step")
 
-    del observation, catalog_on_sensor, obs_x, obs_y, cat_x, cat_y, \
-        log_dist_obs, log_dist_cat, angles_obs, angles_cat, _, \
-        scaling_reflected, rotation_reflected, signal_reflected, \
-        corr_, corr_reflected
-    gc.collect()
+    base_conf.clean_up(observation, catalog_on_sensor, obs_x, obs_y, cat_x, cat_y,
+                       log_dist_obs, log_dist_cat, angles_obs, angles_cat, _,
+                       scaling_reflected, rotation_reflected, signal_reflected,
+                       corr_, corr_reflected)
 
     return wcsprm_new, (scaling, rotation, signal, confidence)
 
 
 def get_offset_with_orientation(observation, catalog, wcsprm,
                                 report_global=""):
-    """Use offset from cross-correlation but with trying 0,90,180,270 rotation.
+    """Use offset from cross-correlation but with trying a 0,90,180,270-degree rotation.
 
     Parameters
     ----------
@@ -278,14 +279,13 @@ def simple_offset(observation, catalog, wcsprm=None, offset_binwidth=1, report="
     x_edges = np.linspace(min_x, max_x, num_bins_x)
     y_edges = np.linspace(min_y, max_y, num_bins_y)
 
+    vals = [dist_x, dist_y]
+    bins = [num_bins_x, num_bins_y]
+    ranges = [[min_x, max_x], [min_y, max_y]]
     # Compute the histogram
-    H = histogram2d(dist_x, dist_y,
-                    bins=[num_bins_x, num_bins_y],
-                    range=[[min_x, max_x],
-                           [min_y, max_y]])
+    H = fhist.histogram2d(*vals, bins=bins, range=ranges)
 
-    del cat_x, cat_y, obs_x, obs_y
-    gc.collect()
+    base_conf.clean_up(cat_x, cat_y, obs_x, obs_y, bins, vals, ranges)
 
     # find the peak for the x and y distance where the two sets overlap and take the first peak
     peak = np.argwhere(H == np.max(H))[0]
@@ -297,8 +297,8 @@ def simple_offset(observation, catalog, wcsprm=None, offset_binwidth=1, report="
     report += "signal wide (64pixel) - signal (9pixel)  = {}. " \
               "If this value is large then " \
               "there might be rotation or scaling issues. \n".format(signal_wide - signal)
+
     del observation, H
-    gc.collect()
 
     x_shift = (x_edges[peak[0]] + x_edges[peak[0] + 1]) / 2
     y_shift = (y_edges[peak[1]] + y_edges[peak[1] + 1]) / 2
@@ -306,6 +306,8 @@ def simple_offset(observation, catalog, wcsprm=None, offset_binwidth=1, report="
     report += "We find an offset of {} in the x direction and {} " \
               "in the y direction \n".format(x_shift, y_shift)
     report += "{} sources are fitting well with this offset. \n".format(signal)
+
+    del x_edges, y_edges
 
     if wcsprm is not None:
         current_central_pixel = wcsprm.crpix
@@ -376,11 +378,10 @@ def fine_transformation(observation, catalog, wcsprm, threshold=10,
     angle_offset = angle_offset[mask]
     scale_offset = scale_offset[mask]
 
-    # get rotation and scale
-    rotation = np.nanmean(angle_offset)
-    scaling = np.e ** (np.nanmean(scale_offset))
+    rotation = np.nanmedian(angle_offset)
+    scaling = np.e ** (np.nanmedian(scale_offset))
 
-    del angle_offset, scale_offset, mask, log_dist_obs, log_dist_cat
+    base_conf.clean_up(angle_offset, scale_offset, mask, log_dist_obs, log_dist_cat)
 
     rot = rotation_matrix(rotation)
     if not skip_rot_scale:
@@ -400,8 +401,8 @@ def fine_transformation(observation, catalog, wcsprm, threshold=10,
         return wcsprm_original, 0, (None, None, [0, 0])
 
     # Get offset and update the central reference pixel
-    x_shift = np.nanmean(obs_xy[:, 0] - cat_xy[:, 0])
-    y_shift = np.nanmean(obs_xy[:, 1] - cat_xy[:, 1])
+    x_shift = np.nanmedian(obs_xy[:, 0] - cat_xy[:, 0])
+    y_shift = np.nanmedian(obs_xy[:, 1] - cat_xy[:, 1])
 
     current_central_pixel = wcsprm.crpix
     new_central_pixel = [current_central_pixel[0] + x_shift,
@@ -432,7 +433,7 @@ def find_matches(obs, cat, wcsprm=None, threshold=10.):
 
     # set up the catalog data; use RA, Dec if used with wcsprm
     if wcsprm is not None:
-        cat_xy = wcsprm.s2p(cat[["RA", "DEC"]], 0)
+        cat_xy = wcsprm.s2p(cat[["RA", "DEC"]], 1)
         cat_xy = cat_xy['pixcrd']
     else:
         cat_xy = cat[["xcentroid", "ycentroid"]].to_numpy()
@@ -469,7 +470,7 @@ def find_matches(obs, cat, wcsprm=None, threshold=10.):
     if len(min_dist_xy) == 0:  # meaning the list is empty
         best_score = 0
     else:
-        rms = np.sqrt(np.mean(np.square(min_dist_xy)))
+        rms = np.sqrt(np.nanmean(np.square(min_dist_xy))) / len(obs_matched)
         best_score = len(obs_xy) / rms  # start with the current best score
 
     return obs_matched, cat_matched, obs_xy, cat_xy, min_dist_xy, best_score, True
@@ -553,19 +554,17 @@ def peak_with_cross_correlation(log_distance_obs: np.ndarray, angle_obs: np.ndar
     bins_ang, binwidth_ang = create_bins(minimum_ang, maximum_ang,
                                          ang_bin_size, is_distance=False)
 
-    bins = np.array([len(bins_dist), len(bins_ang)])
-    ranges = np.array([[minimum_distance, maximum_distance],
-                       [minimum_ang, maximum_ang]])
+    bins = [len(bins_dist), len(bins_ang)]
+    ranges = [[minimum_distance, maximum_distance],
+              [minimum_ang, maximum_ang]]
 
     # create a 2d histogram for the observations
-    vals = np.array([log_distance_obs, angle_obs])
-    H_obs = histogram2d(*vals, bins=bins,
-                        range=ranges).astype(dtype=np.complex128)
+    vals = [log_distance_obs, angle_obs]
+    H_obs = fhist.histogram2d(*vals, bins=bins, range=ranges).astype(dtype=np.complex128)
 
     # create a 2d histogram for the reference sources
-    vals = np.array([log_distance_cat, angle_cat])
-    H_cat = histogram2d(*vals, bins=bins,
-                        range=ranges).astype(dtype=np.complex128)
+    vals = [log_distance_cat, angle_cat]
+    H_cat = fhist.histogram2d(*vals, bins=bins, range=ranges).astype(dtype=np.complex128)
 
     # apply FFT
     ff_obs = cross_corr_to_fourier_space(H_obs)
@@ -617,11 +616,12 @@ def peak_with_cross_correlation(log_distance_obs: np.ndarray, angle_obs: np.ndar
     scaling = np.e ** (-x_shift)
     rotation = y_shift
 
-    del cross_corr, middle_x, middle_y, \
-        log_distance_obs, log_distance_cat, angle_obs, angle_cat, \
-        bins_dist, bins_ang, binwidth_dist, binwidth_ang, \
-        vals, H_obs, H_cat, ff_obs, ff_cat
-    gc.collect()
+    base_conf.clean_up(cross_corr, middle_x, middle_y,
+                       log_distance_obs, log_distance_cat,
+                       angle_obs, angle_cat,
+                       bins_dist, bins_ang,
+                       binwidth_dist, binwidth_ang,
+                       vals, H_obs, H_cat, ff_obs, ff_cat)
 
     return scaling, rotation, signal, [x_shift, y_shift]
 
@@ -655,8 +655,7 @@ def calculate_dist(data_x, data_y):
 
     dist = np.sqrt(dist_x ** 2 + dist_y ** 2)
 
-    del data_x, data_y, dist_x, dist_y
-    gc.collect()
+    base_conf.clean_up(data_x, data_y, dist_x, dist_y)
 
     return dist
 
@@ -666,7 +665,7 @@ def calculate_log_dist(data_x, data_y):
     log_dist = np.log(calculate_dist(data_x, data_y) + np.finfo(float).eps)
 
     del data_x, data_y
-    gc.collect()
+
     return log_dist
 
 
@@ -690,8 +689,7 @@ def calculate_angles(data_x, data_y):
     # shift to -pi to pi
     angles[np.where(angles > np.pi)] = -1 * (2. * np.pi - angles[np.where(angles > np.pi)])
 
-    del data_x, data_y, vec_x, vec_y
-    gc.collect()
+    base_conf.clean_up(data_x, data_y, vec_x, vec_y)
 
     return angles
 
@@ -772,8 +770,7 @@ def shift_translation(src_image, target_image):
     Parameters
     ----------
      src_image: ndarray of the reference image.
-     target_image: ndarray of the image to register.
-        Must be the same dimensionality as src_image.
+     target_image: ndarray of the image to register. Must be the same dimensionality as src_image.
 
     Returns
     -------
@@ -783,22 +780,22 @@ def shift_translation(src_image, target_image):
     if src_image.shape != target_image.shape:
         raise ValueError("Registration Error : Images need to have the same size")
 
-    # In order to calcul the FFT(Fast Fourier Transform), we need convert the data type into real data
+    # convert to real number for FFT(Fast Fourier Transform)
     src_image = np.array(src_image, dtype=np.complex128, copy=False)
     target_image = np.array(target_image, dtype=np.complex128, copy=False)
     src_freq = np.fft.fftn(src_image)
     target_freq = np.fft.fftn(target_image)
 
-    # In order to calcul the shift in pixel,
-    # we need to compute the cross-correlation by an IFFT(Inverse Fast Fourier Transform)
+    # compute the cross-correlation by an IFFT(Inverse Fast Fourier Transform)
     shape = src_freq.shape
     image_product = src_freq * target_freq.conj()
     cross_correlation = np.fft.ifftn(image_product)
 
-    # Locate the maximum in order to calculate the shift between the two numpy arrays
+    # Locate the maximum to calculate the shift between the two numpy arrays
     maxima = np.unravel_index(np.argmax(np.abs(cross_correlation)), cross_correlation.shape)
     midpoints = np.array([np.fix(axis_size / 2) for axis_size in shape])
 
+    # calculate the shift in pixel
     shift = np.array(maxima, dtype=np.float64)
     shift[shift > midpoints] -= np.array(shape)[shift > midpoints]
 
@@ -807,9 +804,9 @@ def shift_translation(src_image, target_image):
         if shape[dim] == 1:
             shift[dim] = 0
 
-    del src_image, target_image, src_freq, target_freq, image_product, cross_correlation
-    gc.collect()
-
+    base_conf.clean_up(src_image, target_image,
+                       src_freq, target_freq,
+                       image_product, cross_correlation)
     return shift
 
 # Can be used for debugging
