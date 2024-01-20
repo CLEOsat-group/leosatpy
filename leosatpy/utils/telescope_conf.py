@@ -92,7 +92,7 @@ dk154_params = {
                  # '1x1': {'11': [6, 22, 0, 6144]},
                  '2x2': None,
                  '4x4': None},
-    'trimsec': {'1x1': {'11': [0, 2060, 66, 2096]},
+    'trimsec': {'1x1': {'11': [0, 2048, 96, 2096]},
                 '2x2': {'11': [10, 1020, 49, 1049]},
                 '4x4': {'11': [0, 512, 15, 525]}},
 
@@ -457,7 +457,7 @@ ctio_90cm_params = {
 
     # filtername translation dictionary
     'filter_translations': {'u': 'U', 'b': 'B',
-                            'nv': 'V', 'i': 'I',
+                            'nv': 'V', 'ov': 'V', 'i': 'I',
                             'r': 'R'},
 
     'exptime': 'EXPTIME',  # exposure time keyword (s)
@@ -518,6 +518,7 @@ ctio_90cm_params = {
 
 }
 
+# CTIO 4 m telescope
 ctio_400cm_params = {
 
     # telescope location information
@@ -544,6 +545,9 @@ ctio_400cm_params = {
     'amplist': {'1x1': None},  # amplifier list keyword
     'secpix': (0.27, 0.27),  # pixel size (arcsec)
     'binning': ('CCDBIN1', 'CCDBIN2'),  # binning in x/y
+
+    'gain': 'GAINA',  # CD gain in el/DN
+    'readnoise': 'RDNOISEA',  # CCD Read Out Noise (e-)
 
     # telescope pointing keywords
     'ra': 'RA',  # telescope pointing, RA
@@ -574,7 +578,7 @@ ctio_400cm_params = {
                      'ra', 'dec', 'airmass', 'binning'],
 
     # source extractor settings
-    'saturation_limit': 6.5e4,
+    'saturation_limit': 'SATURATE',
     'apply_mask': False
 
 }
