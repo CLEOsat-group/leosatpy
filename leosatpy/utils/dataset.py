@@ -402,10 +402,10 @@ class DataSet(object):
             add_filters = {"telescop": telescope}
             if telescope == 'CBNUO-JC':
                 add_filters = {'observat': telescope}
-            if telescope == 'CTIO 0.9 meter telescope':
+            if telescope in ['CTIO 0.9 meter telescope', 'CTIO 4.0-m telescope']:
                 add_filters = {'observat': 'CTIO'}
-            if telescope == 'CTIO 4.0-m telescope':
-                add_filters = {'observat': 'CTIO'}
+            # if telescope == 'CTIO 4.0-m telescope':
+            #     add_filters = {'observat': 'CTIO'}
 
             add_filters[obsparams['instrume'].lower()] = inst
 
@@ -519,9 +519,9 @@ class DataSet(object):
 
         def to_bin(x):
             if inst == 'DECam':
-                step = 3.333e-3  # 120 arcsecond
+                step = 8.333e-2  # 300 arcsecond
             else:
-                step = 2.778e-3  # 10 arcsecond
+                step = 3.333e-2  # 60 arcsecond
             return np.floor(x / step) * step
 
         if inst == 'DECam':
