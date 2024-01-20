@@ -14,6 +14,7 @@
 # -----------------------------------------------------------------------------
 
 """ Modules """
+import gc
 import os
 import logging
 import warnings
@@ -77,6 +78,9 @@ class BCOLORS:
     UNDERLINE = '\033[4m'
 
 
+pass_str = BCOLORS.PASS + "SUCCESSFUL" + BCOLORS.ENDC
+fail_str = BCOLORS.FAIL + "FAILED" + BCOLORS.ENDC
+
 # potential FITS header keywords for looking up the instrument
 # any unique header keyword works as a potential identifier
 INSTRUMENT_KEYS = ['PPINSTRU', 'LCAMMOD', 'INSTRUME',
@@ -94,12 +98,18 @@ FRMT = "%Y-%m-%dT%H:%M:%S"
 def has_fractional_seconds(time_string):
     # Parse the time string into a datetime object
     dt = parse(time_string)
-    print(dt.microsecond)
+
     # Check if the datetime object has fractional seconds
     if dt.microsecond > 0:
         return FRMT_FS
     else:
         return FRMT
+
+
+def clean_up(*args):
+    for arg in args:
+        del arg
+    gc.collect()
 
 
 ROUND_DECIMAL = 5
@@ -126,7 +136,7 @@ DEF_RES_TBL_COL_NAMES = ['File', 'Object', 'Sat-Name', 'AltID', 'UniqueID',
                          'Telescope', 'RA', 'DEC', 'Date-Obs', 'Filter', 'ExpTime',
                          'Airmass', 'Binning',
                          'Obs-Start', 'Obs-Mid', 'Obs-Stop',
-                         'HasTrail', 'HasRef', 'NRef',
+                         'HasTrail', 'NTrail', 'HasRef', 'NRef',
                          'UT Date', 'UT time',
                          'SatLon', 'SatLat', 'SatAlt',
                          'SatAz', 'SatElev', 'SatRA', 'SatDEC',
@@ -136,8 +146,14 @@ DEF_RES_TBL_COL_NAMES = ['File', 'Object', 'Sat-Name', 'AltID', 'UniqueID',
                          'ObsTrailLength', 'e_ObsTrailLength', 'EstTrailLength', 'e_EstTrailLength',
                          'SunSatAng', 'SunPhaseAng', 'SunIncAng', 'ObsAng',
                          'ObsMag', 'e_ObsMag', 'EstMag', 'e_EstMag',
-                         'EstScaleMag', 'e_EstScaleMag', 'SunAzAng', 'SunElevAng',
-                         'FluxScale', 'MagScale', 'MagCorrect', 'e_MagCorrect', 'dt_tle-obs',
+                         'EstScaleMag', 'e_EstScaleMag',
+                         'HasZp', 'MagZp',
+                         'ObsMag_zp', 'e_ObsMag_zp',
+                         'EstMag_zp', 'e_EstMag_zp',
+                         'EstScaleMag_zp', 'e_EstScaleMag_zp',
+                         'SunAzAng', 'SunElevAng',
+                         'FluxScale', 'MagScale', 'MagCorrect', 'e_MagCorrect', 'MagCorrectSat',
+                         'dt_tle-obs',
                          'TrailCX', 'e_TrailCX', 'TrailCY', 'e_TrailCY',
                          'TrailCRA', 'e_TrailCRA', 'TrailCDEC', 'e_TrailCDEC',
                          'TrailANG', 'e_TrailANG', 'OptAperHeight',
@@ -198,7 +214,8 @@ DEF_KEY_TRANSLATIONS = {
     'dark_cor': ['DARK_COR'],
     'flat_cor': ['FLAT_COR'],
     'WCS_cal': ['AST_CAL', 'WCSCAL'],
-    'HasTrail': ['HASTRAIL']
+    'HasTrail': ['HASTRAIL'],
+    'NTrail': ['NTRAIL']
 }
 
 # list of available catalogs for photometry
