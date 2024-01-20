@@ -270,7 +270,7 @@ class ReduceSatObs(object):
         obs_date, filters, binnings = self._prepare_fits_files(new_file_paths,
                                                                self._telescope,
                                                                self._obsparams, 'science')
-
+        # print(obs_date, filters, binnings)
         # loop binnings and prepare calibration files
         for binxy in binnings:
 
@@ -564,7 +564,8 @@ class ReduceSatObs(object):
         if readnoise is not None and not isinstance(readnoise, u.Quantity):
             readnoise = readnoise * u.Unit("electron")
 
-        dfilter = {'imagetyp': _base_conf.IMAGETYP_LIGHT} if dfilter is None else dfilter
+        dfilter = {'imagetyp': _base_conf.IMAGETYP_LIGHT,
+                   'binning': self._bin_str} if dfilter is None else dfilter
         if dfilter is not None and key_filter is not None and image_filter is not None:
             dfilter = add_keys_to_dict(dfilter, {key_filter: image_filter})
         files_list = self._get_file_list(files_list, dfilter,
