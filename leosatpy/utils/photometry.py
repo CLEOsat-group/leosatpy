@@ -597,7 +597,7 @@ def get_glint_photometry(image, valid_mask, src_pos, width, height, theta, confi
         res_cat[key]['flux_counts_err'] = flux_error[0]
         res_cat[key]['area_pix'] = aperture_area
 
-        del phot_table, mask_img, aperture
+        del phot_table, mask_img
     del image, valid_mask
     return res_cat
 

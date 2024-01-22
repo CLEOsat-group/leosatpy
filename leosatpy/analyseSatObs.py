@@ -315,29 +315,36 @@ class AnalyseSatObs(object):
                         f"observed with the {self._telescope} telescope")
                 self._sat_id = sat_name
 
-                result, img_states, errors = self._analyse_sat_trails(files=files, sat_name=sat_name)
-                # try:
-                #     result, error = self._analyse_sat_trails(files=files, sat_name=sat_name)
-                # except Exception as e:
-                #     exc_type, exc_obj, exc_tb = sys.exc_info()
-                #     fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-                #     self._log.critical(f"Unexpected behaviour: {e} in file {fname}, "
-                #                        f"line {exc_tb.tb_lineno}")
-                #     error = [str(e), f'file: {fname}, line: {exc_tb.tb_lineno}',
-                #              'Please report to christian.adam84@gmail.com']
-                #     result = False
+                # in case of an error, comment the following line to see where the error occurs;
+                # This needs some fixing and automation
+                # result, img_states, errors = self._analyse_sat_trails(files=files, sat_name=sat_name)
+                try:
+                    result, img_states, errors = self._analyse_sat_trails(files=files, sat_name=sat_name)
+                except Exception as e:
+                    exc_type, exc_obj, exc_tb = sys.exc_info()
+                    fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                    self._log.critical(f"Unexpected behaviour: {e} in file {fname}, "
+                                       f"line {exc_tb.tb_lineno}")
+                    img_states = [False]
+                    errors = [[[fname, '', str(e), 'Unexpected behaviour',
+                              'Please report to christian.adam84@gmail.com']]]
+                    result = False
 
                 if result:
                     self._log.info(f">> Report: Satellite detection and analysis was {pass_str}")
                     pass_counter += 1
                 else:
                     self._log.info(f">> Report: Satellite detection and analysis has {fail_str}")
-                    # location = os.path.dirname(files[0])
-                    # tmp_fail = [location, self._telescope, unique_obj[0]]
-                    # tmp_fail.extend(error)
-                    # # print(tmp_fail, error)
-                    # # [tmp_fail.append(e) for e in error]
-                    # fails.append(tmp_fail)
+
+                    fail_idx = np.where(~np.array(img_states, dtype=bool))[0]
+                    location = os.path.dirname(files[0])
+
+                    for k in fail_idx:
+                        tmp_err = np.array(errors, dtype=str)[k]
+                        for j in tmp_err:
+                            tmp_fail = [location, self._telescope, unique_obj[0]]
+                            tmp_fail.extend(j)
+                            fails.append(tmp_fail)
 
                 if not self._silent:
                     self._log.info(f'====>  Analysis of {sat_name} finished <====')
@@ -345,14 +352,14 @@ class AnalyseSatObs(object):
                 del result
 
         # save fails
-        # if fails:
-        #     print(fails)
-        #     fail_path = Path(self._config['RESULT_TABLE_PATH']).expanduser().resolve()
-        #     fail_fname = fail_path / f'fails_analyseSatObs_{time_stamp}.log'
-        #     with open(fail_fname, "w", encoding="utf8") as file:
-        #         file.write('\t'.join(['Location', 'Telescope',
-        #                               'SatID', 'ErrorMsg', 'Cause', 'Hint']) + '\n')
-        #         [file.write('\t'.join(f) + '\n') for f in fails]
+        if fails:
+            fail_path = Path(self._config['RESULT_TABLE_PATH']).expanduser().resolve()
+            fail_fname = fail_path / f'fails_analyseSatObs_{time_stamp}.log'
+            self._log.info(f">> FAILED analyses are stored here: {fail_fname}")
+            with open(fail_fname, "w", encoding="utf8") as file:
+                file.write('\t'.join(['Location', 'Telescope',
+                                      'SatID', 'File', 'HDU#', 'ErrorType', 'ErrorMsg', 'Note']) + '\n')
+                [file.write('\t'.join(f) + '\n') for f in fails]
 
         endtime = time.perf_counter()
         dt = endtime - starttime
@@ -385,6 +392,7 @@ class AnalyseSatObs(object):
         if self._silent:
             self._log.info("> Identify image(s) with satellite trail(s)")
         data_dict, fail_msg = self._identify_trails(files)
+        # data_dict = None
         if data_dict is None:
             tmp = ['', '']
             tmp.extend(fail_msg)
@@ -411,13 +419,10 @@ class AnalyseSatObs(object):
                 
                 tmp = [file_name, '']
                 tmp.extend(fail_msg)
-                fail_messages[img_idx].append([tmp])
-
+                fail_messages[img_idx].append(tmp)
                 final_status[img_idx] = False
 
                 continue
-                # _base_conf.clean_up(obsparams, data_dict, trail_img_dict)
-                # return False, [fail_msg]
 
             status_list = []
             trail_hdus = trail_img_dict['hdus']
@@ -458,7 +463,7 @@ class AnalyseSatObs(object):
                                        "Skipping further steps. ")
                     tmp = [file_name, f"HDU #{hdu_idx:02d}"]
                     tmp.extend(fail_msg)
-                    fail_messages[img_idx].append([tmp])
+                    fail_messages[img_idx].append(tmp)
 
                     status_list.append(False)
                     continue
@@ -481,7 +486,7 @@ class AnalyseSatObs(object):
                 if not state:
                     tmp = [file_name, f"HDU #{hdu_idx:02d}"]
                     tmp.extend(fail_msg)
-                    fail_messages[img_idx].append([tmp])
+                    fail_messages[img_idx].append(tmp)
 
                     status_list.append(False)
                     continue
@@ -494,13 +499,13 @@ class AnalyseSatObs(object):
                                                 mag_corr=mag_corr,
                                                 hidx=h, hdu_idx=hdu_idx,
                                                 analyse_glint=analyse_glint)
-                except ExceptionGroup:
+                except Exception as e:
                     fail_msg = ['ProfileFitError',
                                 'Error during profile analysis',
-                                '']
+                                str(e)]
                     tmp = [file_name, f"HDU #{hdu_idx:02d}"]
                     tmp.extend(fail_msg)
-                    fail_messages[img_idx].append([tmp])
+                    fail_messages[img_idx].append(tmp)
 
                     status_list.append(False)
                     continue
@@ -525,7 +530,7 @@ class AnalyseSatObs(object):
                                std_filter_keys: dict,
                                mag_corr: tuple,
                                hidx: int, hdu_idx: int, analyse_glint: bool = False):
-        """ Analyse trail profile """
+        """ Analyse trail profile and glint (if available)"""
 
         # setup stuff
         config = self._config
@@ -584,6 +589,9 @@ class AnalyseSatObs(object):
         # mask borders
         image_mask_combined = self._make_border_mask(image_mask_combined, borderLen=20)
 
+        if not self._silent:
+            self._log.info("> Perform analysis of satellite trail profile")
+
         # get the image background subtracted
         image_bkg_fnme = img_dict['bkg_data'][hidx]['bkg_fname']
         img_processed = self.process_image(image,
@@ -604,7 +612,7 @@ class AnalyseSatObs(object):
 
         ang_trail = reg_data_all[r]['orient_deg']
 
-        print(center_trail, height_trail, L_trail, ang_trail)
+        # print(center_trail, height_trail, L_trail, ang_trail)
 
         # exclude the glint if present
         if self._glint_mask_data is not None:
@@ -615,11 +623,11 @@ class AnalyseSatObs(object):
 
         #
         image_mask_exclude *= ~image_mask_combined
-        fig, ax = plt.subplots()
-        ax.imshow(image_mask_exclude, aspect='auto')
-        fig, ax = plt.subplots()
-        ax.imshow(image_mask_sources, aspect='auto')
-        print(sat_vel, sat_vel_err)
+        # fig, ax = plt.subplots()
+        # ax.imshow(image_mask_exclude, aspect='auto')
+        # fig, ax = plt.subplots()
+        # ax.imshow(image_mask_sources, aspect='auto')
+        # print(sat_vel, sat_vel_err)
 
         # get a copy of the image
         image_bkg_sub_masked = image_bkg_sub.copy()
@@ -637,7 +645,7 @@ class AnalyseSatObs(object):
 
         # print(profiles)
         # print(profiles_data_trail)
-        print(profiles_data_trail.shape)
+        # print(profiles_data_trail.shape)
 
         # Number of profiles and length of each profile
         num_profiles_minor_trail = profiles_data_trail.shape[0]
@@ -658,6 +666,7 @@ class AnalyseSatObs(object):
         median_minor_trail = np.ma.masked_invalid(median_minor_trail)
         std_minor_trail = np.ma.masked_invalid(std_minor_trail)
 
+        # select which type of model to fit; gaussian and lognormal are currently available
         model_type_1comp = 'gaussian'
         model_type_2comp = 'gaussian'
         # model_type_1comp = 'lognormal'
@@ -672,7 +681,10 @@ class AnalyseSatObs(object):
         fit_result_trail_2comp_minor = sats.fit_line_profile_two_comps(x=x_minor_trail, y=median_minor_trail,
                                                                        fwhm=image_fwhm, yerr=None,
                                                                        model_type=model_type_2comp)
+        if not self._silent:
+            self._log.info("    Plot trail profile along minor axis")
         # plot the line profile + fit result along minor axis
+        # the fit components can be commented and will not be plotted
         self._plot_profile_along_axis(x=x_minor_trail,
                                       y=median_minor_trail,
                                       yerr=std_minor_trail,
@@ -718,7 +730,7 @@ class AnalyseSatObs(object):
 
         # mask invalid pixel
         profiles_data_glint = np.ma.masked_invalid(profiles_data_glint_corrected)
-        print(profiles_data_glint)
+        # print(profiles_data_glint)
 
         # Number of profiles and length of each profile
         num_profiles_minor_glint = profiles_data_glint.shape[0]
@@ -731,7 +743,7 @@ class AnalyseSatObs(object):
         # get position of global maximum
         max_pos = np.unravel_index(np.nanargmax(profiles_data_glint), profiles_data_glint.shape)
         yo, xo = max_pos
-        print(yo, xo)
+        # print(yo, xo)
 
         # sats.fit_3D_profile_two_gaussian(x_major_glint, x_minor_glint,
         #                                  profiles_data_glint, image_fwhm)
@@ -757,7 +769,12 @@ class AnalyseSatObs(object):
         fit_result_glint_2comp_major = sats.fit_line_profile_two_comps(x=x_major_glint, y=profile_major_glint,
                                                                        fwhm=image_fwhm, yerr=None,
                                                                        model_type=model_type_2comp)
-        # plot the line profile + fit result along minor axis
+
+        if not self._silent:
+            self._log.info("    Plot glint profile along major axis")
+
+        # plot the line profile + fit result along major axis
+        # the fit components can be commented and will not be plotted
         self._plot_profile_along_axis(x=x_major_glint,
                                       y=profile_major_glint,
                                       yerr=None,
@@ -791,7 +808,11 @@ class AnalyseSatObs(object):
         fit_result_glint_2comp_minor = sats.fit_line_profile_two_comps(x=x_minor_glint, y=profile_minor_glint,
                                                                        fwhm=image_fwhm, yerr=None,
                                                                        model_type=model_type_2comp)
+        if not self._silent:
+            self._log.info("    Plot glint profile along minor axis")
+
         # plot the line profile + fit result along minor axis
+        # the fit components can be commented and will not be plotted
         self._plot_profile_along_axis(x=x_minor_glint,
                                       y=profile_minor_glint,
                                       yerr=None,
@@ -866,19 +887,25 @@ class AnalyseSatObs(object):
 
         result = combined_df[new_cols]
 
+        if not self._silent:
+            self._log.info("    Save glint photometry to .csv")
+
         # save to csv
         result.to_csv(fname,
                       header=result.columns,
                       index=False)
+        if not self._silent:
+            self._log.info("    Plot 2D cutout + profiles along major/minor axes")
 
         self._plot_glint_results(profiles_data_glint,
                                  (aper_pos_glint, aper_width_glint, aper_height_glint, 0.),
                                  (bounds_major, bounds_minor),
-                                 [(xo, yo), fit_result_glint_2comp_major, fit_result_glint_2comp_minor])
-        plt.show()
+                                 [(xo, yo), fit_result_glint_2comp_major, fit_result_glint_2comp_minor],
+                                 file_name_plot)
+        # plt.show()
 
     def _plot_glint_results(self, image, aper, bounds, fit_data, file_base):
-        """"""
+        """Plot cutout of glint with projections and best fit """
         aper_pos, aper_width, aper_height, theta = aper
         bounds_x, bounds_y = bounds
         xc, yc = aper_pos
@@ -1016,7 +1043,7 @@ class AnalyseSatObs(object):
         plt.close(fig=fig)
 
     def get_glint_magnitudes(self, row, obs_len, exptime, pixelscale, sat_vel, std_fluxes, std_mags, mag_corr):
-        """"""
+        """ Calculate the magnitudes for the glint """
 
         mag_scale = self.mag_scale
 
@@ -1093,7 +1120,7 @@ class AnalyseSatObs(object):
         return rolling_mean_arr, rolling_std_arr
 
     def _plot_profile_3D(self, x, y, z, split_z_lim=None, split_cmap=False):
-        """"""
+        """Plot 3D profile."""
 
         X, Y = np.meshgrid(x, y)
 
@@ -1178,11 +1205,13 @@ class AnalyseSatObs(object):
         ax.errorbar(x=x, y=y, yerr=yerr, fmt='.', color='k', label=label_data)
         x_new = np.linspace(x.min(), x.max(), 1000)
 
+        # plot the 1 component fit
         if fit_result_1comp is not None:
             y_eval = fit_result_1comp.eval(fit_result_1comp.params, x=x_new)
             label = f'Best fit single {model_type_1comp.capitalize()} model'
             ax.plot(x_new, y_eval, 'g-', lw=1.5, label=label)
 
+        # plot the 2 component fit
         if fit_result_2comp is not None:
             y_eval = fit_result_2comp.eval(fit_result_2comp.params, x=x_new)
             label = f'Best fit 2 {model_type_2comp.capitalize()} model'
@@ -1666,14 +1695,14 @@ class AnalyseSatObs(object):
 
             # load reference image
             ref_imgarr = data_dict['images'][ref_image_idx][ref_image_hdu_idx[0]]
-            ref_img_mask = data_dict['image_mask'][ref_image_idx][ref_image_hdu_idx[0]]
+            # ref_img_mask = data_dict['image_mask'][ref_image_idx][ref_image_hdu_idx[0]]
 
             # subtract background if necessary
             ref_bkg_fname = data_dict['bkg_data'][ref_image_idx][ref_image_hdu_idx[0]]['bkg_fname']
             trail_img_processed = self.process_image(ref_imgarr,
                                                      self._telescope,
                                                      ref_bkg_fname)
-            ref_img_bkg_sub, ref_bkg, ref_bkg_rms, ref_negative_mask = trail_img_processed
+            ref_img_bkg_sub, ref_bkg, ref_bkg_rms, _ = trail_img_processed
             if not self._silent:
                 self._log.info("    Find transformation")
             transform, _ = self.find_image_transform(ref_img_bkg_sub, trail_img_bkg_sub, image_fwhm)
@@ -1685,7 +1714,7 @@ class AnalyseSatObs(object):
                                                                       trail_img,
                                                                       propagate_mask=True)
             # plt.figure()
-            # plt.imshow(trail_img_bkg_sub-ref_img_warped)
+            # plt.imshow(ref_img_mask)
             # plt.show()
             if self._telescope != 'CTIO 4.0-m telescope':
                 detect_background, detect_error = self.process_warped_background(transform,
@@ -1697,9 +1726,14 @@ class AnalyseSatObs(object):
                 detect_background, detect_error = (0., config['sky_noise'])
 
             # mask saturated pixel in warped reference image
-            ref_img_mask = ref_img_mask + (ref_img_warped > 0.95 * config['sat_lim'])
+            ref_img_mask_saturation = (ref_img_warped > 0.95 * config['sat_lim'])
+            # mask negative pixel
+            ref_negative_mask = (ref_img_warped < 0.)
+
+            ref_img_mask += ref_img_mask_saturation
             ref_img_mask = self._make_border_mask(ref_img_mask)
             ref_img_mask |= ref_negative_mask
+
             # detect sources
             sources = self.detect_sources_in_image(image=ref_img_warped,
                                                    detect_background=detect_background,
@@ -1934,7 +1968,8 @@ class AnalyseSatObs(object):
         """
 
         if telescope == 'CTIO 4.0-m telescope':
-            return image, 0., self._config['sky_noise']
+            negative_mask = (image < 0.)
+            return image, 0., self._config['sky_noise'], negative_mask
         else:
             background, _, background_rms, _ = self.load_background_data(bkg_fname)
             img_bkg_sub, negative_mask = self.subtract_background(image, background)
@@ -3889,6 +3924,9 @@ def main():
     pargs = ParseArguments(prog_typ='satPhotometry')
     args = pargs.args_parsed
     main.__doc__ = pargs.args_doc
+
+    # version check
+    _base_conf.check_version(_log)
 
     AnalyseSatObs(input_path=args.input, args=args,
                   silent=args.silent, verbose=args.verbose)

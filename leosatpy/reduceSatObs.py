@@ -2292,6 +2292,9 @@ def main():
     args = pargs.args_parsed
     main.__doc__ = pargs.args_doc
 
+    # version check
+    _base_conf.check_version(_log)
+
     ReduceSatObs(input_path=args.input, args=args, silent=args.silent, verbose=args.verbose)
 
 
