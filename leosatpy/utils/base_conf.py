@@ -19,6 +19,8 @@ import os
 import logging
 import warnings
 from dateutil.parser import parse
+from packaging import version
+from urllib import request
 import numpy as np
 from colorlog import ColoredFormatter
 from astropy import wcs
@@ -26,6 +28,7 @@ from astropy.io import fits
 from astropy.utils.exceptions import (AstropyUserWarning, AstropyWarning)
 
 # from .telescope_conf import *
+from .version import __version__
 
 """ Meta-info """
 __author__ = "Christian Adam"
@@ -43,7 +46,6 @@ FORMATTER = ColoredFormatter(LOGFORMAT)
 
 
 def load_warnings():
-
     warnings.simplefilter(action="ignore", category=RuntimeWarning)
     warnings.simplefilter(action='ignore', category=UserWarning)
     warnings.simplefilter(action='ignore', category=AstropyWarning)
@@ -223,7 +225,6 @@ ALLCATALOGS = ['GAIADR1', 'GAIADR2', 'GAIADR3', 'GAIAEDR3',
                '2MASS', 'PS1DR1', 'PS1DR2',
                'GSC241', 'GSC242', 'GSC243']
 
-
 DEF_ASTROQUERY_CATALOGS = {
     'GAIADR3': 'gaiadr3.gaia_source',
     'GSC242': 'I/353/gsc242'
@@ -391,3 +392,28 @@ REARTH_EQU = 6378.137  # Radius at sea level at the equator in km
 REARTH_POL = 6356.752  # Radius at poles in km
 
 AU_TO_KM = 149597892.  # km/au
+
+
+def check_version(log):
+    """Crosscheck the current version with the GitHub version"""
+    url_github_version = 'https://raw.githubusercontent.com/CLEOsat-group/leosatpy/master/leosatpy/utils/version.py'
+
+    log.info("> Crosscheck local version with GitHub")
+
+    try:
+        version_string = str(request.urlopen(url_github_version).readlines()[0], 'utf-8').strip()
+        version_github = version_string[version_string.rfind('=') + 1:].replace(' ', '').replace('\'', '')
+    except:
+        version_github = ''
+
+    if version_github and version.parse(__version__) < version.parse(version_github):
+        s = ' ' * 15
+        log.warning(f'  ==> A newer version of LEOSatpy is available (v{__version__} --> v{version_github}).\n '
+                    f'{s} Please consider updating LEOSatpy by typing "pip install leosatpy --upgrade" in the terminal.')
+        ask_str = BCOLORS.OKGREEN + "[    INFO]   >> Press Enter to continue <<" + BCOLORS.ENDC
+        input(ask_str)
+    elif version_github and version.parse(__version__) > version.parse(version_github):
+        log.info("  ==> You are using a newer version of LEOSatpy than the official release.")
+    else:
+        all_good = BCOLORS.PASS + "ALL GOOD" + BCOLORS.OKGREEN
+        log.info(f"  ==> {all_good}: You are using the latest official release of LEOSatpy." + BCOLORS.ENDC)
