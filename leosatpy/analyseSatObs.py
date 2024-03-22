@@ -27,7 +27,6 @@
 """ Modules """
 # STDLIB
 import argparse
-import gc
 import os
 import logging
 import sys
@@ -48,10 +47,10 @@ from skimage.draw import disk
 import astropy.table
 from astropy.io import fits
 from astropy import units as u
-from astropy.stats import (sigma_clip, sigma_clipped_stats, mad_std)
+from astropy.stats import (sigma_clip, sigma_clipped_stats)
 from astropy.utils.exceptions import AstropyUserWarning
 from astropy import wcs
-from astropy.visualization import (LinearStretch, LogStretch, SqrtStretch)
+from astropy.visualization import (LinearStretch, LogStretch, SqrtStretch, ZScaleInterval)
 from astropy.visualization.mpl_normalize import ImageNormalize
 from astropy.coordinates import (Angle, SkyCoord, EarthLocation)
 
@@ -327,7 +326,7 @@ class AnalyseSatObs(object):
                                        f"line {exc_tb.tb_lineno}")
                     img_states = [False]
                     errors = [[[fname, '', str(e), 'Unexpected behaviour',
-                              'Please report to christian.adam84@gmail.com']]]
+                                'Please report to christian.adam84@gmail.com']]]
                     result = False
 
                 if result:
@@ -416,7 +415,7 @@ class AnalyseSatObs(object):
 
             if not state:
                 self._log.critical("  No matching standard stars found!!! Skipping further steps. ")
-                
+
                 tmp = [file_name, '']
                 tmp.extend(fail_msg)
                 fail_messages[img_idx].append(tmp)
@@ -474,7 +473,7 @@ class AnalyseSatObs(object):
                                                       hidx=h, hdu_idx=hdu_idx,
                                                       qlf_aprad=qlf_aprad)
 
-                # load TLE data, extract info for the satellite and calc mags, and angles, etc.
+                # load TLE data, extract information for the satellite and calc mags, and angles, etc.
                 state, fail_msg = self._get_final_results(img_dict=trail_img_dict,
                                                           sat_name=sat_name,
                                                           sat_apphot=sat_apphot,
@@ -543,11 +542,11 @@ class AnalyseSatObs(object):
         image = img_dict['images'][hidx]
         image_hdr = img_dict['hdr'][hidx]
         image_fwhm = img_dict['kernel_fwhm'][hidx][0]
-        image_fwhm_err = img_dict['kernel_fwhm'][hidx][1]
+        # image_fwhm_err = img_dict['kernel_fwhm'][hidx][1]
         image_detector_mask = img_dict['img_mask'][hidx]
         reg_data_all = img_dict["trail_data"][hidx]['reg_info_lst']
 
-        n_trails = self._config['N_TRAILS_MAX']
+        # n_trails = self._config['N_TRAILS_MAX']
 
         # standard star data
         _aper_sum = np.array(list(zip(std_apphot['flux_counts_aper'],
@@ -566,7 +565,7 @@ class AnalyseSatObs(object):
         # get additional info
         exptime = image_hdr['exptime']
         pixelscale = image_hdr['pixscale']  # arcsec/pix
-        pixelscale_err = 0.05 * pixelscale
+        # pixelscale_err = 0.05 * pixelscale
 
         # create the combined image mask
         image_mask_combined = np.zeros(image.shape)
@@ -623,11 +622,6 @@ class AnalyseSatObs(object):
 
         #
         image_mask_exclude *= ~image_mask_combined
-        # fig, ax = plt.subplots()
-        # ax.imshow(image_mask_exclude, aspect='auto')
-        # fig, ax = plt.subplots()
-        # ax.imshow(image_mask_sources, aspect='auto')
-        # print(sat_vel, sat_vel_err)
 
         # get a copy of the image
         image_bkg_sub_masked = image_bkg_sub.copy()
@@ -715,8 +709,6 @@ class AnalyseSatObs(object):
         y0 = glint_mask_info['yc'].values[0]
         center_glint = (x0, y0)
         L_glint = glint_mask_info['length'].values[0]
-        # height_glint = glint_mask_info['width'].values[0]
-        # ang_glint = glint_mask_info['ang'].values[0]
 
         # get profiles perpendicular to the center line
         profiles_glint = sats.perpendicular_line_profile(center_glint, L_glint, ang_trail, height_trail,
@@ -882,13 +874,13 @@ class AnalyseSatObs(object):
             combined_df[column] = None  # Initialize with None
             combined_df.at['with_sat_src', column] = value  # Set value for the first row
 
-        fname = f"result.phot.glint_{file_name_plot}.csv"
-        fname = os.path.join(self._work_dir, fname)
-
         result = combined_df[new_cols]
 
         if not self._silent:
             self._log.info("    Save glint photometry to .csv")
+
+        fname = f"result.phot.glint_{file_name_plot}.csv"
+        fname = os.path.join(self._work_dir, fname)
 
         # save to csv
         result.to_csv(fname,
@@ -903,6 +895,147 @@ class AnalyseSatObs(object):
                                  [(xo, yo), fit_result_glint_2comp_major, fit_result_glint_2comp_minor],
                                  file_name_plot)
         # plt.show()
+
+    def get_glint_magnitudes(self, row, obs_len, exptime, pixelscale, sat_vel, std_fluxes, std_mags, mag_corr):
+        """ Calculate the magnitudes for the glint """
+
+        mag_scale = self.mag_scale
+
+        # estimated trail length and count
+        est_len = exptime * sat_vel[0]
+        est_len_err = exptime * sat_vel[1]
+
+        # observed trail count
+        flux_obs = row['flux_counts']
+        flux_obs_err = row['flux_counts_err']
+        area = row['area_pix'] * pixelscale ** 2
+
+        # Calculating estimated trail count
+        flux_est = flux_obs * (est_len / obs_len)
+
+        # Calculating relative errors
+        rel_error = ((flux_obs_err / flux_obs) ** 2 +
+                     (est_len_err / est_len) ** 2) ** 0.5
+
+        # Calculating absolute error in estimated trail count
+        flux_est_err = flux_est * rel_error
+
+        param_list = [[['ObsMagGlint', 'e_ObsMagGlint'],
+                       flux_obs, flux_obs_err, None, None],
+                      [['EstMagGlint', 'e_EstMagGlint'],
+                       flux_est, flux_est_err, None, None],
+                      [['EstScaleMagGlint', 'e_EstScaleMagGlint'],
+                       flux_est, flux_est_err, mag_scale, None],
+                      [['ObsMagGlintSurf', 'e_ObsMagGlintSurf'],
+                       flux_obs, flux_obs_err, None, area],
+                      [['EstMagGlintSurf', 'e_EstMagGlintSurf'],
+                       flux_est, flux_est_err, None, area],
+                      [['EstScaleMagGlintSurf', 'e_EstScaleMagGlintSurf'],
+                       flux_est, flux_est_err, mag_scale, area],
+                      [['ObsMagGlintSurfSec', 'e_ObsMagGlintSurfSec'],
+                       flux_obs, flux_obs_err, None, area * exptime],
+                      [['EstMagGlintSurfSec', 'e_EstMagGlintSurfSec'],
+                       flux_est, flux_est_err, None, area * exptime],
+                      [['EstScaleMagGlintSurfSec', 'e_EstScaleMagGlintSurfSec'],
+                       flux_est, flux_est_err, mag_scale, area * exptime],
+                      ]
+
+        col_names = []
+        data_list = []
+        for p in param_list:
+            mag_avg = sats.get_average_magnitude(flux=p[1],
+                                                 flux_err=p[2],
+                                                 std_fluxes=std_fluxes,
+                                                 mag_corr=mag_corr,
+                                                 std_mags=std_mags, mag_scale=p[3], area=p[4])
+
+            col_names.extend(p[0])
+            data_list.extend(mag_avg)
+            del p, mag_avg
+
+        return pd.Series(data_list, index=col_names)
+
+    @staticmethod
+    def _get_rolling_median(data, axis=0, window_size=5):
+        """"""
+
+        # Convert to a pandas Series
+        data_df = pd.DataFrame(data)
+
+        # Calculate rolling mean for each row
+        rolling_mean_rows = data_df.apply(lambda row: row.rolling(window=window_size).median(),
+                                          axis=axis)
+
+        # Convert the results to a list of lists (if needed)
+        rolling_mean_arr = rolling_mean_rows.values
+        rolling_std_rows = data_df.apply(lambda row: row.rolling(window=window_size).std(),
+                                         axis=axis)
+
+        # Convert the results to a list of lists (if needed)
+        rolling_std_arr = rolling_std_rows.values
+
+        return rolling_mean_arr, rolling_std_arr
+
+    def _plot_profile_along_axis(self, x, y, yerr=None,
+                                 fit_result_1comp=None, model_type_1comp='gaussian',
+                                 fit_result_2comp=None, model_type_2comp='gaussian',
+                                 axis='minor', fname=None, is_glint=False):
+        """Plot profile along the specified axis of the cutout."""
+
+        label_data = 'Median along major axis' if axis == 'minor' else 'Data along major axis'
+
+        fig = plt.figure(figsize=self._figsize)
+        gs = gridspec.GridSpec(1, 1)
+        ax = fig.add_subplot(gs[0, 0])
+
+        ax.errorbar(x=x, y=y, yerr=yerr, fmt='.', color='k', label=label_data)
+        x_new = np.linspace(x.min(), x.max(), 1000)
+
+        # plot the one-component fit
+        if fit_result_1comp is not None:
+            y_eval = fit_result_1comp.eval(fit_result_1comp.params, x=x_new)
+            label = f'Best fit single {model_type_1comp.capitalize()} model'
+            ax.plot(x_new, y_eval, 'g-', lw=1.5, label=label)
+
+        # plot the two-component fit
+        if fit_result_2comp is not None:
+            y_eval = fit_result_2comp.eval(fit_result_2comp.params, x=x_new)
+            label = f'Best fit 2 {model_type_2comp.capitalize()} model'
+            ax.plot(x_new, y_eval, 'r-', lw=1.5, label=label)
+
+            comps = fit_result_2comp.eval_components(x=x_new)
+            for comp_name, comp_data in comps.items():
+                style = '--' if 'const' not in comp_name else ':'
+                label = f'{comp_name.capitalize()} component'
+                ax.plot(x_new, comp_data, style, alpha=0.9, label=label)
+
+        # format axis
+        ax.tick_params(axis='both', which='both', direction='in',
+                       left=True, right=True, top=True, bottom=True,
+                       width=1., color='k')
+
+        minorlocatorx = AutoMinorLocator(5)
+        minorlocatory = AutoMinorLocator(5)
+
+        ax.xaxis.set_minor_locator(minorlocatorx)
+        ax.yaxis.set_minor_locator(minorlocatory)
+
+        label_x = 'Major' if axis == 'major' else 'Minor'
+        ax.set_xlabel(f'{label_x} axis position (pixel)')
+        ax.set_ylabel('Flux (counts)')
+        ax.legend(loc=1, numpoints=1)
+
+        plt.tight_layout()
+
+        # Save the plot
+        profile_type = 'glint' if is_glint else 'trail'
+        fname_plot = f"plot.{profile_type}.profile.{axis}_axis_{fname}"
+        self._save_plot(fname=fname_plot)
+
+        if self._plot_images:
+            plt.show()
+
+        plt.close(fig=fig)
 
     def _plot_glint_results(self, image, aper, bounds, fit_data, file_base):
         """Plot cutout of glint with projections and best fit """
@@ -938,8 +1071,7 @@ class AnalyseSatObs(object):
         y_eval_major = fit_major.eval(fit_major.params, x=x_fit_major)
         y_eval_minor = fit_minor.eval(fit_minor.params, x=x_fit_minor)
 
-        from astropy.visualization import ZScaleInterval
-        vmin, vmax = (ZScaleInterval(nsamples=1500, contrast=1)).get_limits(image_plt)
+        vmin, vmax = (ZScaleInterval(n_samples=1500, contrast=1)).get_limits(image_plt)
 
         plt.ioff()
 
@@ -1042,84 +1174,7 @@ class AnalyseSatObs(object):
 
         plt.close(fig=fig)
 
-    def get_glint_magnitudes(self, row, obs_len, exptime, pixelscale, sat_vel, std_fluxes, std_mags, mag_corr):
-        """ Calculate the magnitudes for the glint """
-
-        mag_scale = self.mag_scale
-
-        # estimated trail length and count
-        est_len = exptime * sat_vel[0]
-        est_len_err = exptime * sat_vel[1]
-
-        # observed trail count
-        flux_obs = row['flux_counts']
-        flux_obs_err = row['flux_counts_err']
-        area = row['area_pix'] * pixelscale ** 2
-
-        # Calculating estimated trail count
-        flux_est = flux_obs * (est_len / obs_len)
-
-        # Calculating relative errors
-        rel_error = ((flux_obs_err / flux_obs) ** 2 +
-                     (est_len_err / est_len) ** 2) ** 0.5
-
-        # Calculating absolute error in estimated trail count
-        flux_est_err = flux_est * rel_error
-
-        param_list = [[['ObsMagGlint', 'e_ObsMagGlint'],
-                       flux_obs, flux_obs_err, None, None],
-                      [['EstMagGlint', 'e_EstMagGlint'],
-                       flux_est, flux_est_err, None, None],
-                      [['EstScaleMagGlint', 'e_EstScaleMagGlint'],
-                       flux_est, flux_est_err, mag_scale, None],
-                      [['ObsMagGlintSurf', 'e_ObsMagGlintSurf'],
-                       flux_obs, flux_obs_err, None, area],
-                      [['EstMagGlintSurf', 'e_EstMagGlintSurf'],
-                       flux_est, flux_est_err, None, area],
-                      [['EstScaleMagGlintSurf', 'e_EstScaleMagGlintSurf'],
-                       flux_est, flux_est_err, mag_scale, area],
-                      [['ObsMagGlintSurfSec', 'e_ObsMagGlintSurfSec'],
-                       flux_obs, flux_obs_err, None, area * exptime],
-                      [['EstMagGlintSurfSec', 'e_EstMagGlintSurfSec'],
-                       flux_est, flux_est_err, None, area * exptime],
-                      [['EstScaleMagGlintSurfSec', 'e_EstScaleMagGlintSurfSec'],
-                       flux_est, flux_est_err, mag_scale, area * exptime],
-                      ]
-
-        col_names = []
-        data_list = []
-        for p in param_list:
-            mag_avg = sats.get_average_magnitude(flux=p[1],
-                                                 flux_err=p[2],
-                                                 std_fluxes=std_fluxes,
-                                                 mag_corr=mag_corr,
-                                                 std_mags=std_mags, mag_scale=p[3], area=p[4])
-
-            col_names.extend(p[0])
-            data_list.extend(mag_avg)
-            del p, mag_avg
-
-        return pd.Series(data_list, index=col_names)
-
-    @staticmethod
-    def _get_rolling_median(data, axis=0, window_size=5):
-
-        # Convert to a pandas Series
-        data_df = pd.DataFrame(data)
-
-        # Calculate rolling mean for each row
-        rolling_mean_rows = data_df.apply(lambda row: row.rolling(window=window_size).median(), axis=axis)
-
-        # Convert the results to a list of lists (if needed)
-        rolling_mean_arr = rolling_mean_rows.values
-        rolling_std_rows = data_df.apply(lambda row: row.rolling(window=window_size).std(), axis=axis)
-
-        # Convert the results to a list of lists (if needed)
-        rolling_std_arr = rolling_std_rows.values
-
-        return rolling_mean_arr, rolling_std_arr
-
-    def _plot_profile_3D(self, x, y, z, split_z_lim=None, split_cmap=False):
+    def _plot_profile_3D(self, x, y, z, split_z_lim=None, split_cmap=False, fname=None, is_glint=False):
         """Plot 3D profile."""
 
         X, Y = np.meshgrid(x, y)
@@ -1190,60 +1245,9 @@ class AnalyseSatObs(object):
 
         # plt.tight_layout()
 
-    def _plot_profile_along_axis(self, x, y, yerr=None,
-                                 fit_result_1comp=None, model_type_1comp='gaussian',
-                                 fit_result_2comp=None, model_type_2comp='gaussian',
-                                 axis='minor', fname=None, is_glint=False):
-        """Plot profile along the specified axis of the cutout."""
-
-        label_data = 'Median along major axis' if axis == 'minor' else 'Data along major axis'
-
-        fig = plt.figure(figsize=self._figsize)
-        gs = gridspec.GridSpec(1, 1)
-        ax = fig.add_subplot(gs[0, 0])
-
-        ax.errorbar(x=x, y=y, yerr=yerr, fmt='.', color='k', label=label_data)
-        x_new = np.linspace(x.min(), x.max(), 1000)
-
-        # plot the 1 component fit
-        if fit_result_1comp is not None:
-            y_eval = fit_result_1comp.eval(fit_result_1comp.params, x=x_new)
-            label = f'Best fit single {model_type_1comp.capitalize()} model'
-            ax.plot(x_new, y_eval, 'g-', lw=1.5, label=label)
-
-        # plot the 2 component fit
-        if fit_result_2comp is not None:
-            y_eval = fit_result_2comp.eval(fit_result_2comp.params, x=x_new)
-            label = f'Best fit 2 {model_type_2comp.capitalize()} model'
-            ax.plot(x_new, y_eval, 'r-', lw=1.5, label=label)
-
-            comps = fit_result_2comp.eval_components(x=x_new)
-            for comp_name, comp_data in comps.items():
-                style = '--' if 'const' not in comp_name else ':'
-                label = f'{comp_name.capitalize()} component'
-                ax.plot(x_new, comp_data, style, alpha=0.9, label=label)
-
-        # format axis
-        ax.tick_params(axis='both', which='both', direction='in',
-                       left=True, right=True, top=True, bottom=True,
-                       width=1., color='k')
-
-        minorlocatorx = AutoMinorLocator(5)
-        minorlocatory = AutoMinorLocator(5)
-
-        ax.xaxis.set_minor_locator(minorlocatorx)
-        ax.yaxis.set_minor_locator(minorlocatory)
-
-        label_x = 'Major' if axis == 'major' else 'Minor'
-        ax.set_xlabel(f'{label_x} axis position (pixel)')
-        ax.set_ylabel('Flux (counts)')
-        ax.legend(loc=1, numpoints=1)
-
-        plt.tight_layout()
-
         # Save the plot
         profile_type = 'glint' if is_glint else 'trail'
-        fname_plot = f"plot.{profile_type}.profile.{axis}_axis_{fname}"
+        fname_plot = f"plot.{profile_type}.profile.2D_{fname}"
         self._save_plot(fname=fname_plot)
 
         if self._plot_images:
@@ -1474,7 +1478,7 @@ class AnalyseSatObs(object):
                                                                 mag_scale=mag_scale)
                 est_mag_avg_w_scaled, est_mag_avg_err_scaled = est_mag_avg_scaled
 
-                # if there is a magnitude zero point also calculate the results
+                # if there is a magnitude zero point, also calculate the result
                 # use https://www.gnu.org/software/gnuastro/manual/html_node/Brightness-flux-magnitude.html
                 if 'MAGZPT' in hdr:
                     has_mag_zp = True
@@ -1628,7 +1632,7 @@ class AnalyseSatObs(object):
         if not self._silent:
             self._log.info("> Perform photometry on satellite trail(s)")
 
-        # choose reference image if available (!only first at the moment!)
+        # choose reference image if available (only first at the moment)
         idx_list = list(data_dict['ref_img_idx'][img_idx])
         if idx_list:
             ref_image_idx = idx_list[0]
@@ -1802,7 +1806,7 @@ class AnalyseSatObs(object):
             image_mask_combined |= src_mask
 
             # get optimum trail aperture
-            result = phot.get_opt_aper_trail(image=trail_img_bkg_sub,
+            result = phot.get_opt_aper_trail(image=trail_img,
                                              src_pos=src_pos,
                                              img_mask=image_mask_combined,
                                              fwhm=image_fwhm,
@@ -1830,7 +1834,7 @@ class AnalyseSatObs(object):
 
             self._config = config
 
-            df = phot.get_sat_photometry(trail_img_bkg_sub, image_mask_combined, src_pos, image_fwhm, width, ang,
+            df = phot.get_sat_photometry(trail_img, image_mask_combined, src_pos, image_fwhm, width, ang,
                                          config)
 
             flux_ratios = df['flux_counts_inf_aper'] / df['flux_counts_aper']
@@ -1852,7 +1856,7 @@ class AnalyseSatObs(object):
             if not self._silent:
                 self._log.info(f'  > Measure photometry for satellite trail')
 
-            _, _, sat_phot, _, _, _ = phot.get_aper_photometry(image=trail_img_bkg_sub,
+            _, _, sat_phot, _, _, _ = phot.get_aper_photometry(image=trail_img,
                                                                src_pos=src_pos[0],
                                                                mask=image_mask_combined,
                                                                aper_mode='rect',
@@ -1939,7 +1943,8 @@ class AnalyseSatObs(object):
                                            obsparams=obspar, hdu_idx=hdu_idx)
             self._obj_info = self._obsTable.obj_info
 
-        _base_conf.clean_up(trail_img, df, config, obspar, trail_img_hdr, data_dict, img_dict)
+        _base_conf.clean_up(trail_img, trail_img_bkg_sub, df,
+                            config, obspar, trail_img_hdr, data_dict, img_dict)
 
         return sat_phot_dict
 
@@ -2013,25 +2018,6 @@ class AnalyseSatObs(object):
                                      mask=mask)
         return detect_sources(image, threshold=threshold, npixels=npixels, connectivity=connectivity, mask=mask)
 
-    def _save_fits(self, data: np.ndarray, fname: str):
-        """Save Fits file
-
-        Parameters
-        ----------
-        data:
-            Array with fits data
-        fname:
-            File name
-        """
-        folder = self._aux_path
-        fname = folder / fname
-        fits.writeto(filename=f'{fname}.fits',
-                     data=data,
-                     output_verify='ignore',
-                     overwrite=True)
-
-        del data
-
     def _run_std_photometry(self, data: dict, hidx: int, hdu_idx: int):
         """Perform aperture photometry on standard stars.
 
@@ -2066,6 +2052,9 @@ class AnalyseSatObs(object):
         exp_time = hdr[obspar['exptime']]
         gain = 1.
         rdnoise = 0.
+
+        # get wcs
+        wcsprm = wcs.WCS(hdr)
 
         # if isinstance(obspar['gain'], str) and obspar['gain'] in hdr:
         #     gain = hdr[obspar['gain']]
@@ -2159,6 +2148,17 @@ class AnalyseSatObs(object):
 
         _base_conf.clean_up(imgarr, image_bkg_sub, result, src_pos, fluxes, rapers, data)
 
+        if not self._silent:
+            self._log.info("  > Save standard star photometry")
+        std_photometry_cat_fname = f'{self._cat_path}/{file_name_plot}_std_star_photometry_cat'
+
+        sext.save_catalog(cat=std_cat, wcsprm=wcsprm,
+                          out_name=std_photometry_cat_fname,
+                          kernel_fwhm=data['kernel_fwhm'][hidx],
+                          mag_corr=mag_corr,
+                          std_fkeys=std_fkeys,
+                          mode='ref_photo')
+
         return std_cat, std_fkeys, opt_aprad, mag_conv, mag_corr, qlf_aprad, True, ['', '', '']
 
     def _get_magnitude_correction(self, df: pd.DataFrame, file_base: str):
@@ -2186,11 +2186,6 @@ class AnalyseSatObs(object):
 
         xmin, xmax = ax.get_xlim()
         x = np.linspace(xmin, xmax, 500)
-
-        # from scipy.stats import skewnorm
-        #
-        # ae, loce, sclaee = skewnorm.fit(corrections_cleaned)
-        # best_fit_line = skewnorm.pdf(x, ae, loce, sclaee)
 
         mu, sigma = norm.fit(corrections_cleaned)
         best_fit_line = norm.pdf(x, mu, sigma)
@@ -2425,7 +2420,7 @@ class AnalyseSatObs(object):
         return result, status_list
 
     def _identify_trails(self, files: list):
-        """Identify image with the satellite trail(s) and collect image info and trail parameters."""
+        """Identify image with the satellite trail(s) and collect image information and trail parameters."""
 
         # hdu_idx = self._hdu_idx
         obspar = self._obsparams
@@ -2459,7 +2454,7 @@ class AnalyseSatObs(object):
         headers = [[] for _ in range(n_imgs)]
         image_masks = [[] for _ in range(n_imgs)]
         bkg_data_dict_list = [[] for _ in range(n_imgs)]
-        apply_trail_detect = [False for _ in range(n_imgs)]
+        # apply_trail_detect = [False for _ in range(n_imgs)]
         has_ext_oi_data = [False for _ in range(n_imgs)]
         for f in range(n_imgs):
             file_loc = files[f]
@@ -3172,7 +3167,7 @@ class AnalyseSatObs(object):
         handles = [mpl_patches.Rectangle((0, 0), 1, 1, fc="white", ec="white",
                                          lw=0, alpha=0)] * 3
 
-        # create the corresponding number of labels (= the text you want to display)
+        # create the corresponding number of labels
         eq_str = r'$= \mathrm{y}_{c}\tan(\theta) + \mathrm{x}_{c}$'
         if 'sin' in fit_results['lin_y_label']:
             eq_str = r'$= \mathrm{y}_{c}\tan(\theta)^{-1} + \mathrm{x}_{c}$'
@@ -3247,7 +3242,7 @@ class AnalyseSatObs(object):
         handles = [mpl_patches.Rectangle((0, 0), 1, 1, fc="white", ec="white",
                                          lw=0, alpha=0)] * 4
 
-        # create the corresponding number of labels (= the text you want to display)
+        # create the corresponding number of labels
         labels = [r"$\sigma^{2} = \mathrm{a}_{2}\theta^{2} "
                   r"+ \mathrm{a}_{1}\theta "
                   r"+ \mathrm{a}_{0}$",
@@ -3709,7 +3704,7 @@ class AnalyseSatObs(object):
         handles = [mpl_patches.Rectangle((0, 0), 1, 1, fc="white", ec="white",
                                          lw=0, alpha=0)] * 2
 
-        # create the corresponding number of labels (= the text you want to display)
+        # create the corresponding number of labels
         labels = [f"{self._sat_id} {self._telescope} / {band} band",
                   f"{obs_date[0]} {obs_date[1]} / {expt:.1f}s"]
 
@@ -3900,7 +3895,6 @@ class AnalyseSatObs(object):
     def _add_scale(ax: plt.Axes, image_shape: tuple, scale_x: float, length: float, color: str = 'black'):
         """Make a Ds9 like scale for image"""
 
-        # length = self._config['LINE_LENGTH']  # in arcmin
         xlemark = length / (scale_x * 60.)  # in pixel
 
         xstmark = image_shape[1] * 0.025
