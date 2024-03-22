@@ -363,10 +363,9 @@ def auto_build_source_catalog(data,
 
                     fwhm_fit = (2. * result.params['alpha']
                                 * np.sqrt((2. ** (1. / result.params['beta'])) - 1.))
-
+                    # or (result.params['amp'] >= sat_lim) \
                     if (max_good_fwhm <= fwhm_fit <= min_good_fwhm) \
                             or (result.params['fwhm'].value is None) \
-                            or (result.params['amp'] >= sat_lim) \
                             or (snr_stars <= 0.):
                         new_fwhm_guess.append(np.nan)
                         continue
@@ -549,8 +548,8 @@ def auto_build_source_catalog(data,
                         high_fwhm += 1
                     elif A <= A_err or A_err is None:
                         to_add = nan_arr
-                    elif result.rsquared < 0.95 * init_r2:
-                        to_add = nan_arr
+                    # elif result.rsquared < 0.95 * init_r2:
+                    #     to_add = nan_arr
                     else:
                         to_add = np.array([fwhm_fit, fwhm_fit_err, bkg_approx])
                         isolated_sources['xcentroid'] = isolated_sources['xcentroid'].replace([x0], corrected_x)
@@ -1213,7 +1212,9 @@ def get_reference_catalog_astro(ra, dec, sr: float = 0.5,
     # Initialize logging for this user-callable function
     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
 
-    coord = SkyCoord(ra=ra, dec=dec, unit=(u.degree, u.degree), obstime=epoch)
+    coord = SkyCoord(ra=ra, dec=dec, unit=(u.degree, u.degree),
+                     obstime=epoch
+                     )
     radius = u.Quantity(sr, u.deg)
 
     ref_table = None
@@ -1229,14 +1230,15 @@ def get_reference_catalog_astro(ra, dec, sr: float = 0.5,
         if mag_lim == -1:
             mag_lim_str = """"""
 
-        query = f"""SELECT *
-            FROM {_base_conf.DEF_ASTROQUERY_CATALOGS[catalog.upper()]}
-            WHERE 1 = CONTAINS(
-               POINT({coord.ra.value}, {coord.dec.value}),
-               CIRCLE(ra, dec, {radius.value}))
-            AND parallax IS NOT NULL
-            {mag_lim_str}
-            ORDER BY phot_g_mean_mag ASC
+        query = f"""SELECT * \
+            FROM {_base_conf.DEF_ASTROQUERY_CATALOGS[catalog.upper()]} AS g
+            WHERE 1 = CONTAINS(POINT('ICRS', g.ra, g.dec), CIRCLE('ICRS',
+            {coord.ra.value}, {coord.dec.value}, {radius.value})) \
+            AND parallax IS NOT NULL AND parallax > 0  AND parallax > parallax_error \
+            AND pmra IS NOT NULL \
+            AND pmdec IS NOT NULL \
+            {mag_lim_str} \
+            ORDER BY phot_g_mean_mag ASC    
         """
 
         # run the query
@@ -1586,14 +1588,14 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
                          out_name=astro_ref_cat_fname,
                          mode='ref_astro', catalog=ref_catalog_astro)
 
+        # add positions to table
+        pos_on_det = wcsprm.s2p(ref_tbl_astro[["RA", "DEC"]].values, 0)['pixcrd']
+        ref_tbl_astro["xcentroid"] = pos_on_det[:, 0]
+        ref_tbl_astro["ycentroid"] = pos_on_det[:, 1]
+
+        del pos_on_det
+
     del imgarr
-
-    # add positions to table
-    # pos_on_det = wcsprm.s2p(ref_tbl_astro[["RA", "DEC"]].values, 0)['pixcrd']
-    # ref_tbl_astro["xcentroid"] = pos_on_det[:, 0]
-    # ref_tbl_astro["ycentroid"] = pos_on_det[:, 1]
-
-    # del pos_on_det
 
     return (src_tbl, ref_tbl_astro, ref_catalog_astro,
             src_cat_fname, astro_ref_cat_fname,
@@ -1663,7 +1665,8 @@ def read_catalog(cat_fname: str, tbl_format: str = "ecsv") -> tuple:
 
 def save_catalog(cat: pd.DataFrame,
                  wcsprm: astropy.wcs.Wcsprm,
-                 out_name: str, kernel_fwhm: tuple = None,
+                 out_name: str, kernel_fwhm: tuple = None, mag_corr: tuple = None,
+                 std_fkeys: tuple = None,
                  catalog: str = None, mode: str = 'src', tbl_format: str = "ecsv"):
     """Save given catalog to .cat file"""
 
@@ -1694,9 +1697,14 @@ def save_catalog(cat: pd.DataFrame,
     # convert to astropy.Table and add meta-information
     cat_out = Table.from_pandas(cat_out, index=False)
     kernel_fwhm = (None, None) if kernel_fwhm is None else kernel_fwhm
+    mag_corr = (None, None) if mag_corr is None else mag_corr
+    std_fkeys = (None, None) if std_fkeys is None else std_fkeys
     cat_out.meta = {'kernel_fwhm': kernel_fwhm[0],
                     'kernel_fwhm_err': kernel_fwhm[1],
-                    'catalog': catalog}
+                    'catalog': catalog,
+                    'std_fkeys': std_fkeys,
+                    'mag_corr': mag_corr[0],
+                    'mag_corr_err': mag_corr[1]}
 
     # write file to disk in the given format
     ascii.write(cat_out, out_name + '.cat', overwrite=True, format=tbl_format)
@@ -1787,6 +1795,7 @@ def select_std_stars(ref_cat: pd.DataFrame,
 
     # exclude non-star sources from GSC2.4
     cat_srt = ref_cat.copy()
+
     if 'classification' in ref_cat:
         cat_srt = ref_cat.drop(ref_cat[ref_cat.classification > 0].index)
     cat_srt = cat_srt.reset_index()
@@ -1833,7 +1842,11 @@ def select_std_stars(ref_cat: pd.DataFrame,
         new_df = pd.DataFrame({filter_keys[0]: alt_mags,
                                filter_keys[1]: alt_mags_err}, index=alt_cat.index)
 
+        cat_srt = cat_srt.fillna(99999999).astype(np.int64, errors='ignore')
+        cat_srt = cat_srt.replace(99999999, np.nan)
+
         cat_srt.update(new_df)
+
         has_mag_conv = True
 
     elif band == 'w':
@@ -1856,6 +1869,9 @@ def select_std_stars(ref_cat: pd.DataFrame,
         filter_keys = ['WMag', 'WMagErr']
         new_df = pd.DataFrame({filter_keys[0]: alt_mags,
                                filter_keys[1]: alt_mags_err}, index=alt_cat.index)
+
+        cat_srt = cat_srt.fillna(99999999).astype(np.int64, errors='ignore')
+        cat_srt = cat_srt.replace(99999999, np.nan)
 
         cat_srt = pd.concat([cat_srt, new_df], axis=1)
         has_mag_conv = True
