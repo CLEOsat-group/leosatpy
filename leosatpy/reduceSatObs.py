@@ -1191,7 +1191,7 @@ class ReduceSatObs(object):
         img_ccd: 
             Image ccd to trim
         obsparams: 
-            Observation parameter with reduction info
+            Observation parameter with reduction information
         namps: 
             Number of amplifiers on the chip.
             If N_amps > 1 trimming is applied to each section, and
@@ -1629,7 +1629,7 @@ class ReduceSatObs(object):
         return files
 
     def _create_master_fnames(self, ic_all, obsparams, filters, binning_ext):
-        """ Create file names for master-bias, -dark, and -flat.
+        """ Create file names for master-bias, dark, and flat.
 
         Parameters
         ----------
@@ -2185,6 +2185,7 @@ def get_binning(header, obsparams):
 
     return binning_x, binning_y
 
+
 def get_filename(ccd_file, key='FILENAME'):
     """ Get file name from string or ccd object.
 
@@ -2214,7 +2215,7 @@ def add_key_to_hdr(hdr, key, value):
     """ Add key to header.
 
     hdr: astropy.io.fits.Header
-        The fits header object.
+        The FITS header object.
     key: str
         Key to be updated.
     value: object
@@ -2236,7 +2237,7 @@ def ammend_hdr(header):
     Parameters
     ----------
     header: astropy.io.fits.Header
-        Fits header object
+        A FITS header object
 
     Returns
     -------
