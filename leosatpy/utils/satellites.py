@@ -57,7 +57,7 @@ from astropy import constants as const
 from astropy import units as u
 from astropy.coordinates import Angle
 from photutils.aperture import RectangularAperture
-from astropy.stats import (sigma_clip, mad_std, gaussian_fwhm_to_sigma)
+from astropy.stats import (sigma_clipped_stats, sigma_clip, mad_std, gaussian_fwhm_to_sigma)
 
 from photutils.segmentation import (SegmentationImage, detect_sources,
                                     detect_threshold, SourceCatalog)
@@ -709,6 +709,16 @@ def detect_sat_trails(image: np.ndarray,
     if not silent:
         log.info("    Create segmentation map from image")
 
+    if mask is not None:
+        # m = np.where(mask, 0, 1)
+        # sharpened *= m
+
+        sigcl_mean, sigcl_median, sigcl_std = sigma_clipped_stats(image,
+                                                                  sigma=3.0,
+                                                                  mask=mask,
+                                                                  maxiters=10)
+        image = np.where(mask, sigcl_mean, image)
+
     # apply un-sharpen mask
     blurred_f = nd.gaussian_filter(image, 3.)
     filter_blurred_f = nd.gaussian_filter(blurred_f, sigma_blurr)
@@ -726,8 +736,14 @@ def detect_sat_trails(image: np.ndarray,
         sharpened[0:len_x, len_y - borderLen:len_y] = 0.
 
     if mask is not None:
-        m = np.where(mask, 0, 1)
-        sharpened *= m
+        # m = np.where(mask, 0, 1)
+        # sharpened *= m
+
+        sigcl_mean, sigcl_median, sigcl_std = sigma_clipped_stats(sharpened,
+                                                                  sigma=3.0,
+                                                                  mask=mask,
+                                                                  maxiters=10)
+        sharpened = np.where(mask, sigcl_mean, sharpened)
 
     del blurred_f, filter_blurred_f  # zero out the borders with width given by borderLen
 
