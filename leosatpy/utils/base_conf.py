@@ -226,7 +226,8 @@ ALLCATALOGS = ['GAIADR1', 'GAIADR2', 'GAIADR3', 'GAIAEDR3',
                'GSC241', 'GSC242', 'GSC243']
 
 DEF_ASTROQUERY_CATALOGS = {
-    'GAIADR3': 'gaiadr3.gaia_source',
+    # 'GAIADR3': 'gaiadr3.gaia_source',
+    'GAIADR3': 'gaiadr3.gaia_source_lite',
     'GSC242': 'I/353/gsc242'
 }
 
@@ -236,11 +237,15 @@ DEF_ASTROQUERY_CATALOGS = {
 # Blank column names indicate the catalog does not have that column,
 # and will set to None in the output table.
 SUPPORTED_CATALOGS = {
-    'GAIADR3': {'RA': 'ra', 'RA_error': 'ra_error',
-                'DEC': 'dec', 'DEC_error': 'dec_error',
+    'GAIADR3': {'RA': 'ra',
+                # 'RA_error': 'ra_error',
+                'DEC': 'dec',
+                # 'DEC_error': 'dec_error',
                 'pmra': 'pmra', 'pmra_error': 'pmra_error',
                 'pmdec': 'pmdec', 'pmdec_error': 'pmdec_error',
-                'mag': 'phot_g_mean_mag', 'objID': 'source_id', 'epoch': 'ref_epoch'},
+                'mag': 'phot_g_mean_mag', 'objID': 'SOURCE_ID',
+                # 'epoch': 'ref_epoch'
+                },
     'GAIAEDR3': {'RA': 'ra', 'RA_error': 'ra_error',
                  'DEC': 'dec', 'DEC_error': 'dec_error',
                  'pmra': 'pmra', 'pmra_error': 'pmra_error',

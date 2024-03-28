@@ -168,7 +168,9 @@ class ObsTables(object):
         if 'BLUEWALKER' in sat_name:
             sat_type = 'bluewalker'
 
-        regex = re.compile(rf'tle_{sat_type}_{obs_date[0]}[-_]{obs_date[1]}[-_]{obs_date[2]}.*\.txt')
+        regex_pattern = rf'(?i)tle_{sat_type}_{obs_date[0]}[-_]{obs_date[1]}[-_]{obs_date[2]}.*\.txt'
+        regex = re.compile(regex_pattern,
+                           re.IGNORECASE)
 
         path = os.walk(search_path)
         for root, dirs, files in path:
@@ -179,7 +181,7 @@ class ObsTables(object):
 
         if not tle_filenames:
             self._log.warning("NO TLE file found!!! "
-                              "TBW: Get TLE. "
+                              "Check the naming/dates of any TLE if present. "
                               "Exiting for now!!!")
             return None
         
