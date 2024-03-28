@@ -268,7 +268,7 @@ def auto_build_source_catalog(data,
 
             elif threshold_value_check < lim_threshold_value and decrease_increment:
                 log.critical('    FWHM detection failed - cannot find suitable threshold value ')
-                return None, None, False
+                return None, None, False, ['', '', '']
             else:
                 threshold_value = round(threshold_value + n - m, 3)
 
@@ -541,15 +541,15 @@ def auto_build_source_catalog(data,
                     corrected_x = x_fitted - source_box_size / 2 + x0
                     corrected_y = y_fitted - source_box_size / 2 + y0
                     if A > sat_lim:
-                        to_add = nan_arr
+                        # to_add = nan_arr
                         saturated_source += 1
                     elif max_good_fwhm - 1 <= fwhm_fit <= min_good_fwhm:
                         to_add = nan_arr
                         high_fwhm += 1
                     elif A <= A_err or A_err is None:
                         to_add = nan_arr
-                    # elif result.rsquared < 0.95 * init_r2:
-                    #     to_add = nan_arr
+                    elif result.rsquared < 0.95 * init_r2:
+                        to_add = nan_arr
                     else:
                         to_add = np.array([fwhm_fit, fwhm_fit_err, bkg_approx])
                         isolated_sources['xcentroid'] = isolated_sources['xcentroid'].replace([x0], corrected_x)
@@ -676,7 +676,7 @@ def auto_build_source_catalog(data,
         log.info(f'    FWHM: {image_fwhm:.3f} +/- {image_fwhm_err:.3f} [ pixels ]')
     isolated_sources['cat_id'] = np.arange(1, len(isolated_sources) + 1)
 
-    return (image_fwhm, image_fwhm_err), isolated_sources, True
+    return (image_fwhm, image_fwhm_err), isolated_sources, True, None
 
 
 def clean_catalog_trail(imgarr, mask, catalog, fwhm, r=5.):
@@ -1141,37 +1141,39 @@ def extract_source_catalog(imgarr,
     if not silent:
         log.info("  > Auto build source catalog")
 
-    fwhm, source_cat, state = auto_build_source_catalog(data=imgarr_bkg_subtracted,
-                                                        img_std=bkg_rms_median,
-                                                        use_catalog=use_catalog,
-                                                        fwhm=known_fwhm,
-                                                        source_box_size=config['SOURCE_BOX_SIZE'],
-                                                        fwhm_init_guess=config['FWHM_INIT_GUESS'],
-                                                        threshold_value=config['THRESHOLD_VALUE'],
-                                                        min_source_no=config['SOURCE_MIN_NO'],
-                                                        max_source_no=config['SOURCE_MAX_NO'],
-                                                        fudge_factor=config['THRESHOLD_FUDGE_FACTOR'],
-                                                        fine_fudge_factor=config['THRESHOLD_FINE_FUDGE_FACTOR'],
-                                                        max_iter=config['MAX_FUNC_ITER'],
-                                                        fitting_method=config['FITTING_METHOD'],
-                                                        lim_threshold_value=config['THRESHOLD_VALUE_LIM'],
-                                                        default_moff_beta=config['DEFAULT_MOFF_BETA'],
-                                                        min_good_fwhm=config['FWHM_LIM_MIN'],
-                                                        max_good_fwhm=config['FWHM_LIM_MAX'],
-                                                        sigmaclip_fwhm_sigma=config['SIGMACLIP_FWHM_SIGMA'],
-                                                        isolate_sources_fwhm_sep=config['ISOLATE_SOURCES_FWHM_SEP'],
-                                                        init_iso_dist=config['ISOLATE_SOURCES_INIT_SEP'],
-                                                        sat_lim=config['sat_lim'])
+    fwhm, source_cat, state, fail_msg = auto_build_source_catalog(data=imgarr_bkg_subtracted,
+                                                                  img_std=bkg_rms_median,
+                                                                  use_catalog=use_catalog,
+                                                                  fwhm=known_fwhm,
+                                                                  source_box_size=config['SOURCE_BOX_SIZE'],
+                                                                  fwhm_init_guess=config['FWHM_INIT_GUESS'],
+                                                                  threshold_value=config['THRESHOLD_VALUE'],
+                                                                  min_source_no=config['SOURCE_MIN_NO'],
+                                                                  max_source_no=config['SOURCE_MAX_NO'],
+                                                                  fudge_factor=config['THRESHOLD_FUDGE_FACTOR'],
+                                                                  fine_fudge_factor=config[
+                                                                      'THRESHOLD_FINE_FUDGE_FACTOR'],
+                                                                  max_iter=config['MAX_FUNC_ITER'],
+                                                                  fitting_method=config['FITTING_METHOD'],
+                                                                  lim_threshold_value=config['THRESHOLD_VALUE_LIM'],
+                                                                  default_moff_beta=config['DEFAULT_MOFF_BETA'],
+                                                                  min_good_fwhm=config['FWHM_LIM_MIN'],
+                                                                  max_good_fwhm=config['FWHM_LIM_MAX'],
+                                                                  sigmaclip_fwhm_sigma=config['SIGMACLIP_FWHM_SIGMA'],
+                                                                  isolate_sources_fwhm_sep=config[
+                                                                      'ISOLATE_SOURCES_FWHM_SEP'],
+                                                                  init_iso_dist=config['ISOLATE_SOURCES_INIT_SEP'],
+                                                                  sat_lim=config['sat_lim'])
 
-    if not state:
+    if not state or len(source_cat) == 0:
         del imgarr, imgarr_bkg_subtracted
         gc.collect()
-        return None, None, None, None, None, False
+        return None, None, None, None, None, False, fail_msg
 
     del imgarr, imgarr_bkg_subtracted
     gc.collect()
 
-    return source_cat, None, None, None, fwhm, True
+    return source_cat, None, None, None, fwhm, True, None
 
 
 def get_reference_catalog_astro(ra, dec, sr: float = 0.5,
@@ -1455,16 +1457,16 @@ def get_photometric_catalog(fname, loc, imgarr, hdr, wcsprm,
     # todo: make it so that if not enough stars remain after extraction in the original filter
     #  the alternative mag data are used.
     #  calculate conversion for all and separate those which have both mags, original and converted
-    df, std_fkeys, mag_conv, exec_state = select_std_stars(ref_tbl_photo,
-                                                           ref_catalog_photo,
-                                                           config['_filter_val'],
-                                                           num_std_max=config['NUM_STD_MAX'],
-                                                           num_std_min=config['NUM_STD_MIN'])
+    df, std_fkeys, mag_conv, exec_state, fail_msg = select_std_stars(ref_tbl_photo,
+                                                                     ref_catalog_photo,
+                                                                     config['_filter_val'],
+                                                                     num_std_max=config['NUM_STD_MAX'],
+                                                                     num_std_min=config['NUM_STD_MIN'])
 
     if not exec_state:
-        return None, None, None, None, False
+        return None, None, None, None, False, fail_msg
 
-    src_tbl, _, _, _, kernel_fwhm, state = \
+    src_tbl, _, _, _, kernel_fwhm, exec_state, fail_msg = \
         extract_source_catalog(imgarr=imgarr,
                                use_catalog=df,
                                known_fwhm=fwhm,
@@ -1472,8 +1474,8 @@ def get_photometric_catalog(fname, loc, imgarr, hdr, wcsprm,
                                vignette_rectangular=config["_vignette_rectangular"],
                                cutouts=config["_cutouts"],
                                silent=silent, **config)
-    if not state:
-        return None, None, None, None, False
+    if not exec_state:
+        return None, None, None, None, False, fail_msg
 
     # from photutils.aperture import CircularAperture
     #
@@ -1488,7 +1490,7 @@ def get_photometric_catalog(fname, loc, imgarr, hdr, wcsprm,
     # aperture.plot(axes=ax, **{'color': 'red', 'lw': 1.25, 'alpha': 0.75})
     # plt.show()
 
-    return src_tbl, std_fkeys, mag_conv, kernel_fwhm, state
+    return src_tbl, std_fkeys, mag_conv, kernel_fwhm, exec_state, None
 
 
 def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
@@ -1551,7 +1553,7 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
         src_tbl, kernel_fwhm, _ = read_catalog(src_cat_fname)
     else:
         # detect sources in image and get positions
-        src_tbl, segmap, segmap_thld, kernel, kernel_fwhm, state = \
+        src_tbl, segmap, segmap_thld, kernel, kernel_fwhm, state, fail_msg = \
             extract_source_catalog(imgarr=imgarr,
                                    vignette=config["_vignette"],
                                    vignette_rectangular=config["_vignette_rectangular"],
@@ -1560,7 +1562,7 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
         if not state:
             del imgarr, src_tbl, segmap, segmap_thld, kernel, kernel_fwhm
             gc.collect()
-            return (None for _ in range(9)), False
+            return (None for _ in range(9)), False, fail_msg
 
         if not silent:
             log.info("> Save image source catalog.")
@@ -1596,10 +1598,13 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
         del pos_on_det
 
     del imgarr
+    if len(src_tbl) == 0:
+        log.critical(f"  No detected sources to proceed!!! Skipping further steps.")
+        return (None for _ in range(9)), False, None
 
     return (src_tbl, ref_tbl_astro, ref_catalog_astro,
             src_cat_fname, astro_ref_cat_fname,
-            kernel_fwhm, kernel, segmap, segmap_thld), True
+            kernel_fwhm, kernel, segmap, segmap_thld), True, None
 
 
 def my_background(img, box_size, mask=None, interp=None, filter_size=(1, 1),
@@ -1817,9 +1822,9 @@ def select_std_stars(ref_cat: pd.DataFrame,
     n = len(df)
     if n < num_std_min and alt_filter_key is not None and band != 'w':
         if not silent:
-            log.warning(f"    ==> No or less than {num_std_min} stars "
+            log.warning(f"  ==> No or less than {num_std_min} stars "
                         f"in {filter_keys[0]} band.")
-            log.warning(f"        Using alternative band with known magnitude conversion.")
+            log.warning(f"      Using alternative band with known magnitude conversion.")
         alt_filter_keys = np.asarray(alt_filter_key, str)
 
         alt_cat = cat_srt.dropna(subset=alt_filter_keys.flatten())
@@ -1830,10 +1835,11 @@ def select_std_stars(ref_cat: pd.DataFrame,
 
         has_data = np.any(np.array([x1, x2, x3]), axis=1).all()
         if not has_data:
-            log.critical("Insufficient data for magnitude conversion.")
+            log.critical("  Insufficient data for magnitude conversion.")
             del ref_cat, cat_srt, df, alt_cat
             gc.collect()
-            return None, filter_keys, has_mag_conv, False
+            fail_msg = ['StdStarMagError', 'Insufficient data for magnitude conversion', '']
+            return None, filter_keys, has_mag_conv, False, fail_msg
 
         # convert the band from catalog to observation
         alt_mags, alt_mags_err = phot.convert_ssds_to_bvri(f=filter_keys[0],
@@ -1846,7 +1852,6 @@ def select_std_stars(ref_cat: pd.DataFrame,
         cat_srt = cat_srt.replace(99999999, np.nan)
 
         cat_srt.update(new_df)
-
         has_mag_conv = True
 
     elif band == 'w':
@@ -1861,7 +1866,8 @@ def select_std_stars(ref_cat: pd.DataFrame,
             log.critical("Insufficient data for magnitude conversion.")
             del ref_cat, cat_srt, df, alt_cat
             gc.collect()
-            return None, filter_keys, has_mag_conv, False
+            fail_msg = ['StdStarMagError', 'Insufficient data for magnitude conversion', '']
+            return None, filter_keys, has_mag_conv, False, fail_msg
 
         alt_mags = x2[:, 0] + 0.23 * (x1[:, 0] - x2[:, 0])
         alt_mags_err = np.sqrt((0.23 * x1[:, 1]) ** 2 + (0.77 * x2[:, 1]) ** 2)
@@ -1880,10 +1886,11 @@ def select_std_stars(ref_cat: pd.DataFrame,
     df = cat_srt.sort_values(by=[filter_keys[0]], axis=0, ascending=True, inplace=False)
     df = df.dropna(subset=filter_keys, inplace=False)
     if df.empty:
-        log.critical("No sources with uncertainties!!!")
-        del ref_cat, cat_srt, df, alt_cat
+        log.critical("  No sources with uncertainties remaining!!!")
+        del ref_cat, cat_srt, df
         gc.collect()
-        return None, filter_keys, has_mag_conv, False
+        fail_msg = ['StdStarMagError', 'No sources with uncertainties remaining', '']
+        return None, filter_keys, has_mag_conv, False, fail_msg
 
     # select the std stars by number
     if num_std_max is not None:
@@ -1901,7 +1908,7 @@ def select_std_stars(ref_cat: pd.DataFrame,
     del ref_cat, cat_srt
     gc.collect()
 
-    return df, filter_keys, has_mag_conv, True
+    return df, filter_keys, has_mag_conv, True, None
 
 
 def url_checker(url: str) -> tuple[bool, str]:
