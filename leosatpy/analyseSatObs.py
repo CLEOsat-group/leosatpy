@@ -232,6 +232,13 @@ class AnalyseSatObs(object):
         self._glint_mask_data = None
         self._image_mask_collection = {}
 
+        self.fails = []
+        self._current_location = ''
+        self._current_object = ''
+        self._current_file_name = ''
+        self._current_hdu_idx = ''
+        self._current_hdu_exec_state = []
+
         # run trail analysis
         self._run_trail_analysis()
 
@@ -276,7 +283,6 @@ class AnalyseSatObs(object):
         inst_data = ds.instruments
         n_inst = len(inst_list)
 
-        fails = []
         pass_counter = 0
         time_stamp = self.get_time_stamp()
 
@@ -295,14 +301,17 @@ class AnalyseSatObs(object):
 
                 unique_obj = np.unique(np.array([self._obsTable.get_satellite_id(f)[0]
                                                  for f in file_list['object'].values]))
+                self._current_location = os.path.dirname(files[0])
+                self._current_object = unique_obj[0]
                 if len(unique_obj) > 1:
                     self._log.warning("More than one object name identified. "
                                       "This should not happen!!! Please check the file header. "
                                       f"Skip pointing RA={obj_pointing[0]:.4f}, "
                                       f"DEC={obj_pointing[1]:.4f}.")
-                    fails.append([self._telescope, ';'.join(unique_obj),
-                                  'IDError', 'Multiple ID for same pointing.',
-                                  'Check/Compare FITS header and visibility files for naming issues.'])
+
+                    self.update_failed_processes(['SatIDError',
+                                                  f'Multiple ID for same pointing. {";".join(unique_obj)}',
+                                                  'Check/Compare FITS header and visibility files for naming issues.'])
                     continue
 
                 sat_name, _ = self._obsTable.get_satellite_id(unique_obj[0])
@@ -316,49 +325,33 @@ class AnalyseSatObs(object):
 
                 # in case of an error, comment the following line to see where the error occurs;
                 # This needs some fixing and automation
-                # result, img_states, errors = self._analyse_sat_trails(files=files, sat_name=sat_name)
+                # exec_state = self._analyse_sat_trails(files=files, sat_name=sat_name)
                 try:
-                    result, img_states, errors = self._analyse_sat_trails(files=files, sat_name=sat_name)
+                    exec_state = self._analyse_sat_trails(files=files, sat_name=sat_name)
                 except Exception as e:
                     exc_type, exc_obj, exc_tb = sys.exc_info()
                     fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
                     self._log.critical(f"Unexpected behaviour: {e} in file {fname}, "
                                        f"line {exc_tb.tb_lineno}")
-                    img_states = [False]
-                    errors = [[[fname, '', str(e), 'Unexpected behaviour',
-                                'Please report to christian.adam84@gmail.com']]]
-                    result = False
+                    exec_state = 0
+                    self.update_failed_processes([str(e), 'Unexpected behaviour',
+                                                  'Please create a ticket url'])
 
-                if result:
+                if exec_state == 1:
                     self._log.info(f">> Report: Satellite detection and analysis was {pass_str}")
                     pass_counter += 1
+
                 else:
-                    self._log.info(f">> Report: Satellite detection and analysis has {fail_str}")
-
-                    fail_idx = np.where(~np.array(img_states, dtype=bool))[0]
-                    location = os.path.dirname(files[0])
-
-                    for k in fail_idx:
-                        tmp_err = np.array(errors, dtype=str)[k]
-                        for j in tmp_err:
-                            tmp_fail = [location, self._telescope, unique_obj[0]]
-                            tmp_fail.extend(j)
-                            fails.append(tmp_fail)
+                    state_str = ''
+                    if exec_state == -1:
+                        state_str = 'partially '
+                    self._log.info(f">> Report: Satellite detection and analysis has {state_str}{fail_str}")
 
                 if not self._silent:
                     self._log.info(f'====>  Analysis of {sat_name} finished <====')
 
-                del result
-
         # save fails
-        if fails:
-            fail_path = Path(self._config['RESULT_TABLE_PATH']).expanduser().resolve()
-            fail_fname = fail_path / f'fails_analyseSatObs_{time_stamp}.log'
-            self._log.info(f">> FAILED analyses are stored here: {fail_fname}")
-            with open(fail_fname, "w", encoding="utf8") as file:
-                file.write('\t'.join(['Location', 'Telescope',
-                                      'SatID', 'File', 'HDU#', 'ErrorType', 'ErrorMsg', 'Note']) + '\n')
-                [file.write('\t'.join(f) + '\n') for f in fails]
+        self.save_failed_processes(time_stamp)
 
         endtime = time.perf_counter()
         dt = endtime - starttime
@@ -368,6 +361,28 @@ class AnalyseSatObs(object):
             self._log.info(f"Program execution time in hh:mm:ss: {td}")
         self._log.info('====>  Satellite analysis finished <====')
         sys.exit(0)
+
+    def update_failed_processes(self, fail_msg):
+        """"""
+
+        tmp_fail = [self._current_location, self._telescope, self._current_object,
+                    self._current_file_name, self._current_hdu_idx]
+        tmp_fail.extend(fail_msg)
+
+        self.fails.append(tmp_fail)
+
+    def save_failed_processes(self, time_stamp):
+        """"""
+
+        # save fails
+        if self.fails:
+            fail_path = Path(self._config['RESULT_TABLE_PATH']).expanduser().resolve()
+            fail_fname = fail_path / f'fails_analyseSatObs_{time_stamp}.log'
+            self._log.info(f">> FAILED analyses are stored here: {fail_fname}")
+            with open(fail_fname, "w", encoding="utf8") as file:
+                file.write('\t'.join(['Location', 'Telescope',
+                                      'SatID', 'File', 'HDU#', 'ErrorType', 'ErrorMsg', 'Note']) + '\n')
+                [file.write('\t'.join(f) + '\n') for f in self.fails]
 
     def _analyse_sat_trails(self, files: list, sat_name: str):
         """ Run satellite trail detection and photometry.
@@ -386,6 +401,8 @@ class AnalyseSatObs(object):
         """
 
         obsparams = self._obsparams
+        self._current_file_name = ''
+        self._current_hdu_idx = ''
 
         # identify images with satellite trails and get parameters
         if self._silent:
@@ -399,7 +416,7 @@ class AnalyseSatObs(object):
 
         # collect information on the satellite image and download the standard star catalog
         trail_img_idx_list = data_dict['trail_img_idx']
-        final_status = [True for _ in range(len(trail_img_idx_list))]
+        final_status = 1
         fail_messages = [[] for _ in range(len(trail_img_idx_list))]
         for img_idx in range(len(trail_img_idx_list)):
 
@@ -408,24 +425,39 @@ class AnalyseSatObs(object):
 
             trail_img_idx = data_dict['trail_img_idx'][img_idx]
             file_name = data_dict['file_names'][trail_img_idx]
+
+            self._current_file_name = file_name
+            self._current_hdu_idx = ''
+            self._current_hdu_exec_state = []
+
             trail_img_dict, state = self._get_img_dict(data_dict, trail_img_idx, obsparams)
+            if not np.all(self._current_hdu_exec_state):
+                self._log.critical("> None of the image HDUs have matching standard stars!!! "
+                                   "Skipping further steps. ")
 
+                final_status = 0
+                continue
             # get catalogs excluding the trail area and including it
-            trail_img_dict, state, fail_msg = self._filter_catalog(data=trail_img_dict)
+            trail_img_dict = self._filter_catalog(data=trail_img_dict)
 
-            if not state:
-                self._log.critical("  No matching standard stars found!!! Skipping further steps. ")
+            if not np.all(self._current_hdu_exec_state):
+                self._log.critical("> None of the image HDUs have matching standard stars!!! "
+                                   "Skipping further steps. ")
 
-                tmp = [file_name, '']
-                tmp.extend(fail_msg)
-                fail_messages[img_idx].append(tmp)
-                final_status[img_idx] = False
-
+                final_status = 0
                 continue
 
-            status_list = []
             trail_hdus = trail_img_dict['hdus']
             for h, hdu_idx in enumerate(trail_hdus):
+                self._current_hdu_idx = f"HDU #{hdu_idx:02d}"
+                if not self._silent:
+                    self._log.info(f"==> Run photometry/analysis on HDU #{hdu_idx:02d} [{h + 1}/{len(trail_hdus)}] <==")
+
+                if not self._current_hdu_exec_state[h]:
+                    self._log.critical(f"  Not enough data to proceed!!! "
+                                       "Skipping further steps.")
+                    final_status = -1
+                    continue
 
                 # mask the glint mask
                 self._obsTable.get_glint_mask(file_name, hdu_idx)
@@ -449,22 +481,16 @@ class AnalyseSatObs(object):
                                                            scale=1.)
                     analyse_glint = True
 
-                if not self._silent:
-                    self._log.info(f"==> Run photometry/analysis on HDU #{hdu_idx:02d} [{h + 1}/{len(trail_hdus)}] <==")
-
                 # select std stars and perform aperture photometry
                 std_photometry_results = self._run_std_photometry(data=trail_img_dict, hidx=h, hdu_idx=hdu_idx)
                 (std_apphot, std_filter_keys, optimum_aprad,
-                 mag_conv, mag_corr, qlf_aprad, state, fail_msg) = std_photometry_results
+                 mag_conv, mag_corr, qlf_aprad, state) = std_photometry_results
 
                 if not state:
-                    self._log.critical("> Standard star selection and photometry has FAILED!!! "
+                    self._log.critical("> Standard star selection and/or photometry has FAILED!!! "
                                        "Skipping further steps. ")
-                    tmp = [file_name, f"HDU #{hdu_idx:02d}"]
-                    tmp.extend(fail_msg)
-                    fail_messages[img_idx].append(tmp)
-
-                    status_list.append(False)
+                    self._current_hdu_exec_state[h] = False
+                    final_status = -1
                     continue
 
                 # prepare trail image and perform aperture photometry with optimum aperture
@@ -474,20 +500,17 @@ class AnalyseSatObs(object):
                                                       qlf_aprad=qlf_aprad)
 
                 # load TLE data, extract information for the satellite and calc mags, and angles, etc.
-                state, fail_msg = self._get_final_results(img_dict=trail_img_dict,
-                                                          sat_name=sat_name,
-                                                          sat_apphot=sat_apphot,
-                                                          std_apphot=std_apphot,
-                                                          std_filter_keys=std_filter_keys,
-                                                          mag_conv=mag_conv, mag_corr=mag_corr,
-                                                          hidx=h, hdu_idx=hdu_idx)
+                state = self._get_final_results(img_dict=trail_img_dict,
+                                                sat_name=sat_name,
+                                                sat_apphot=sat_apphot,
+                                                std_apphot=std_apphot,
+                                                std_filter_keys=std_filter_keys,
+                                                mag_conv=mag_conv, mag_corr=mag_corr,
+                                                hidx=h, hdu_idx=hdu_idx)
 
                 if not state:
-                    tmp = [file_name, f"HDU #{hdu_idx:02d}"]
-                    tmp.extend(fail_msg)
-                    fail_messages[img_idx].append(tmp)
-
-                    status_list.append(False)
+                    self._current_hdu_exec_state[h] = False
+                    final_status = -1
                     continue
 
                 try:
@@ -502,25 +525,15 @@ class AnalyseSatObs(object):
                     fail_msg = ['ProfileFitError',
                                 'Error during profile analysis',
                                 str(e)]
-                    tmp = [file_name, f"HDU #{hdu_idx:02d}"]
-                    tmp.extend(fail_msg)
-                    fail_messages[img_idx].append(tmp)
-
-                    status_list.append(False)
+                    self.update_failed_processes(fail_msg)
+                    self._current_hdu_exec_state[h] = False
                     continue
 
                 del std_photometry_results, sat_apphot
 
-            # collect fails
-            if status_list:
-                final_status[img_idx] = False
-
         del obsparams, data_dict, trail_img_dict
 
-        if np.all(final_status):
-            return True, None, None
-        else:
-            return False, final_status, fail_messages
+        return final_status
 
     def _analyse_trail_profile(self,
                                img_dict: dict,
@@ -676,7 +689,7 @@ class AnalyseSatObs(object):
                                                                        fwhm=image_fwhm, yerr=None,
                                                                        model_type=model_type_2comp)
         if not self._silent:
-            self._log.info("    Plot trail profile along minor axis")
+            self._log.info("  Plot trail profile along minor axis")
         # plot the line profile + fit result along minor axis
         # the fit components can be commented and will not be plotted
         self._plot_profile_along_axis(x=x_minor_trail,
@@ -1333,18 +1346,20 @@ class AnalyseSatObs(object):
                                                     src_loc=img_dict['loc'])
         # print(img_dict['loc'])
         if tle_location is None:
-            return False, ['LoadTLEError',
-                           'TLE file not found',
-                           'Check that name of the TLE file']
+            self.update_failed_processes(['LoadTLEError',
+                                          'TLE file not found',
+                                          'Check that name of the TLE file'])
+            return False
 
         if not self._silent:
             self._log.info("  > Check if satellite is in the TLE file")
         tle_sat_name = self._obsTable.find_satellite_in_tle(tle_loc=tle_location[2], sat_name=sat_name)
 
         if tle_sat_name is None:
-            return False, ['LoadSatError',
-                           'Satellite file not found',
-                           'Check that name of the satellite']
+            self.update_failed_processes(['LoadSatError',
+                                          'Satellite file not found',
+                                          'Check that name of the satellite'])
+            return False
 
         # if not pd.isnull(sat_info['AltID']).any():
         #     sat_name = f'{sat_name} ({sat_info["AltID"].values[0]})'
@@ -1570,7 +1585,7 @@ class AnalyseSatObs(object):
         _base_conf.clean_up(_mags, _aper_sum, sat_info,
                             obj_info, hdr, obsparams, img_dict, sat_apphot, std_apphot)
 
-        return True, []
+        return True
 
     @staticmethod
     def _make_border_mask(mask, borderLen=10):
@@ -2136,11 +2151,11 @@ class AnalyseSatObs(object):
                                                   file_base=file_name_plot)
         if not mag_corr:
             _base_conf.clean_up(data, imgarr, image_bkg_sub, std_cat, result, fluxes)
-
-            return None, None, None, None, None, None, False, ['MagCorrectError',
-                                                               'Error during interpolation.',
-                                                               'Check number and '
-                                                               'quality of standard stars and SNR']
+            self.update_failed_processes(['MagCorrectError',
+                                          'Error during interpolation.',
+                                          'Check number and '
+                                          'quality of standard stars and SNR'])
+            return None, None, None, None, None, None, False
 
         if not self._silent:
             self._log.info('    ==> estimated magnitude correction: '
@@ -2159,7 +2174,7 @@ class AnalyseSatObs(object):
                           std_fkeys=std_fkeys,
                           mode='ref_photo')
 
-        return std_cat, std_fkeys, opt_aprad, mag_conv, mag_corr, qlf_aprad, True, ['', '', '']
+        return std_cat, std_fkeys, opt_aprad, mag_conv, mag_corr, qlf_aprad, True
 
     def _get_magnitude_correction(self, df: pd.DataFrame, file_base: str):
         """Estimate magnitude correction"""
@@ -2220,13 +2235,19 @@ class AnalyseSatObs(object):
         cats_cleaned = []
         cats_cleaned_rem = []
         for i, hdu_idx in enumerate(hdus):
-
             if not self._silent:
-                self._log.info(f"   Processing: HDU #{hdu_idx:02d} [{i + 1}/{len(hdus)}]")
+                self._log.info(f"  Processing: HDU #{hdu_idx:02d} [{i + 1}/{len(hdus)}]")
+
+            if not self._current_hdu_exec_state[i]:
+                self._log.critical("  No matching standard stars found!!! Skipping further steps. ")
+
+                self.update_failed_processes(['IntegrityError',
+                                              'No reference star data',
+                                              'Check reference catalog input data'])
+                self._current_hdu_exec_state[i] = False
+                continue
 
             imgarr = data['images'][i]
-            fwhm = data['kernel_fwhm'][i][0]
-
             ref_tbl_photo = data['src_tbl'][i]
 
             # create a masked image for detected trail
@@ -2239,21 +2260,26 @@ class AnalyseSatObs(object):
             # data['trail_data'][i]['mask'] = mask
             # data['trail_data'][i]['mask_list'] = mask_list
 
-            if ref_tbl_photo.empty or not mask.any():
+            if ref_tbl_photo is None or ref_tbl_photo.empty or not mask.any():
                 del imgarr, ref_tbl_photo, mask_list, mask
-                return data, False, ['IntegrityError',
-                                     'Empty data frame or empty mask',
-                                     'Check input data, trail/sources detection']
+                self.update_failed_processes(['IntegrityError',
+                                              'Empty reference star data frame or empty mask',
+                                              'Check input data, trail/sources detection'])
+                self._current_hdu_exec_state[i] = False
+                continue
 
             # split catalog in stars outside and inside the trail mask
+            fwhm = data['kernel_fwhm'][i][0]
             ref_cat_cln, ref_cat_removed = sext.clean_catalog_trail(imgarr=imgarr, mask=mask,
                                                                     catalog=ref_tbl_photo,
                                                                     fwhm=fwhm)
             if ref_cat_cln is None:
                 del imgarr, ref_tbl_photo, ref_cat_cln, ref_cat_removed, mask_list, mask
-                return data, False, ['SrcMatchError',
-                                     'No standard stars left after removing stars close to trail',
-                                     'To be solved']
+                self.update_failed_processes(['SrcMatchError',
+                                              'No standard stars left after removing stars close to trail',
+                                              'To be solved'])
+                self._current_hdu_exec_state[i] = False
+                continue
 
             del imgarr, mask_list, mask
 
@@ -2265,7 +2291,7 @@ class AnalyseSatObs(object):
 
         del cats_cleaned, cats_cleaned_rem, hdus
 
-        return data, True, ['', '', '']
+        return data
 
     def _get_img_dict(self, data: dict, idx: int, obsparam: dict):
         """Get the data for either the reference image or the trail image
@@ -2387,7 +2413,7 @@ class AnalyseSatObs(object):
                                                        imgarr, hdr, wcsprm, catalog,
                                                        silent=self._silent,
                                                        **config)
-            src_tbl, std_fkeys, mag_conv, fwhm, state = phot_result
+            src_tbl, std_fkeys, mag_conv, fwhm, state, fail_msg = phot_result
 
             image_list.append(imgarr)
             hdu_list.append(hdu_idx)
@@ -2402,6 +2428,9 @@ class AnalyseSatObs(object):
             mag_conv_list.append(mag_conv)
             fwhm_list.append(fwhm)
             status_list.append(state)
+            self._current_hdu_exec_state.append(state)
+            if not state:
+                self.update_failed_processes(fail_msg)
 
             del imgarr, trail_data, hdr
 
@@ -2733,7 +2762,9 @@ class AnalyseSatObs(object):
         if not np.any(test_for_any):
             self._log.critical("None of the input images have satellite trail(s) detected!!! "
                                "Skipping further steps.")
-
+            self.update_failed_processes(['DetectError',
+                                          'Satellite trail(s) detection has failed.',
+                                          'Difficult to solve.'])
             return None, ['DetectError',
                           'Satellite trail(s) detection fail.',
                           'Difficult to solve.']
