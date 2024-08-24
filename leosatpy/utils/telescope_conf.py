@@ -60,9 +60,8 @@ dk154_params = {
     'secpix': ('SECPPIX', 'SECPPIX'),  # unbinned pixel size (arcsec)
     'binning': ('BINX', 'BINY'),  # binning in x/y
     'image_size_1x1': (2148, 2048),
-    # 'pc_matrix': [[[0, -1], [-1, 0]]],  # CCD PC matrix
-    # 'pc_matrix': [[[1, 0], [0, 1]]],  # CCD PC matrix
-    'pc_matrix': None,  # CCD PC matrix
+    'pc_matrix': [[[0, -1], [-1, 0]]],  # Preferred CCD PC matrix
+    # 'pc_matrix': None,  # Preferred CCD PC matrix
 
     'gain': 0.25,  # CD gain in el/DN
     'readnoise': 4.5,  # CCD Read Out Noise (e-)
@@ -103,7 +102,7 @@ dk154_params = {
     # ccd mask for regions to exclude from all processes
     'ccd_mask': {'1x1': None,
                  '2x2': None,
-                 '4x4': None},
+                 '4x4': [[0, 512, 502, 504]]},
 
     # telescope specific image types
     'imagetyp_light': 'light',
@@ -161,7 +160,7 @@ cbnuo_params = {
     'secpix': (1.05, 1.05),  # pixel size (arcsec)
     'binning': ('BINX', 'BINY'),  # binning
     'image_size_1x1': (4096, 4096),
-    'pc_matrix': None,  # CCD PC matrix
+    'pc_matrix': None,  # Preferred CCD PC matrix
 
     'gain': 'GAIN',  # CD gain in el/DN
     'readnoise': 'RDNOISE',  # CCD Read Out Noise (e-)
@@ -250,7 +249,7 @@ ca123dlrmkiii_param = {
     'secpix': ('SCALE', 'SCALE'),  # unbinned pixel size (arcsec)
     'binning': ('CCDBINX', 'CCDBINY'),  # binning keyword
     'image_size_1x1': (4096, 4112),
-    'pc_matrix': None,  # CCD PC matrix
+    'pc_matrix': None,  # Preferred CCD PC matrix
 
     'gain': 'GAIN',  # CD gain in el/DN
     'readnoise': None,  # CCD Read Out Noise (e-)
@@ -345,9 +344,9 @@ ckoir_param = {
     'secpix': (0.465, 0.465),  # pixel size (arcsec)
     'binning': ('XBINNING', 'YBINNING'),  # binning in x/y
     'image_size_1x1': (4096, 4096),
-    'pc_matrix': None,  # CCD PC matrix
-    # 'pc_matrix': [[[1, 0], [0, 1]]],  # CCD PC matrix
-    # 'pc_matrix': [[[0, -1], [-1, 0]]],  # CCD PC matrix
+    'pc_matrix': None,  # Preferred CCD PC matrix
+    # 'pc_matrix': [[[1, 0], [0, 1]]],  # Preferred CCD PC matrix
+    # 'pc_matrix': [[[0, -1], [-1, 0]]],  # Preferred CCD PC matrix
 
     # gain and readout noise taken from https://people.bsu.edu/rberring/observing-facilities/
     # for FLI PL16801 camera
@@ -447,11 +446,11 @@ ctio_90cm_params = {
     'n_amps': 4,  # number of chips/amplifier on detector
     'namps_yx': {'1x1': {4: [2, 2]}},
     'amplist': {'1x1': ['11', '12', '21', '22']},  # amplifier list keyword
-    'secpix': (0.40, 0.40),  # pixel size (arcsec)
+    'secpix': (0.401, 0.401),  # pixel size (arcsec)
     'binning': ('BINX', 'BINY'),  # binning
     'image_size_1x1': (2168, 2048),
-    # 'pc_matrix': [[[1, 0], [0, 1]]],  # CCD PC matrix
-    'pc_matrix': None,  # CCD PC matrix
+    'pc_matrix': [[[-1, 0], [0, -1]]],  # Preferred CCD PC matrix
+    # 'pc_matrix': None,  # Preferred CCD PC matrix
 
     'gain': 3.,  # CD gain in el/DN
     'readnoise': 12.,  # CCD Read Out Noise (e-)
@@ -500,13 +499,19 @@ ctio_90cm_params = {
                 '4x4': None},
 
     # ccd mask for regions to exclude from all processes
-    'ccd_mask': {'1x1': [[0, 2046, 1957, 1959],
+    'ccd_mask': {'1x1': [[0, 2046, 1957, 1961],
                          [316, 1023, 100, 101],
                          [1010, 1023, 437, 438],
                          [1023, 1061, 482, 483],
                          [1023, 1145, 535, 536],
-                         [1023, 1166, 547, 546],
+                         [1023, 1166, 546, 548],
                          [1023, 1347, 818, 819],
+                         [1023, 1911, 273, 274],
+                         [1023, 1610, 1828, 1829],
+                         [1023, 1736, 1845, 1846],
+                         [1023, 1766, 1950, 1961],
+                         [1520, 1766, 1900, 1961],
+                         [273, 275, 1809, 1856]
                          ],
                  '2x2': None,
                  '4x4': None},
@@ -559,7 +564,7 @@ ctio_400cm_params = {
     'amplist': {'1x1': None},  # amplifier list keyword
     'secpix': (0.27, 0.27),  # pixel size (arcsec)
     'binning': ('CCDBIN1', 'CCDBIN2'),  # binning in x/y
-    'pc_matrix': None,  # CCD PC matrix
+    'pc_matrix': None,  # Preferred CCD PC matrix
 
     'gain': 'GAINA',  # CD gain in el/DN
     'readnoise': 'RDNOISEA',  # CCD Read Out Noise (e-)
@@ -624,7 +629,7 @@ spm_params = {
     'secpix': (2., 2.),  # pixel size (arcsec)
     'binning': ('BINNING', 'BINNING'),  # binning
     'image_size_1x1': (6144, 6220),
-    'pc_matrix': None,  # CCD PC matrix
+    'pc_matrix': None,  # Preferred CCD PC matrix
 
     'gain': 'SOFTGAIN',  # CD gain in el/DN
     'readnoise': 12,  # CCD Read Out Noise (e-)
@@ -709,7 +714,7 @@ ouka_params = {
     'secpix': (1.205, 1.205),  # pixel size (arcsec)
     'binning': ('XBINNING', 'YBINNING'),  # binning
     'image_size_1x1': (6248, 4176),
-    'pc_matrix': None,  # CCD PC matrix
+    'pc_matrix': None,  # Preferred CCD PC matrix
 
     'gain': 'EGAIN',  # CD gain in el/DN
     'readnoise': None,  # CCD Read Out Noise (e-)

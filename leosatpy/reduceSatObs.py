@@ -614,19 +614,26 @@ class ReduceSatObs(object):
                                              cleantype=cleantype, cosmic_method=cosmic_method)
 
             # mask bad pixel
+            combined_mask = None
             if 'ccd_mask' in obsparams and obsparams['ccd_mask'][self._bin_str] is not None:
+                ccd_mask = np.zeros(np.shape(ccd.data))
                 ccd_mask_list = obsparams['ccd_mask'][self._bin_str]
                 for yx in ccd_mask_list:
-                    ccd.data[yx[0]:yx[1], yx[2]:yx[3]] = 0
+                    ccd_mask[yx[0]:yx[1], yx[2]:yx[3]] = 1
+                    ccd_mask = np.where(ccd_mask == 1, True, False)
+                    ccd_mask = ccd_mask.astype('bool')
+                combined_mask = ccd_mask
 
             if self._ccd_mask_fname is not None:
                 mask_ccdmask = CCDData.read(self._ccd_mask_fname,
                                             unit=u.dimensionless_unscaled)
-                ccd.mask = mask_ccdmask.data.astype('bool')
-            else:
-                # remove mask and the uncertainty extension
-                ccd.mask = None
-                mask_ccdmask = None
+                ccd_mask = mask_ccdmask.data.astype('bool')
+                if combined_mask is not None:
+                    combined_mask = combined_mask | ccd_mask
+                else:
+                    combined_mask = ccd_mask
+
+            ccd.mask = combined_mask
 
             # bias or dark frame subtract
             dark_corrected = False
@@ -640,10 +647,12 @@ class ReduceSatObs(object):
                     if mbias is not None and self._config['BIAS_CORRECT']:
                         if isinstance(mbias, str):
                             mbias = self._convert_fits_to_ccd(mbias, single=True)
+                            mbias.mask = None if combined_mask is None else combined_mask
                         ccd = ccdproc.subtract_bias(ccd, mbias)
 
                 if isinstance(mdark_ccd, str):
                     mdark_ccd = self._convert_fits_to_ccd(mdark_ccd, single=True)
+                    mdark_ccd.mask = None if combined_mask is None else combined_mask
                 ccd = ccdproc.subtract_dark(ccd, mdark_ccd,
                                             exposure_time='exptime',
                                             exposure_unit=u.Unit("second"),
@@ -656,9 +665,12 @@ class ReduceSatObs(object):
                 mbias = master_bias
                 if isinstance(master_bias, str):
                     mbias = self._convert_fits_to_ccd(master_bias, single=True)
+                    mbias.mask = None if combined_mask is None else combined_mask
+
                 ccd = ccdproc.subtract_bias(ccd, mbias)
                 add_key_to_hdr(ccd.header, 'MBIAS', get_filename(mbias))
                 bias_corrected = True
+
 
             # flat correction
             flat_corrected = False
@@ -666,7 +678,7 @@ class ReduceSatObs(object):
                 mflat = master_flat[image_filter]
                 if isinstance(mflat, str):
                     mflat = self._convert_fits_to_ccd(mflat, single=True)
-                    mflat.mask = None if mask_ccdmask is None else mask_ccdmask.data.astype('bool')
+                    mflat.mask = None if combined_mask is None else combined_mask
                 ccd = ccdproc.flat_correct(ccd, mflat)
                 add_key_to_hdr(ccd.header, 'MFLAT', get_filename(mflat))
                 flat_corrected = True
@@ -873,8 +885,8 @@ class ReduceSatObs(object):
 
         if not self.silent:
             self._log.info('> Creating bad pixel map file: %s' % os.path.basename(ccd_mask_fname))
-
-        ccd_mask = ccdproc.ccdmask(lflat[0],
+        cr_mask = lflat[-1].divide(lflat[0])
+        ccd_mask = ccdproc.ccdmask(cr_mask,
                                    findbadcolumns=False,
                                    byblocks=False)
         mask_as_ccd = CCDData(data=ccd_mask.astype('uint8'), unit=u.dimensionless_unscaled)
@@ -1145,10 +1157,10 @@ class ReduceSatObs(object):
         combine = ccdproc.combine(lbias, method=method,
                                   mem_limit=_base_conf.MEM_LIMIT_COMBINE,
                                   sigma_clip=True,
-                                  sigma_clip_low_thresh=5,
-                                  sigma_clip_high_thresh=5,
-                                  sigma_clip_func=np.ma.median,
-                                  sigma_clip_dev_func=mad_std,
+                                  sigma_clip_low_thresh=3,
+                                  sigma_clip_high_thresh=3,
+                                  # sigma_clip_func=np.ma.median,
+                                  # sigma_clip_dev_func=mad_std,
                                   dtype='float32')
 
         # update fits header

@@ -167,6 +167,8 @@ class ObsTables(object):
             sat_type = 'starlink'
         if 'BLUEWALKER' in sat_name:
             sat_type = 'bluewalker'
+        if 'KUIPER' in sat_name:
+            sat_type = 'kuiper'
 
         regex_pattern = rf'(?i)tle_{sat_type}_{obs_date[0]}[-_]{obs_date[1]}[-_]{obs_date[2]}.*\.txt'
         regex = re.compile(regex_pattern,
@@ -175,7 +177,6 @@ class ObsTables(object):
         path = os.walk(search_path)
         for root, dirs, files in path:
             f = sorted([s for s in files if re.search(regex, s)])
-
             if len(f) > 0:
                 [tle_filenames.append((root, s, Path(os.path.join(root, s)))) for s in f]
 
@@ -503,6 +504,10 @@ class ObsTables(object):
 
         # Bluewalker
         sat_name = 'BLUEWALKER' if ('BW' in obj_name or 'BLUEWALKER' in obj_name) else sat_name
+
+        # Kuiper
+        if 'KUIPER' in obj_name:
+            return sat_name, unique_id
 
         # get the satellite id number and convert to 4 digit string
         nb_str = ''.join(n for n in obj_name if n.isdigit())

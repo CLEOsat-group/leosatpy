@@ -290,6 +290,13 @@ class CalibrateObsWCS(object):
         Create the required folder and run full calibration procedure.
 
         """
+        ccd_mask_dict = {'CTIO 0.9 meter telescope': [[1405, 1791, 1850, 1957],
+                                                      [1520, 1736, 1850, 1957],
+                                                      [1022, 1830, 273, 275],
+                                                      [1022, 1791, 1845, 1957],
+                                                      [0, 2046, 0, 50],
+                                                      [0, 2046, 2000, 2048]],
+                         'CBNUO-JC': [[225, 227, 1336, 2048]]}
 
         report = {}
         obsparams = self._obsparams
@@ -332,6 +339,30 @@ class CalibrateObsWCS(object):
 
             if 'mask' in hdul and obsparams['apply_mask']:
                 img_mask = hdul['MASK'].data.astype(bool)
+
+        detect_mask = None
+        if self._telescope in ['CTIO 0.9 meter telescope', 'CBNUO-JC']:
+            detect_mask = np.zeros(imgarr.shape)
+            ccd_mask_list = ccd_mask_dict[self._telescope]
+            for yx in ccd_mask_list:
+                detect_mask[yx[0]:yx[1], yx[2]:yx[3]] = 1
+            detect_mask = np.where(detect_mask == 1, True, False)
+
+        if detect_mask is not None:
+            if img_mask is None:
+                img_mask = detect_mask
+            else:
+                img_mask |= detect_mask
+
+        vignette_mask = None
+        if hdr['FILTER'] in ['U'] and self._telescope == 'DK-1.54':
+            vignette_mask = sext.mask_image_circular(imgarr, 0.99)
+
+        if vignette_mask is not None:
+            if img_mask is None:
+                img_mask = vignette_mask
+            else:
+                img_mask |= vignette_mask
 
         sat_id, _ = self._obsTable.get_satellite_id(hdr[obsparams['object']])
         plt_path_final = plt_path / sat_id
@@ -376,6 +407,8 @@ class CalibrateObsWCS(object):
             sat_lim = hdr[obsparams['saturation_limit']]
         config['sat_lim'] = sat_lim
 
+        config['image_shape'] = imgarr.shape
+
         # extract sources on detector
         extraction_result, state, _ = sext.get_src_and_cat_info(fbase, cat_path,
                                                                 imgarr, hdr, init_wcsprm,
@@ -419,7 +452,7 @@ class CalibrateObsWCS(object):
         self._config['pc_matrix'] = obsparams['pc_matrix']
 
         # initialize find
-        get_wcs = imtrans.FindWCS(src_tbl, ref_tbl, self._config, self._log)
+        get_wcs = imtrans.FindWCS(src_tbl, ref_tbl, config, self._log)
 
         # run wcs analysis
         wcs_res = get_wcs.find_wcs(init_wcs, match_radius, imgarr)
@@ -686,7 +719,7 @@ class CalibrateObsWCS(object):
             # increase FoV for SPM data
             # ['DDOTI 28-cm f/2.2', 'PlaneWave CDK24']
             if self._telescope in ['DDOTI 28-cm f/2.2', 'CTIO 0.9 meter telescope']:
-                fov_radius *= 3.
+                fov_radius *= 2.
 
         if not self._silent:
             log.info("  Using field-of-view radius: {:.3g} deg".format(fov_radius))
@@ -820,6 +853,7 @@ class CalibrateObsWCS(object):
 
         # Define normalization and the colormap
         vmin = np.percentile(imgarr, 50)
+        vmin = 0 if vmin < 0 else vmin
         vmax = np.percentile(imgarr, 99.)
         nm = mpl.colors.Normalize(vmin=vmin, vmax=vmax, clip=True)
 

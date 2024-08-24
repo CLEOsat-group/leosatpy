@@ -243,7 +243,7 @@ SUPPORTED_CATALOGS = {
                 # 'DEC_error': 'dec_error',
                 'pmra': 'pmra', 'pmra_error': 'pmra_error',
                 'pmdec': 'pmdec', 'pmdec_error': 'pmdec_error',
-                'mag': 'phot_g_mean_mag', 'objID': 'SOURCE_ID',
+                'mag': 'phot_g_mean_mag', 'objID': 'source_id',
                 # 'epoch': 'ref_epoch'
                 },
     'GAIAEDR3': {'RA': 'ra', 'RA_error': 'ra_error',
@@ -319,7 +319,10 @@ CATALOG_FILTER_EXT = {
                "z": {'Prim': [['SDSSzMag', 'SDSSzMagErr']], 'Alt': None},
                "y": {'Prim': [['PS1yMag', 'PS1ymagErr']], 'Alt': None}},
     'PS1DR1': None,
-    'GSC243': {"U": {'Prim': [['Umag', 'UmagErr']], 'Alt': None},
+    'GSC243': {"U": {'Prim': [['Umag', 'UmagErr']],
+                     'Alt': [['SDSSuMag', 'SDSSuMagErr'],
+                             ['SDSSgMag', 'SDSSgMagErr'],
+                             ['SDSSrMag', 'SDSSrMagErr']]},
                "B": {'Prim': [['Bmag', 'BmagErr']],
                      'Alt': [['SDSSuMag', 'SDSSuMagErr'],
                              ['SDSSgMag', 'SDSSgMagErr'],
@@ -343,7 +346,10 @@ CATALOG_FILTER_EXT = {
                "w": {'Prim': [['SDSSgMag', 'SDSSgMagErr'],
                               ['SDSSrMag', 'SDSSrMagErr']], 'Alt': None},
                "z": {'Prim': [['SDSSzMag', 'SDSSzMagErr']], 'Alt': None}},
-    'GSC242': {"U": {'Prim': [['Umag', 'UmagErr']], 'Alt': None},
+    'GSC242': {"U": {'Prim': [['Umag', 'UmagErr']],
+                     'Alt': [['SDSSuMag', 'SDSSuMagErr'],
+                             ['SDSSgMag', 'SDSSgMagErr'],
+                             ['SDSSrMag', 'SDSSrMagErr']]},
                "B": {'Prim': [['Bmag', 'BmagErr']],
                      'Alt': [['SDSSuMag', 'SDSSuMagErr'],
                              ['SDSSgMag', 'SDSSgMagErr'],
@@ -391,7 +397,7 @@ if ASTROMETRIC_CAT_ENVVAR in os.environ:
 else:
     SERVICELOCATION = DEF_CAT_URL
 
-SAT_HORB_REF = {'STARLINK': 550., 'ONEWEB': 1200., 'BLUEWALKER': 500.}
+SAT_HORB_REF = {'STARLINK': 550., 'ONEWEB': 1200., 'BLUEWALKER': 500., 'KUIPER': 630.}
 
 REARTH_EQU = 6378.137  # Radius at sea level at the equator in km
 REARTH_POL = 6356.752  # Radius at poles in km

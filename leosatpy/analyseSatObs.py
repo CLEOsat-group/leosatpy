@@ -325,17 +325,17 @@ class AnalyseSatObs(object):
 
                 # in case of an error, comment the following line to see where the error occurs;
                 # This needs some fixing and automation
-                # exec_state = self._analyse_sat_trails(files=files, sat_name=sat_name)
-                try:
-                    exec_state = self._analyse_sat_trails(files=files, sat_name=sat_name)
-                except Exception as e:
-                    exc_type, exc_obj, exc_tb = sys.exc_info()
-                    fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-                    self._log.critical(f"Unexpected behaviour: {e} in file {fname}, "
-                                       f"line {exc_tb.tb_lineno}")
-                    exec_state = 0
-                    self.update_failed_processes([str(e), 'Unexpected behaviour',
-                                                  'Please create a ticket url'])
+                exec_state = self._analyse_sat_trails(files=files, sat_name=sat_name)
+                # try:
+                #     exec_state = self._analyse_sat_trails(files=files, sat_name=sat_name)
+                # except Exception as e:
+                #     exc_type, exc_obj, exc_tb = sys.exc_info()
+                #     fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                #     self._log.critical(f"Unexpected behaviour: {e} in file {fname}, "
+                #                        f"line {exc_tb.tb_lineno}")
+                #     exec_state = 0
+                #     self.update_failed_processes([str(e), 'Unexpected behaviour',
+                #                                   'Please create a ticket url'])
 
                 if exec_state == 1:
                     self._log.info(f">> Report: Satellite detection and analysis was {pass_str}")
@@ -2472,7 +2472,7 @@ class AnalyseSatObs(object):
         ccd_mask_dict = {'CTIO 0.9 meter telescope': [[1405, 1791, 1850, 1957],
                                                       [1520, 1736, 1850, 1957],
                                                       [1022, 1830, 273, 275],
-                                                      [1405, 1791, 1900, 1957]],
+                                                      [1022, 1791, 1845, 1957]],
                          'CBNUO-JC': [[225, 227, 1336, 2048]]}
 
         # Check the extension table for entries
