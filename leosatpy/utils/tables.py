@@ -38,7 +38,7 @@ from astropy.coordinates import SkyCoord
 from packaging.version import Version
 
 # Project modules
-from . import base_conf as _base_conf
+from . import base_conf as bc
 
 # -----------------------------------------------------------------------------
 
@@ -87,13 +87,13 @@ class ObsTables(object):
         self._def_ext_oi_name = config['EXT_OI_TABLE_NAME']
         self._def_glint_mask_name = config['GLINT_MASK_TABLE_NAME']
 
-        self._def_cols = _base_conf.DEF_RES_TBL_COL_NAMES
-        self._def_col_units = _base_conf.DEF_RES_TBL_COL_UNITS
+        self._def_cols = bc.DEF_RES_TBL_COL_NAMES
+        self._def_col_units = bc.DEF_RES_TBL_COL_UNITS
         self._fname_res_table = self._def_path / self._def_tbl_name
         self._fname_roi_table = self._def_path / self._def_roi_name
         self._fname_ext_oi_table = self._def_path / self._def_ext_oi_name
         self._fname_glint_mask_table = self._def_path / self._def_glint_mask_name
-        self._def_key_transl = _base_conf.DEF_KEY_TRANSLATIONS
+        self._def_key_transl = bc.DEF_KEY_TRANSLATIONS
         self._create_obs_table()
 
     @property
@@ -125,6 +125,17 @@ class ObsTables(object):
         return self._vis_info
 
     def find_satellite_in_tle(self, tle_loc, sat_name):
+        """
+
+        Parameters
+        ----------
+        tle_loc
+        sat_name
+
+        Returns
+        -------
+
+        """
         matches = []
         with open(tle_loc, 'r') as file:
             for line in file:
@@ -169,6 +180,8 @@ class ObsTables(object):
             sat_type = 'bluewalker'
         if 'KUIPER' in sat_name:
             sat_type = 'kuiper'
+        if 'SPACEMOBILE' in sat_name:
+            sat_type = '[spacemobile|all]'
 
         regex_pattern = rf'(?i)tle_{sat_type}_{obs_date[0]}[-_]{obs_date[1]}[-_]{obs_date[2]}.*\.txt'
         regex = re.compile(regex_pattern,
@@ -461,12 +474,77 @@ class ObsTables(object):
                             "This should not happen!!!")
 
     def get_satellite_id(self, obj_in):
+        """
+        Get satellite id from object name.
+        This function takes an object name, normalizes it, and determines the satellite type and unique ID if present.
+
+        Args:
+            obj_in (str): The input object name.
+
+        Returns:
+            tuple: A tuple containing the satellite identifier and a unique ID (if present).
+        """
+        self._log.debug("  Identify Satellite/Object name")
+
+        # Standardize object name: uppercase and replace spaces with hyphens
+        obj_name = obj_in.upper().replace(' ', '-')
+
+        # Extract unique ID if present (e.g., "-IDxxxx")
+        unique_id = None
+        if '-ID' in obj_name:
+            idx = obj_name.index('-ID')
+            unique_id = obj_name[idx + 1:idx + 8]
+            obj_name = obj_name[:idx]
+
+        # Remove extensions like "-N" if present
+        if '-N' in obj_name:
+            idx = obj_name.index('-N')
+            obj_name = obj_name[:idx]
+
+        # Remove binning identifiers (e.g., "_1X1", "-2X2")
+        for suffix in ['_1X1', '-1X1', '_2X2', '-2X2', '_4X4', '-4X4']:
+            if suffix in obj_name:
+                obj_name = obj_name.replace(suffix, '')
+
+        # Replace remaining underscores with hyphens
+        obj_name = obj_name.replace('_', '-')
+
+        # Identify satellite type
+        sat_name = obj_name
+        found = False
+        for key, props in bc.SATELLITE_PROPERTIES.items():
+            if any(identifier in obj_name for identifier in props['identifiers']):
+                sat_name = key
+                found = True
+                break
+
+        # Extract satellite number if present and format accordingly
+        parts = obj_name.split('-')
+        nb_str = None
+        for part in parts:
+            if part.isdigit():
+                nb_str = part
+                break
+
+        if found:
+            if nb_str:
+                sat_id = bc.SATELLITE_PROPERTIES[sat_name]['format_number'](nb_str)
+            else:
+                sat_id = sat_name
+        else:
+            # If not a known satellite observation, return the original object name without modifications
+            sat_id = obj_name
+
+        return sat_id, unique_id
+
+    def get_satellite_id_work(self, obj_in):
         """Get satellite id from object name"""
 
         self._log.debug("  Identify Satellite/Object name")
 
         # convert to uppercase
         obj_name = obj_in.upper()
+
         # convert _ to -
         if ' ' in obj_name:
             obj_name = str(obj_name).replace(' ', '-')
@@ -514,6 +592,7 @@ class ObsTables(object):
         sat_id = f"{sat_name}"
         if nb_str != '':
             sat_id = f"{sat_name}-{int(nb_str):d}" if 'BLUEWALKER' in sat_name else f"{sat_name}-{int(nb_str):04d}"
+        print(sat_id, unique_id)
 
         return sat_id, unique_id
 
@@ -709,7 +788,7 @@ class ObsTables(object):
                        vis_file_list: list):
         """Read the visibility file"""
 
-        col_names = _base_conf.DEF_VIS_TBL_COL_NAMES
+        col_names = bc.DEF_VIS_TBL_COL_NAMES
         df_list = []
         for i in range(len(vis_file_list)):
             vis_loc = vis_file_list[i]
@@ -783,9 +862,10 @@ class ObsTables(object):
     def _update_times(self, value, expt, kwargs):
         """ Update Observation date, start, mid, and end times."""
         self._log.debug("  Check Obs-Date")
-        if ('time-obs'.upper() in kwargs and 'telescop'.upper() in kwargs and
-                kwargs['telescop'.upper()] != 'CTIO 4.0-m telescope'):
-            t = pd.to_datetime(f"{kwargs['date-obs'.upper()]}T{kwargs['time-obs'.upper()]}",
+
+        tel_key = 'TELESCOP' if 'TELESCOP' in kwargs else 'OBSERVAT'
+        if 'TIME-OBS' in kwargs and kwargs[tel_key] != 'CTIO 4.0-m telescope':
+            t = pd.to_datetime(f"{kwargs['DATE-OBS']}T{kwargs['TIME-OBS']}",
                                format=frmt, utc=False)
         else:
             t = pd.to_datetime(value, format=frmt, utc=False)

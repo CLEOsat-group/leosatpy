@@ -54,14 +54,15 @@ dk154_params = {
     # detector keywords
     'extent': ('NAXIS1', 'NAXIS2'),  # N_pixels in x/y
     'n_ext': 0,  # Number of Extensions in the calibrated image
+    'multiple_amps': False,
     'n_amps': 1,  # the number of amplifiers on the chip
-    'namps_yx': {'1x1': None},
-    'amplist': {'1x1': None},  # amplifier list keyword
+    'namps_yx': None,
+    'amplist': None,  # amplifier list keyword
     'secpix': ('SECPPIX', 'SECPPIX'),  # unbinned pixel size (arcsec)
     'binning': ('BINX', 'BINY'),  # binning in x/y
     'image_size_1x1': (2148, 2048),
-    'pc_matrix': [[[0, -1], [-1, 0]]],  # Preferred CCD PC matrix
-    # 'pc_matrix': None,  # Preferred CCD PC matrix
+    'pc_matrix': None,  # Preferred CCD PC matrix
+    # 'pc_matrix': [[[-1, 0], [0, -1]]],  # Preferred CCD PC matrix
 
     'gain': 0.25,  # CD gain in el/DN
     'readnoise': 4.5,  # CCD Read Out Noise (e-)
@@ -87,22 +88,21 @@ dk154_params = {
     'airmass': 'AIRMASS',  # airmass keyword
 
     # reduction keywords
-    # define the trim section for trimming of unwanted areas
-    'ampsec': {'1x1': None,
-               '2x2': None,
-               '4x4': None},
-    'oscansec': {'1x1': None,
-                 # '1x1': {'11': [6, 22, 0, 6144]},
-                 '2x2': None,
-                 '4x4': None},
-    'trimsec': {'1x1': {'11': [0, 2048, 96, 2096]},
-                '2x2': {'11': [10, 1020, 49, 1049]},
-                '4x4': {'11': [0, 512, 15, 525]}},
+    'ampsec': None,
+    'oscansec': None,
+    'trimsec': None,
+    'cropsec' : 'DETSEC',
 
     # ccd mask for regions to exclude from all processes
-    'ccd_mask': {'1x1': None,
-                 '2x2': None,
-                 '4x4': [[0, 512, 502, 504]]},
+    'ccd_mask': {'1x1': ['[1:86,1:2048]',
+                         '[2096:2148,1:2048]',
+                         '[1:2148,1:4]',
+                         '[1:2148,2034:2048]'],
+                 '2x2': ['[1:43,1:1024]',
+                         '[1048:1074,1:1024]',
+                         '[1:1074,1017:1024]'],
+                 '4x4': ['[1:15,1:516]',
+                         '[524:537,1:516]']},
 
     # telescope specific image types
     'imagetyp_light': 'light',
@@ -111,13 +111,6 @@ dk154_params = {
     'imagetyp_flat': 'flat',
     'add_imagetyp_keys': False,
     'add_imagetyp': {'flat': {'object': 'flat_v'}},
-
-    # defaults for reduction
-    # 'bias_cor': True,
-    # 'dark_cor': False,
-    # 'flat_cor': True,
-    # 'flat_dark_cor': False,
-    # 'cosmic_correct': True,
 
     # keywords to exclude from the header update while preparing the file
     'keys_to_exclude': None,
@@ -136,7 +129,6 @@ cbnuo_params = {
 
     # observatory name and location information
     "name": "ChungBuk National University Observatory",
-    # "longitude": 232.524644889,
     "longitude": 127.475355111,
     "latitude": 36.7815,
     "altitude": 86.92,
@@ -154,9 +146,10 @@ cbnuo_params = {
     # detector keywords
     'extent': ('NAXIS1', 'NAXIS2'),  # N_pixels in x/y
     'n_ext': 0,  # Number of Extensions in the calibrated image
+    'multiple_amps': False,
     'n_amps': 1,  # number of chips on detector
-    'namps_yx': {'1x1': None},
-    'amplist': {'1x1': None},  # amplifier list keyword
+    'namps_yx': None,
+    'amplist': None,  # amplifier list keyword
     'secpix': (1.05, 1.05),  # pixel size (arcsec)
     'binning': ('BINX', 'BINY'),  # binning
     'image_size_1x1': (4096, 4096),
@@ -184,17 +177,10 @@ cbnuo_params = {
     'airmass': 'AIRMASS',  # airmass keyword
 
     # reduction keywords
-    # define the trim section for trimming of unwanted areas
-    'ampsec': {'1x1': None,
-               '2x2': None,
-               '4x4': None},
-    'oscansec': {'1x1': None,
-                 # '1x1': {'11': [6, 22, 0, 6144]},
-                 '2x2': None,
-                 '4x4': None},
-    'trimsec': {'1x1': None,
-                '2x2': None,
-                '4x4': None},
+    'ampsec': None,
+    'oscansec': None,
+    'trimsec': None,
+    'cropsec': None,
 
     # ccd mask for regions to exclude from all processes
     'ccd_mask': {'1x1': None,
@@ -244,8 +230,9 @@ ca123dlrmkiii_param = {
     'extent': ('NAXIS1', 'NAXIS2'),  # N_pixels in x/y
     'n_ext': 0,  # Number of Extensions in the calibrated image
     'n_amps': 1,  # number of chips on detector
-    'namps_yx': {'1x1': None},
-    'amplist': {'1x1': None},  # amplifier list keyword
+    'multiple_amps': False,
+    'namps_yx': None,
+    'amplist': None,  # amplifier list keyword
     'secpix': ('SCALE', 'SCALE'),  # unbinned pixel size (arcsec)
     'binning': ('CCDBINX', 'CCDBINY'),  # binning keyword
     'image_size_1x1': (4096, 4112),
@@ -274,17 +261,10 @@ ca123dlrmkiii_param = {
     'airmass': 'AIRMASS',  # airmass keyword
 
     # reduction keywords
-    # define the trim section for trimming of unwanted areas
-    'ampsec': {'1x1': None,
-               '2x2': None,
-               '4x4': None},
-    'oscansec': {'1x1': None,
-                 # '1x1': {'11': [6, 22, 0, 6144]},
-                 '2x2': None,
-                 '4x4': None},
-    'trimsec': {'1x1': None,
-                '2x2': None,
-                '4x4': None},
+    'ampsec': None,
+    'oscansec': None,
+    'trimsec': None,
+    'cropsec': None,
 
     # ccd mask for regions to exclude from all processes
     'ccd_mask': {'1x1': None,
@@ -297,13 +277,6 @@ ca123dlrmkiii_param = {
     'imagetyp_dark': 'dark',
     'imagetyp_flat': 'flat',
     'add_imagetyp_keys': False,
-
-    # defaults for reduction
-    # 'bias_cor': True,
-    # 'dark_cor': False,
-    # 'flat_cor': False,
-    # 'flat_dark_cor': False,
-    # 'cosmic_correct': True,
 
     # keywords to exclude from the header update while preparing the file
     'keys_to_exclude': None,
@@ -339,14 +312,13 @@ ckoir_param = {
     'extent': ('NAXIS1', 'NAXIS2'),  # N_pixels in x/y
     'n_ext': 0,  # Number of Extensions in the calibrated image
     'n_amps': 1,  # number of chips on detector
-    'namps_yx': {'1x1': None},
-    'amplist': {'1x1': None},  # amplifier list keyword
+    'multiple_amps': False,
+    'namps_yx': None,
+    'amplist': None,  # amplifier list keyword
     'secpix': (0.465, 0.465),  # pixel size (arcsec)
     'binning': ('XBINNING', 'YBINNING'),  # binning in x/y
     'image_size_1x1': (4096, 4096),
     'pc_matrix': None,  # Preferred CCD PC matrix
-    # 'pc_matrix': [[[1, 0], [0, 1]]],  # Preferred CCD PC matrix
-    # 'pc_matrix': [[[0, -1], [-1, 0]]],  # Preferred CCD PC matrix
 
     # gain and readout noise taken from https://people.bsu.edu/rberring/observing-facilities/
     # for FLI PL16801 camera
@@ -375,27 +347,16 @@ ckoir_param = {
     'airmass': 'AIRMASS',  # airmass keyword
 
     # reduction keywords
-    # define the trim section for trimming of unwanted areas
-    'ampsec': {'1x1': None,
-               '2x2': None,
-               '4x4': None},
-    'oscansec': {'1x1': None,
-                 # '1x1': {'11': [6, 22, 0, 6144]},
-                 '2x2': None,
-                 '4x4': None},
-    'trimsec': {'1x1': None,
-                '2x2': None,
-                '4x4': None},
+    'ampsec': None,
+    'oscansec': None,
+    'trimsec': None,
+    'cropsec' : None,
 
     # ccd mask for regions to exclude from all processes
     'ccd_mask': {'1x1': None,
                  '2x2': None,
                  '4x4': None},
 
-    # 'imagetyp_light': 'Light Frame',
-    # 'imagetyp_bias': 'Bias Frame',
-    # 'imagetyp_dark': 'Dark Frame',
-    # 'imagetyp_flat': 'Flat Field',
     'imagetyp_light': 'LIGHT',
     'imagetyp_bias': 'BIAS',
     'imagetyp_dark': 'DARK',
@@ -403,12 +364,6 @@ ckoir_param = {
     'add_imagetyp_keys': True,
     'add_imagetyp': {'light': {'imagetyp': 'Light Frame'}, 'bias': {'imagetyp': 'Bias Frame'},
                      'dark': {'imagetyp': 'Dark Frame'}, 'flat': {'imagetyp': 'Flat Field'}},
-
-    # 'bias_cor': True,
-    # 'dark_cor': True,
-    # 'flat_cor': True,
-    # 'flat_dark_cor': False,
-    # 'cosmic_correct': True,
 
     # keywords to exclude from the header update while preparing the file
     'keys_to_exclude': None,
@@ -443,14 +398,15 @@ ctio_90cm_params = {
 
     'extent': ('NAXIS1', 'NAXIS2'),  # N_pixels in x/y
     'n_ext': 0,  # Number of Extensions in the calibrated image
-    'n_amps': 4,  # number of chips/amplifier on detector
-    'namps_yx': {'1x1': {4: [2, 2]}},
-    'amplist': {'1x1': ['11', '12', '21', '22']},  # amplifier list keyword
+    'multiple_amps': True,
+    'n_amps': None,  # number of chips/amplifier on detector
+    'namps_yx': 'NAMPSYX', # number of amplifiers in y and x (eg. '2 2=quad')
+    'amplist': 'AMPLIST',  # amplifier list keyword, readout order in y,x
     'secpix': (0.401, 0.401),  # pixel size (arcsec)
     'binning': ('BINX', 'BINY'),  # binning
     'image_size_1x1': (2168, 2048),
-    'pc_matrix': [[[-1, 0], [0, -1]]],  # Preferred CCD PC matrix
-    # 'pc_matrix': None,  # Preferred CCD PC matrix
+    'pc_matrix': None,  # Preferred CCD PC matrix
+    # 'pc_matrix': [[[-1, 0], [0, -1]]],  # Preferred CCD PC matrix
 
     'gain': 3.,  # CD gain in el/DN
     'readnoise': 12.,  # CCD Read Out Noise (e-)
@@ -477,26 +433,30 @@ ctio_90cm_params = {
     'airmass': 'AIRMASS',  # airmass keyword
 
     # reduction keywords
+    'ampsec': 'ADSEC',
+    'oscansec': 'BSEC',
+    'trimsec': 'TSEC',
+    'cropsec' : 'ROISEC00',
+
     # define the trim section for trimming of unwanted areas
-    # 'trimsec': None,
-    'ampsec': {'1x1': {'11': [0, 1023, 0, 1084],
-                       '12': [0, 1023, 1084, 2168],
-                       '21': [1025, 2048, 0, 1084],
-                       '22': [1025, 2048, 1084, 2168]},
-               '2x2': None,
-               '4x4': None},
-    'oscansec': {'1x1': {'11': [0, 1023, 1044, 1084],
-                         '12': [0, 1023, 0, 40],
-                         '21': [0, 1023, 1044, 1084],
-                         '22': [0, 1023, 0, 40]},
-                 '2x2': None,
-                 '4x4': None},
-    'trimsec': {'1x1': {'11': [0, 1023, 10, 1034],
-                        '12': [0, 1023, 50, 1074],
-                        '21': [0, 1023, 10, 1034],
-                        '22': [0, 1023, 50, 1074]},
-                '2x2': None,
-                '4x4': None},
+    # 'ampsec': {'1x1': {'11': [0, 1023, 0, 1084],
+    #                    '12': [0, 1023, 1084, 2168],
+    #                    '21': [1025, 2048, 0, 1084],
+    #                    '22': [1025, 2048, 1084, 2168]},
+    #            '2x2': None,
+    #            '4x4': None},
+    # 'oscansec': {'1x1': {'11': [0, 1023, 1044, 1084],
+    #                      '12': [0, 1023, 0, 40],
+    #                      '21': [0, 1023, 1044, 1084],
+    #                      '22': [0, 1023, 0, 40]},
+    #              '2x2': None,
+    #              '4x4': None},
+    # 'trimsec': {'1x1': {'11': [0, 1023, 10, 1034],
+    #                     '12': [0, 1023, 50, 1074],
+    #                     '21': [0, 1023, 10, 1034],
+    #                     '22': [0, 1023, 50, 1074]},
+    #             '2x2': None,
+    #             '4x4': None},
 
     # ccd mask for regions to exclude from all processes
     'ccd_mask': {'1x1': [[0, 2046, 1957, 1961],
@@ -560,8 +520,9 @@ ctio_400cm_params = {
     'extent': ('NAXIS1', 'NAXIS2'),  # Number of pixel in x/y,
     'n_ext': 61,  # Number of Extensions in the calibrated image
     'n_amps': 1,  # number of chips on detector
-    'namps_yx': {'1x1': None},
-    'amplist': {'1x1': None},  # amplifier list keyword
+    'multiple_amps': False,
+    'namps_yx': None,
+    'amplist': None,  # amplifier list keyword
     'secpix': (0.27, 0.27),  # pixel size (arcsec)
     'binning': ('CCDBIN1', 'CCDBIN2'),  # binning in x/y
     'pc_matrix': None,  # Preferred CCD PC matrix
@@ -624,8 +585,9 @@ spm_params = {
     'extent': ('NAXIS1', 'NAXIS2'),  # N_pixels in x/y
     'n_ext': 0,  # Number of Extensions in the calibrated image
     'n_amps': 1,  # number of chips/amplifier on detector
-    'namps_yx': {'1x1': None},
-    'amplist': {'1x1': None},  # amplifier list keyword
+    'multiple_amps': False,
+    'namps_yx': None,
+    'amplist': None,  # amplifier list keyword
     'secpix': (2., 2.),  # pixel size (arcsec)
     'binning': ('BINNING', 'BINNING'),  # binning
     'image_size_1x1': (6144, 6220),
@@ -653,17 +615,13 @@ spm_params = {
     'exptime': 'EXPTIME',  # exposure time keyword (s)
     'airmass': 'STROBAM',  # airmass keyword
 
-    # 'trimsec': None,
-    'ampsec': {'1x1': None,
-               '2x2': None,
-               '4x4': None},
-    'oscansec': {'1x1': None,
-                 # '1x1': {'11': [6, 22, 0, 6144]},
-                 '2x2': None,
-                 '4x4': None},
     'trimsec': {'1x1': {'11': [54, 6198, 0, 6144]},
                 '2x2': None,
                 '4x4': None},
+    'ampsec': None,
+    'oscansec': None,
+    # 'trimsec': None,
+    'cropsec' : None,
 
     # ccd mask for regions to exclude from all processes
     'ccd_mask': {'1x1': None,
@@ -709,8 +667,9 @@ ouka_params = {
     'extent': ('NAXIS1', 'NAXIS2'),  # N_pixels in x/y
     'n_ext': 0,  # Number of Extensions in the calibrated image
     'n_amps': 1,  # number of chips/amplifier on detector
-    'namps_yx': {'1x1': None},
-    'amplist': {'1x1': None},  # amplifier list keyword
+    'multiple_amps': False,
+    'namps_yx': None,
+    'amplist': None,  # amplifier list keyword
     'secpix': (1.205, 1.205),  # pixel size (arcsec)
     'binning': ('XBINNING', 'YBINNING'),  # binning
     'image_size_1x1': (6248, 4176),
@@ -738,16 +697,10 @@ ouka_params = {
     'exptime': 'EXPTIME',  # exposure time keyword (s)
     'airmass': 'AIRMASS',  # airmass keyword
 
-    # 'trimsec': None,
-    'ampsec': {'1x1': None,
-               '2x2': None,
-               '4x4': None},
-    'oscansec': {'1x1': None,
-                 '2x2': None,
-                 '4x4': None},
-    'trimsec': {'1x1': None,
-                '2x2': None,
-                '4x4': None},
+    'ampsec': None,
+    'oscansec': None,
+    'trimsec': None,
+    'cropsec': None,
 
     # ccd mask for regions to exclude from all processes
     'ccd_mask': {'1x1': None,

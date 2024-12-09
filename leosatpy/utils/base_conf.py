@@ -16,6 +16,7 @@
 """ Modules """
 import gc
 import os
+import sys
 import logging
 import warnings
 from dateutil.parser import parse
@@ -26,6 +27,8 @@ from colorlog import ColoredFormatter
 from astropy import wcs
 from astropy.io import fits
 from astropy.utils.exceptions import (AstropyUserWarning, AstropyWarning)
+
+from threading import Lock
 
 # from .telescope_conf import *
 from .version import __version__
@@ -63,6 +66,9 @@ def load_warnings():
     np.seterr(divide='ignore', invalid='ignore')
     np.errstate(invalid='ignore')
 
+
+# Lock for thread-safe printing
+print_lock = Lock()
 
 ROOT_DIR = os.path.realpath(os.path.join(os.path.dirname(__file__), '../..'))
 
@@ -128,9 +134,6 @@ IMAGETYP_COMBOS = {'bias': "zero|bias|bias frame",
                    'darks': "dark|dark frame",
                    'flats': "flat|flat frame|dflat|sflat",
                    'light': "science|light|object|light frame"}
-
-# Memory limit for ccdproc.combine in byte
-MEM_LIMIT_COMBINE = 6e9
 
 # Default result table column names.
 DEF_RES_TBL_COL_NAMES = ['File', 'Object', 'Sat-Name', 'AltID', 'UniqueID',
@@ -243,7 +246,7 @@ SUPPORTED_CATALOGS = {
                 # 'DEC_error': 'dec_error',
                 'pmra': 'pmra', 'pmra_error': 'pmra_error',
                 'pmdec': 'pmdec', 'pmdec_error': 'pmdec_error',
-                'mag': 'phot_g_mean_mag', 'objID': 'source_id',
+                'mag': 'phot_g_mean_mag', 'objID': 'SOURCE_ID',
                 # 'epoch': 'ref_epoch'
                 },
     'GAIAEDR3': {'RA': 'ra', 'RA_error': 'ra_error',
@@ -397,7 +400,51 @@ if ASTROMETRIC_CAT_ENVVAR in os.environ:
 else:
     SERVICELOCATION = DEF_CAT_URL
 
-SAT_HORB_REF = {'STARLINK': 550., 'ONEWEB': 1200., 'BLUEWALKER': 500., 'KUIPER': 630.}
+SATELLITE_PROPERTIES = {
+    'ONEWEB': {
+        'identifiers': ['ONEWEB', 'OW'],
+        'format_number': lambda x: f"ONEWEB-{int(x):04d}",
+        'orbit_height': 1200.0
+    },
+    'STARLINK': {
+        'identifiers': ['STARLINK'],
+        'format_number': lambda x: f"STARLINK-{int(x):04d}" if len(x) == 4 else f"STARLINK-{int(x):05d}",
+        'orbit_height': 550.0
+    },
+    'BLUEWALKER': {
+        'identifiers': ['BLUEWALKER', 'BW'],
+        'format_number': lambda x: f"BLUEWALKER-{int(x)}",
+        'orbit_height': 500.0
+    },
+    'KUIPER': {
+        'identifiers': ['KUIPER'],
+        'format_number': lambda x: f"KUIPER-P{int(x)}",
+        'orbit_height': 630.0
+    },
+    'SPACEMOBILE': {
+        'identifiers': ['SPACEMOBILE'],
+        'format_number': lambda x: f"SPACEMOBILE-{int(x):03d}",
+        'orbit_height': 550.0
+    }
+}
+
+
+def get_nominal_orbit_altitude(sat_id: str) -> float:
+    """
+    Get the nominal orbit altitude for a given satellite ID.
+
+    Args:
+        sat_id (str): The satellite ID.
+
+    Returns:
+        float: The nominal orbit altitude in kilometers.
+    """
+    for key, props in SATELLITE_PROPERTIES.items():
+        if key in sat_id:
+            return props['orbit_height']
+    # Default to ONEWEB orbit height if no match is found
+    return SATELLITE_PROPERTIES['ONEWEB']['orbit_height']
+
 
 REARTH_EQU = 6378.137  # Radius at sea level at the equator in km
 REARTH_POL = 6356.752  # Radius at poles in km
@@ -428,3 +475,50 @@ def check_version(log):
     else:
         all_good = BCOLORS.PASS + "ALL GOOD" + BCOLORS.OKGREEN
         log.info(f"  ==> {all_good}: You are using the latest official release of LEOSatpy." + BCOLORS.ENDC)
+
+
+def print_progress_bar(iteration, total, prefix='', length=50, fill='\u2588', color=None, use_lock=False):
+    """
+    Print a progress bar in the terminal with ANSI color formatting.
+
+    Parameters
+    ----------
+    iteration : int
+        Current iteration step.
+    total : int
+        Total number of iterations.
+    prefix : str, optional
+        Prefix to display before the progress bar.
+    length : int, optional
+        Length of the progress bar in characters.
+    fill : str, optional
+        Character used to fill the progress bar.
+    color : str, optional
+        ANSI color code to colorize the progress bar.
+    use_lock : bool, optional
+        Whether to use a lock for printing (useful in multithreaded contexts).
+    """
+
+    # Ensure the percentage reaches 100% at the final iteration
+    if iteration >= total:
+        percent = "100.0"
+        filled_length = length
+    else:
+        percent = "{0:.1f}".format(100 * (iteration / float(total)))
+        filled_length = int(length * iteration // total)
+
+    bar = fill * filled_length + '-' * (length - filled_length)
+
+    color_prefix = color if color else ''
+    reset_color = BCOLORS.ENDC if color else ''
+    output = (f'\r[{color_prefix}PROGRESS{reset_color}]'
+              f'{color_prefix}{prefix}{reset_color} |{bar}| '
+              f'{color_prefix}{percent}%{reset_color}')
+
+    if use_lock:
+        with print_lock:
+            sys.stdout.write(output)
+            sys.stdout.flush()
+    else:
+        sys.stdout.write(output)
+        sys.stdout.flush()

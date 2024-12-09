@@ -23,26 +23,25 @@
 """ Modules """
 import math
 import os
-from copy import copy
+import sys
+from copy import copy, deepcopy
 import inspect
 import logging
 import fast_histogram as fhist
+from PyQt5.QtCore import qInfo
 
 # scipy
-from scipy.spatial import KDTree
+from scipy.spatial import KDTree, cKDTree
 from scipy.ndimage import maximum_filter, gaussian_filter, label
 from scipy.ndimage.measurements import center_of_mass
-from scipy.optimize import curve_fit
-
-from skimage.transform import warp, AffineTransform
-from skimage.measure import ransac
+from scipy.optimize import least_squares
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from astropy.wcs import WCS, utils
 
-from . import base_conf
+from . import base_conf as bc
 
 # -----------------------------------------------------------------------------
 
@@ -64,10 +63,12 @@ log = logging.getLogger(__name__)
 
 MODULE_PATH = os.path.dirname(inspect.getfile(inspect.currentframe()))
 
+# rot_matrix_arr = np.array([[[1, 0], [0, 1]], [[-1, 0], [0, -1]],
+#                            [[-1, 0], [0, 1]], [[1, 0], [0, -1]],
+#                            [[0, 1], [1, 0]], [[0, -1], [-1, 0]],
+#                            [[0, -1], [1, 0]], [[0, 1], [-1, 0]]])
 rot_matrix_arr = np.array([[[1, 0], [0, 1]], [[-1, 0], [0, -1]],
-                           [[-1, 0], [0, 1]], [[1, 0], [0, -1]],
-                           [[0, 1], [1, 0]], [[0, -1], [-1, 0]],
-                           [[0, -1], [1, 0]], [[0, 1], [-1, 0]]])
+                           [[-1, 0], [0, 1]], [[1, 0], [0, -1]]])
 
 
 # -----------------------------------------------------------------------------
@@ -76,7 +77,7 @@ rot_matrix_arr = np.array([[[1, 0], [0, 1]], [[-1, 0], [0, -1]],
 class FindWCS(object):
     """"""
 
-    def __init__(self, source_df, ref_df, config, _log: logging.Logger = log):
+    def __init__(self, source_df, ref_df, hdr, config, _log: logging.Logger = log):
         """ Constructor with default values """
 
         self.config = config
@@ -124,6 +125,29 @@ class FindWCS(object):
 
         self.apply_rot = True
         self.match_radius_px = 5
+        self._refine = False
+
+        # check binning keyword
+        if isinstance(config['binning'][0], str) and isinstance(config['binning'][1], str):
+            bin_x = int(hdr[config['binning'][0]])
+            bin_y = int(hdr[config['binning'][1]])
+        else:
+            bin_x = int(hdr['binning'][0])
+            bin_y = int(hdr['binning'][1])
+
+        self.bin_x = bin_x
+        self.bin_y = bin_y
+        self.image_shape_full = config['image_size_1x1']
+
+        search_area_shape = (self.image_shape_full[0] // self.bin_x,
+                             self.image_shape_full[1] // self.bin_y)
+        center_coords = [(search_area_shape[1] // 2, search_area_shape[0] // 2)]
+
+        self.search_area_shape = search_area_shape
+        self.search_area_additional_width = (10, 10)
+        self.current_cutoutCenter = center_coords[0]
+
+        self._debug = False
 
     def get_source_cat_variables(self):
         """"""
@@ -134,295 +158,524 @@ class FindWCS(object):
         self.log_dist_obs = calculate_log_dist(self.obs_x, self.obs_y)
         self.angles_obs = calculate_angles(self.obs_x, self.obs_y)
 
-    def find_wcs(self, input_wcsprm, match_radius_px=1, image=None):
+    def find_wcs(self, input_wcsprm, image, match_radius_px=1):
         """Run the plate-solve algorithm to find the best WCS transformation"""
 
-        def reset_best_params():
-            nonlocal best_Nobs, best_score, best_rms_dist, best_completeness, best_wcsprm, best_ref_cat, best_src_cat
-            best_Nobs = -1
-            best_score = -np.inf
-            best_rms_dist = np.inf
-            best_completeness = 0
-            best_wcsprm = None
-            best_ref_cat = None
-            best_src_cat = None
-
+        # Initialization
         self.log.info("> Run WCS calibration")
-
         self.image = image
-        self.match_radius_px = match_radius_px
-        match_radius_limit_px = 3. * match_radius_px
-
-        Nobs_total = len(self.source_cat_full)  # total number of detected sources
-        Nref_total = len(self.ref_cat_full)  # total number of reference stars
-
         rotations = self.rotations
-        center_coords = [(image.shape[1] // 2, image.shape[0] // 2),
-                         (0, 0),
-                         (image.shape[1], 0),
-                         (0, image.shape[0]),
-                         (image.shape[1], image.shape[0])]
+        self.match_radius_px = match_radius_px
+        match_radius_limit_px = self.config['MATCH_RADIUS_LIM'] * match_radius_px
+        num_ref_samples = self.config['NUM_REF_SAMPLES']  # Number of samples to draw from the reference catalog
+        num_ref_max = self.config['MAX_REF_NUM']
+        max_src_num = self.config['MAX_SOURCE_NUM']
+        max_num_top_solution = self.config['MAX_NUM_TOP_SOLUTION']
 
-        search_area_shape = image.shape
-        search_area_additional_width = (1, 1)
-
-        result_dict = {"radius_px": None, "matches": None, "rms": None}
-        src_cat_match = ref_cat_match = None
+        Nobs_total = len(self.source_cat_full)  # Total number of detected sources
+        Nref_total = len(self.ref_cat_full)  # Total number of reference stars
 
         initial_wcsprm = input_wcsprm.wcs
-        final_wcsprm = None
-
-        center_idx = 0
-        rot_matrix_idx = 0
-        ref_sample_idx = 0
 
         solve_attempts_count = 0
-        high_completeness_count = 0
-        possible_solution_count = 0
-        no_solution_count = 0
-
-        max_Nobs_initial = 100
-        num_ref_samples = 5
-        max_rotations = len(rotations)
-        max_centers = len(center_coords)
-        max_wcs_solve_attempts = max_rotations * max_centers
-        max_no_solution_count = 3
+        max_no_solution_count = self.config['MAX_NO_SOLUTION_COUNT']
         max_wcs_eval_iter = self.config['MAX_WCS_FUNC_ITER']
 
-        use_initial_wcs_estimate = True
-        update_src_cat = False
-        update_ref_cat = False
-        has_large_src_cat = False if Nobs_total <= max_Nobs_initial else True
-        has_possible_solution = False
-        has_solution = False
+        use_initial_wcs_estimate = True  # Flag to indicate the use of the initial WCS
+        has_large_src_cat = False if Nobs_total <= max_src_num else True
 
-        best_Nobs = -1
-        best_score = -np.inf
-        best_rms_dist = np.inf
-        best_completeness = 0
-        best_wcsprm = None
-        best_ref_cat = None
-        best_src_cat = None
+        possible_solutions = []
 
-        self.source_cat = self.source_cat_full.head(max_Nobs_initial)
+        # Prepare source catalog
+        if has_large_src_cat:
+            self.log.info("  Using a subset of the source catalog for initial matching.")
+            self.source_cat = self.source_cat_full.head(max_src_num)
+        else:
+            self.source_cat = self.source_cat_full.copy()
         self.get_source_cat_variables()
 
-        self.log.info(f'  Detected sources (total): {Nobs_total}')
-        self.log.info(f'  Reference sources (total): {Nref_total}')
-        self.log.info(f'  Match radius: {self.match_radius_px:.2f} px')
+        self.log.info(f"  {'Detected sources (total)':<26}: {Nobs_total}")
+        self.log.info(f"  {'Reference sources (total)':<26}: {Nref_total}")
+        self.log.info(f"  {'Match radius (r)':<26}: {self.match_radius_px:.2f} px")
+        self.log.info(f"  {'Match radius limit (n x r)':<26}: {match_radius_limit_px:.2f} px")
+        self.log.info(f"  > Search possible solutions (This may take a second.)")
 
-        while True:
+        total_iterations = len(rotations) * num_ref_samples
+        rot_matrix_idx = 0
+        # Loop possible initial rotations of the WCS
+        while rot_matrix_idx < len(rotations):
+            ref_sample_idx = 0
+            no_solution_count = 0
+            solve_attempts_count += 1
 
-            # failsafe
-            if solve_attempts_count >= max_wcs_solve_attempts:
-                has_solution = False
-                break
+            # Apply rotation matrix
+            current_rotMatrix = rotations[rot_matrix_idx]
 
-            # set rotation matrix
-            current_rotMatrix = self.rotations[rot_matrix_idx]
+            self.log.debug(f"{' ':<4}Testing PC matrix {rot_matrix_idx + 1}/{len(rotations)}: "
+                          f"[{', '.join(map(str, current_rotMatrix))}]")
 
-            # apply rotation matrix to WCS
-            if use_initial_wcs_estimate:
-                self.current_wcsprm = rotate(copy(initial_wcsprm), current_rotMatrix)
+            while ref_sample_idx <= num_ref_samples:
+                iteration = rot_matrix_idx * (num_ref_samples + 1) + ref_sample_idx
+                bc.print_progress_bar(iteration, total_iterations, length=80,
+                                      color=bc.BCOLORS.OKGREEN)
 
-            # apply the WCS to the full reference catalog
-            ref_cat_full_updated = update_catalog_positions(self.ref_cat_full,
-                                                            self.current_wcsprm,
-                                                            origin=0)
+                # Apply PC matrix to initial WCS
+                if use_initial_wcs_estimate:
+                    self.current_wcsprm = rotate(copy(initial_wcsprm), current_rotMatrix)
 
-            # set the cutout center to current index if no possible solution was found,
-            # else use the image center since the wcs was adjusted
-            current_cutoutCenter = center_coords[center_idx] if not has_possible_solution else center_coords[0]
+                # Apply current wcs to full reference catalog and filter within image boundaries
+                ref_cat_filtered = self.get_filtered_ref_cat(current_wcsprm=self.current_wcsprm, origin=0)
 
-            # filter sources according to the current cutout center and include only sources
-            # within the given cutout shape plus an additional width
-            ref_cat_filtered = filter_df_within_bounds(ref_cat_full_updated,
-                                                       current_cutoutCenter,
-                                                       search_area_shape,
-                                                       search_area_additional_width)
+                # Select only the n brightest sources
+                ref_cat_filtered = ref_cat_filtered.head(num_ref_max)
 
-            # if the source catalog has more than 100 objects and a possible solution was found, use the full source
-            # catalog
-            if update_src_cat:
-                self.source_cat = self.source_cat_full
-                self.get_source_cat_variables()
+                # Determine the number of reference sources to consider
+                Nobs_current = len(self.source_cat)
+                Nref_current = len(ref_cat_filtered)
 
-            # get current object count
-            Nobs_current = len(self.source_cat)
-            Nref_current = len(ref_cat_filtered)
+                if Nref_current <= 0:
+                    self.log.warning("{' ':<4}No reference sources found after filtering.")
+                    break  # No reference sources to consider, move to next rotation
 
-            # create a list with the number of samples to draw from the reference catalog, evenly spaced in log-space
-            ref_cat_sample_number = np.unique(np.logspace(np.log10(Nobs_current),
-                                                          np.log10(Nref_current),
-                                                          num=num_ref_samples,
-                                                          base=10, endpoint=False, dtype=int))
+                use_endpoint = False
+                if Nobs_current < 21:
+                    use_endpoint = True
 
-            if update_ref_cat:
+                ref_cat_sample_number = np.unique(
+                    np.logspace(np.log10(max(Nobs_current, 1)), np.log10(Nref_current),
+                                num=num_ref_samples, base=10,
+                                endpoint=use_endpoint, dtype=int))
 
-                # update the reference catalog by including those objects from the reference catalog
-                # that fall within n times the current match radius
-                self.ref_cat = get_updated_reference_catalog(self.source_cat, ref_cat_filtered,
-                                                             src_cat_match, ref_cat_match,
-                                                             match_radius_limit_px)
+                # Ensure ref_sample_idx is within bounds
+                if ref_sample_idx >= len(ref_cat_sample_number):
+                    break  # No more samples to consider, move to next rotation
 
-                #
-                self.source_cat = match_catalogs(self.ref_cat,
-                                                 self.source_cat,
-                                                 radius=match_radius_limit_px, N=1)
-            else:
-                # select the N brightest reference sources
-                self.ref_cat = ref_cat_filtered.head(ref_cat_sample_number[ref_sample_idx])
+                # Select the N brightest reference sources
+                Nref_sample = ref_cat_sample_number[ref_sample_idx]
+                self.ref_cat = ref_cat_filtered.head(Nref_sample)
+                Nref_selected = len(self.ref_cat)
 
-            if no_solution_count == 0 and not has_possible_solution:
-                self.log.info(
-                    f"  > Testing configuration [{solve_attempts_count + 1}/{max_wcs_solve_attempts}]:")
-                self.log.info(
-                    f"{' ':<4}Rotation matrix [{rot_matrix_idx + 1}/{len(self.rotations)}]: "
-                    f"[{', '.join(map(str, current_rotMatrix))}]")
-                self.log.info(
-                    f"{' ':<4}Cutout center position [{center_idx + 1}/{len(center_coords)}] (x, y): "
-                    f"({', '.join(map(str, current_cutoutCenter))})")
+                # Process the sample
+                sample_result = self.process_sample()
+                # print(sample_result[0])
 
-                self.log.info(f"{' ':<4}Reference sources (within cutout): {Nref_current}")
-                if has_large_src_cat:
-                    self.log.info(f"{' ':<4}Detected sources (brightest): {Nobs_current} "
-                                  f"out of {Nobs_total}")
+                if sample_result is not None and sample_result[0] >= self.config['MIN_SOURCE_NO_CONVERGENCE']:
+
+                    # Unpack and compute metrics
+                    Nobs_matched, score, wcsprm_out, result_info, src_cat_match, ref_cat_match = sample_result
+
+                    completeness = Nobs_matched / Nobs_current
+
+                    self.log.debug(
+                        f"{' ':<4}>> Attempt {ref_sample_idx + 1}/{len(ref_cat_sample_number)}: "
+                        f"Possible solution found")
+                    self.log.debug(f"{' ':<6} Nref={Nref_selected}/{Nref_current}, "
+                                   f"Nobs_matched={Nobs_matched}/{Nobs_current} => "
+                                   f"completeness={completeness:.3f}, "
+                                   f"score={score:.3f}, rms={result_info[1]:.3f} px")
+
+                    # Store the possible solution
+                    possible_solutions.append({
+                        'rotation_idx': rot_matrix_idx,
+                        'method': 'fft',
+                        'Nobs_matched': Nobs_matched,
+                        'score': score,
+                        'completeness': completeness,
+                        'wcsprm': copy(wcsprm_out),
+                        'src_cat_match': src_cat_match,
+                        'ref_cat_match': ref_cat_match,
+                        'match_radius': result_info[0],
+                        'rms_dist': result_info[1],
+                        'std_x': result_info[2][0],
+                        'std_y': result_info[2][1]
+                    })
+
+                    ref_sample_idx += 1
                 else:
-                    self.log.info(f"{' ':<4}Detected sources (all): {Nobs_current}")
-
-                self.log.info(f"{' ':<4}> Try [{no_solution_count+1}/{max_no_solution_count}] "
-                              f"Initial number of reference sources: {len(self.ref_cat)}/{Nref_current}")
-
-            elif no_solution_count != 0 and not has_possible_solution:
-                self.log.info(f"{' ':<4}> Try [{no_solution_count+1}/{max_no_solution_count}] "
-                              f"Increasing number of reference sources: {len(self.ref_cat)}/{Nref_current}")
-
-            # process the current source catalog and the selected reference sources
-            sample_result = self.process_sample()
-
-            # check result
-            if sample_result is None or sample_result[0] < self.config['MIN_SOURCE_NO_CONVERGENCE']:
-                no_solution_count += 1
-
-                if no_solution_count >= max_no_solution_count:
-                    self.log.warning(f"{' ':<6}> No solution found after {max_no_solution_count} trails. "
-                                     f"Skipping to next configuration.")
-                    ref_sample_idx = num_ref_samples - 1  # Force iteration
-                    no_solution_count = 0  # Reset counter for the next iteration
-                else:
-                    if sample_result is None:
-                        self.log.warning(f"{' ':<6}> No solution/matches found. Trying again...")
+                    # No solution found, increase number of reference sources
+                    no_solution_count += 1
+                    self.log.debug(
+                        f"{' ':<4}No solution found for reference sample {ref_sample_idx + 1}. "
+                        f"Trying with more reference sources."
+                    )
+                    if no_solution_count >= max_no_solution_count:
+                        # Move to next rotation matrix
+                        break
                     else:
-                        self.log.warning(f"{' ':<6}> Configuration resulted in less than "
-                                         f"{self.config['MIN_SOURCE_NO_CONVERGENCE']} matches. "
-                                         f"Trying again...")
-
-                # increase counter
-                if center_idx == max_centers - 1:
-                    rot_matrix_idx += 1
-                    center_idx = 0
-                    solve_attempts_count += 1
-                else:
-                    if ref_sample_idx == num_ref_samples - 1:
-                        center_idx += 1
-                        ref_sample_idx = 0
-                        solve_attempts_count += 1
-                    else:
-                        # Move to the next sample within the same iteration
                         ref_sample_idx += 1
 
-                # reset switches
-                src_cat_match = ref_cat_match = None
-                use_initial_wcs_estimate = True
-                update_ref_cat = False
-                update_src_cat = False
-                has_possible_solution = False
+                    # use initial wcs estimate
+                    use_initial_wcs_estimate = True
 
-                # reset best result
-                reset_best_params()
-                continue
-            else:
-                has_possible_solution = True
+            # Proceed to next rotation matrix
+            rot_matrix_idx += 1
 
-            # update possible solution count
-            possible_solution_count += 1
+        sys.stdout.write('\n')
 
-            # unpack results
-            Nobs_matched, score, wcsprm_out, result_info, src_cat_match, ref_cat_match = sample_result
+        result_dict_fail = {"radius_px": None, "matches": None, "rms": None,
+                            'std_x': None, 'std_y': None}
 
-            # set variables
-            Nref_matched = len(self.ref_cat)
-            completeness = Nobs_matched / Nref_matched
-            rms_dist = 1. / (score * Nobs_matched)
-            self.current_wcsprm = copy(wcsprm_out)
+        # After the main loop
+        if possible_solutions:
+            self.log.info(f"{' ':<2}>> Possible solutions: {len(possible_solutions)}")
+            # Sort possible solutions by completeness, number of matches, and score
+            possible_solutions.sort(key=lambda x: (x['Nobs_matched'], x['score']),
+                                    reverse=True)
 
-            # check completeness
-            if completeness >= self.config['THRESHOLD_CONVERGENCE']:
-                high_completeness_count += 1
+            # Select the top n solutions
+            top_solutions = possible_solutions[:max_num_top_solution]
 
-            # update best result
-            if best_score < score and best_Nobs <= Nobs_matched:
-                best_Nobs = Nobs_matched
-                best_score = score
-                best_completeness = completeness
-                best_wcsprm = copy(wcsprm_out)
-                best_ref_cat = self.ref_cat
-                best_src_cat = self.source_cat
+            confirmed_solutions = []
+            convergence_reached = False  # Flag to indicate convergence
+            best_overall_completeness = 0.
+            best_overall_rms = np.inf
+            best_overall_solution = None
+            best_solution = None
 
-            # print(possible_solution_count, Nobs_matched, score, completeness, high_completeness_count, rms_dist)
+            self.log.info(f"{' ':<2}> Analysing top {len(top_solutions)} solutions")
 
-            # if there are more than the N brightest sources, increase the number of sources and re-run
-            if has_large_src_cat and not update_src_cat:
-                update_src_cat = True
-                update_ref_cat = True
-                use_initial_wcs_estimate = False
+            # Loop over top solutions
+            for idx, solution in enumerate(top_solutions):
+                # if convergence_reached:
+                #     self.log.info(f"{' ':<4}==> Convergence reached. Skipping remaining solutions.")
+                #     break  # Convergence reached with a previous solution, stop testing further solutions
 
-                possible_solution_count = 0
-                high_completeness_count = 0
-                self.log.info(f"{' ':<6}> Possible solution found. Confirming...")
-                self.log.info(f"{' ':<6}Increase source number: "
-                              f"{Nobs_current} (brightest) --> {len(self.source_cat_full)} (all)")
-                continue
+                solution['has_converged'] = False
 
-            elif not has_large_src_cat and possible_solution_count == 1:
-                self.log.info(f"{' ':<6}> Possible solution found. Confirming...")
+                self.log.debug(f"{' ':<4}Run WCS fit [{idx + 1}/{len(top_solutions)}]")
 
-            if completeness == 1.0 or high_completeness_count >= 3 or possible_solution_count >= max_wcs_eval_iter:
+                current_wcsprm = solution['wcsprm']
 
+                # Update source catalog to include all sources if necessary
+                if has_large_src_cat:
+                    self.source_cat = self.source_cat_full
+                    self.get_source_cat_variables()
+
+                # Create a new index column
+                source_df = self.source_cat.reset_index(drop=False).rename(columns={'index': 'obs_idx'})
+
+                # Apply WCS and get matched data
+                matched_src_df, ref_cat_filtered, has_m_before, dist_mask_before = (
+                    self.apply_wcs_and_filter_sources(current_wcsprm=current_wcsprm,
+                                                      source_df=source_df,
+                                                      match_radius=match_radius_limit_px))
+
+                #
+                src_df_before, ref_df_before = self.extract_sources_subset(matched_src_df,
+                                                                           ref_cat_filtered,
+                                                                           has_m_before,
+                                                                           dist_mask_before)
+
+                # Compute residual statistics before the fit
+                residual_stats_before = compute_residual_stats(src_df_before, ref_df_before)
+                # print(residual_stats_before)
+
+                Nobs_matched_r_lim_before = has_m_before.sum()
+                Nobs_matched_r_before = dist_mask_before.sum()
+
+                rms_before = residual_stats_before['rms']
+                score_before = residual_stats_before['score']
+
+                # Prepare data for fitting
+                src_df_fit, ref_df_fit = self.extract_sources_subset(matched_src_df,
+                                                                     ref_cat_filtered,
+                                                                     has_m_before)
+
+                # Fit possible WCS solution using least-squares
+                fit_status, refined_wcs = self.refine_wcs_fit(obs_df=src_df_fit,
+                                                              ref_df=ref_df_fit,
+                                                              wcsprm_in=current_wcsprm,
+                                                              match_radius=match_radius_px)
+
+                # Apply WCS and get matched data for fitted WCS
+                matched_src_df_after, ref_cat_filtered_after, has_m_after, dist_mask_after = (
+                    self.apply_wcs_and_filter_sources(current_wcsprm=refined_wcs,
+                                                      source_df=source_df,
+                                                      match_radius=match_radius_limit_px))
+                #
+                src_df_after, ref_df_after = self.extract_sources_subset(matched_src_df_after,
+                                                                         ref_cat_filtered_after,
+                                                                         has_m_after, dist_mask_after)
+
+                # Compute residual statistics for the fit results
+                residual_stats_after = compute_residual_stats(src_df_after, ref_df_after)
+                # print(residual_stats_after)
+
+                Nobs_matched_r_lim_after = has_m_after.sum()
+                Nobs_matched_r_after = dist_mask_after.sum()
+
+                # Update solution metrics
+                rms_after = residual_stats_after['rms']
+                score_after = residual_stats_after['score']
+                completeness_after = Nobs_matched_r_after / Nobs_matched_r_lim_after
+
+                # print(Nobs_matched_r_before, Nobs_matched_r_after,
+                #       Nobs_matched_r_lim_before, Nobs_matched_r_lim_after,
+                #       rms_before, rms_after, score_before, score_after, completeness_after)
+
+                solution.update({
+                    'Nobs_matched': Nobs_matched_r_after,
+                    'Nobs_lim': Nobs_matched_r_lim_after,
+                    'rms_dist': rms_after,
+                    'completeness': completeness_after,
+                    'wcsprm': copy(refined_wcs),
+                    # 'src_cat_match': src_df_after,
+                    # 'ref_cat_match': ref_df_after,
+                    'std_x': residual_stats_after['std_x'],
+                    'std_y': residual_stats_after['std_y']
+                })
+
+                if fit_status:
+                    solution.update({'method': 'WCS_fit'})
+
+                if rms_after <= best_overall_rms or completeness_after >= best_overall_completeness:
+                    best_overall_rms = rms_after
+                    best_overall_completeness = completeness_after
+                    best_overall_solution = copy(solution)
+
+                # Check for convergence
+                if completeness_after >= self.config['THRESHOLD_CONVERGENCE']:
+                    solution['has_converged'] = True
+
+                confirmed_solutions.append(solution)
+
+            if confirmed_solutions:
+                # Check if any solution converged
+                converged_solutions = [sol for sol in confirmed_solutions if sol['has_converged']]
+
+                if converged_solutions:
+                    # Sort converged solutions and select the best one
+                    converged_solutions.sort(key=lambda x: (x['rms_dist'], -x['Nobs_matched'], -x['score']),
+                                             reverse=False)
+                    best_solution = converged_solutions[0]
+                    self.log.info(
+                        f"{' ':<2}>> " + bc.BCOLORS.PASS + "Solution found." + bc.BCOLORS.OKGREEN)
+                else:
+                    # No solution fully converged
+                    self.log.warning(f"{' ':<2}>> No solution fully converged.")
+                    # Use best overall solution if available
+                    if best_overall_solution is not None:
+                        best_solution = best_overall_solution
+                        self.log.info(f"{' ':<2}>> Using the best available solution.")
+                    else:
+                        best_solution = None
+
+            if best_solution is not None:
+                # Prepare final results
+                final_wcsprm = best_solution['wcsprm']
                 has_solution = True
-                final_wcsprm = best_wcsprm
-
-                # get rms estimate
-                result_dict = get_rms(best_ref_cat,
-                                      best_src_cat,
-                                      best_wcsprm,
-                                      self.match_radius_px,
-                                      best_Nobs)
-
-                self.log.info(f"{' ':<6}>> " + base_conf.BCOLORS.PASS + "Solution found." + base_conf.BCOLORS.OKGREEN)
-                self.log.info(f"{' ':<4}{'-'*50}")
-                self.log.info(f"{' ':<4}Summary:")
-                self.log.info(f"{' ':<4}{'-'*50}")
-                self.log.info(f"{' ':<5}{'Evaluations':<30} {possible_solution_count} ")
-                self.log.info(f"{' ':<5}{'Matched (detected sources)':<30} {f'{best_Nobs}/{Nobs_total}'} ")
-                self.log.info(f"{' ':<5}{'Matched (reference sources)':<30} {f'{len(best_ref_cat)}/{Nref_total}'} ")
-                self.log.info(f"{' ':<5}{'Matched (src/ref)':<30} {f'{best_Nobs}/{len(best_ref_cat)}'} ")
-                self.log.info(
-                    f"{' ':<5}{'Completeness':<30} {best_completeness:.3f} ({best_completeness * 100:.1f}%)")
-                self.log.info(f"{' ':<5}{'Match radius (px)':<30} {result_dict['radius_px']:.2f} ")
-                self.log.info(f"{' ':<5}{'RMS (arcsec)':<30} {result_dict['rms']:.2f} ")
-                self.log.info(f"{' ':<4}{'-'*50}")
-
-                break
+                result_dict = {"radius_px": self.match_radius_px,
+                               "matches": best_solution['Nobs_matched'],
+                               "rms": best_solution['rms_dist'],
+                               'std_x': best_solution['std_x'],
+                               'std_y': best_solution['std_y']}
+                self.print_final_summary(best_solution, Nobs_total, Nref_total)
             else:
-                # update switches for next iteration
-                update_ref_cat = True
-                use_initial_wcs_estimate = False
+                # No solutions found
+                has_solution = False
+                final_wcsprm = None
+                result_dict = result_dict_fail
+                self.log.warning("  No solution found after testing all rotation matrices.")
+        else:
+            # No solutions found
+            has_solution = False
+            final_wcsprm = None
+            result_dict = result_dict_fail
+            self.log.warning("  No solution found after testing all rotation matrices.")
 
+        # Return the final results
         return has_solution, final_wcsprm, result_dict
 
+    def print_final_summary(self, solution, Nobs_total, Nref_total):
+        """
+
+        Parameters
+        ----------
+        solution
+        Nobs_total
+        Nref_total
+
+        Returns
+        -------
+
+        """
+        Nobs = solution['Nobs_matched']
+        Nref = solution['Nobs_lim']
+        completeness = solution['completeness']
+        rms_dist = solution['rms_dist']
+
+        self.log.info(f"{' ':<2}{'-' * 50}")
+        self.log.info(f"{' ':<2}WCS find summary:")
+        self.log.info(f"{' ':<2}{'-' * 50}")
+        self.log.info(f"{' ':<2}{'Matched (detected sources)':<30} {f'{Nobs}/{Nobs_total}'} ")
+        self.log.info(f"{' ':<2}{'Matched (reference sources)':<30} {f'{Nref}/{Nref_total}'} ")
+        self.log.info(f"{' ':<2}{'Matched (src/ref)':<30} {f'{Nobs}/{Nref}'} ")
+        self.log.info(f"{' ':<2}{'Completeness':<30} {completeness:.3f} ({completeness * 100:.1f}%)")
+        self.log.info(f"{' ':<2}{'RMS distance':<30} {rms_dist:.2f} px")
+        self.log.info(f"{' ':<2}{'Positional error x':<30} {solution['std_x']:.2f} px")
+        self.log.info(f"{' ':<2}{'Positional error y':<30} {solution['std_y']:.2f} px")
+
+    def apply_wcs_and_filter_sources(self, current_wcsprm, source_df, match_radius):
+        """Apply the given WCS to the full reference catalog, filter it, then match the observed sources
+        to the filtered reference catalog.
+
+        Parameters:
+            - self: assumes methods from the current class instance are accessible.
+            - current_wcsprm: the WCS object to be applied
+            - source_df: DataFrame of observed sources with an 'obs_idx' column
+            - ref_cat_full: full reference catalog DataFrame
+            - match_radius: maximum matching radius in pixels
+
+        Returns:
+            - matched_src_df: DataFrame of observed sources merged with matching results
+            - has_m: boolean Series indicating which sources have a match
+            - dist_mask: boolean mask for sources with distance < self.match_radius_px
+            - ref_cat_filtered: filtered reference catalog after WCS application
+
+        Parameters
+        ----------
+        current_wcsprm
+        source_df
+        match_radius
+
+        Returns
+        -------
+
+        """
+
+        # Filter reference catalog using WCS
+        ref_cat_filtered = self.get_filtered_ref_cat(current_wcsprm=current_wcsprm, origin=0)
+
+        # Match observed to reference
+        matches_df = get_source_matches(obs_df=source_df, ref_df=ref_cat_filtered,
+                                        match_radius=match_radius)
+
+        # Merge matches with observed sources
+        matched_src_df = pd.merge(source_df, matches_df, on='obs_idx', how='left')
+
+        # Create masks
+        has_m = matched_src_df["has_match"]
+        dist_mask = pd.Series(False, index=matched_src_df.index)
+        dist_mask.loc[has_m.index[has_m]] = matched_src_df.loc[has_m, 'closest_distance'] < self.match_radius_px
+
+        return matched_src_df, ref_cat_filtered, has_m, dist_mask
+
+    @staticmethod
+    def extract_sources_subset(matched_src_df, ref_cat_filtered, has_m, dist_mask=None):
+        """Extract subsets of matched observed sources and their corresponding reference sources.
+
+        Parameters:
+            - matched_src_df: DataFrame of matched observed sources (with 'obs_idx', 'chosen_ref_idx', etc.)
+            - has_m: boolean Series indicating which observed sources have at least one match
+            - ref_cat_filtered: DataFrame of filtered reference sources after WCS application
+            - dist_mask: (optional) boolean Series indicating which matched sources pass a distance criterion.
+                         If None, the distance criterion is not applied.
+
+        Returns:
+            - src_subset_df: DataFrame of observed sources that meet the match (and optional distance) criteria
+            - ref_subset_df: DataFrame of reference sources corresponding to 'chosen_ref_idx' in 'src_subset_df'
+        """
+
+        # Determine the final selection mask
+        if dist_mask is not None:
+            selection_mask = has_m & dist_mask
+        else:
+            selection_mask = has_m
+
+        # Extract the subsets
+        src_subset_df = matched_src_df[selection_mask]
+
+        # Extract the chosen reference indices for these sources
+        chosen_indices = src_subset_df['chosen_ref_idx'].values.astype(int)
+
+        # Retrieve the corresponding reference sources
+        ref_subset_df = ref_cat_filtered.iloc[chosen_indices]
+
+        return src_subset_df, ref_subset_df
+
+    @staticmethod
+    def refine_wcs_fit(obs_df, ref_df, wcsprm_in, match_radius):
+        """
+
+        Parameters
+        ----------
+        obs_df
+        ref_df
+        wcsprm_in
+        match_radius
+
+        Returns
+        -------
+
+        """
+
+        obs_xy = obs_df[["xcentroid", "ycentroid"]].values  # Source positions
+        ref_ra_dec = ref_df[["RA", "DEC"]].values  # Reference positions
+        weights = np.array([0.5 if nm > 1 else 1. for nm in obs_df.num_matches])  # Weights according to N matches
+
+        # Initial guesses for parameters
+        initial_params = [0., 1., 0., 0.]
+        lower_bounds = [-np.pi / 2., 0.9, -match_radius, -match_radius]
+        upper_bounds = [np.pi / 2., 1.1, match_radius, match_radius]
+
+        # Perform optimization
+        result = least_squares(
+            residuals_wcs,
+            initial_params,
+            args=(obs_xy, ref_ra_dec, wcsprm_in, weights),
+            method='trf',  # or dogbox
+            loss='huber',  # or cauchy
+            f_scale=1.0,
+            bounds=(lower_bounds, upper_bounds),
+            verbose=0)
+
+        # Apply the optimized transformation to the WCS
+        if result.success:
+            optimized_params = result.x
+            rotation_opt, scaling_opt, x_shift_opt, y_shift_opt = optimized_params
+
+            # Update WCS
+            refined_wcs = deepcopy(wcsprm_in)
+            rot_matrix_opt = np.array([[np.cos(rotation_opt), -np.sin(rotation_opt)],
+                                       [np.sin(rotation_opt), np.cos(rotation_opt)]])
+            refined_wcs = rotate(refined_wcs, rot_matrix_opt)
+            refined_wcs = scale(refined_wcs, scaling_opt)
+            refined_wcs = shift_wcs_central_pixel(refined_wcs, x_shift_opt, y_shift_opt)
+
+            return True, refined_wcs
+        else:
+            return False, wcsprm_in
+
+    def get_filtered_ref_cat(self, current_wcsprm, origin=0):
+        """
+
+        Parameters
+        ----------
+        current_wcsprm
+        origin
+
+        Returns
+        -------
+
+        """
+        # Update the reference catalog positions
+        ref_cat_full_updated = update_catalog_positions(self.ref_cat_full,
+                                                        current_wcsprm, origin=origin)
+
+        # Filter the reference catalog within bounds
+        ref_cat_filtered = filter_df_within_bounds(ref_cat_full_updated,
+                                                   self.current_cutoutCenter,
+                                                   self.search_area_shape,
+                                                   self.search_area_additional_width)
+        return ref_cat_filtered
+
     def process_sample(self):
-        """"""
+        """
+
+        Returns
+        -------
+
+        """
 
         # get the catalog positions
         cat_x, cat_y = process_catalog(self.ref_cat, self.current_wcsprm)
@@ -440,6 +693,9 @@ class FindWCS(object):
         best_wcsprm = None
         best_source_cat_match = None
         best_ref_cat_match = None
+        best_match_radius = self.match_radius_px
+        best_rms = np.inf
+        best_std_xy = (np.inf, np.inf)
 
         rot_multiplier_list = [1., -1.]
         for n in rot_multiplier_list:
@@ -466,8 +722,7 @@ class FindWCS(object):
             # test for reflection
             for m in rot_multiplier_list:
                 result_rot_rad = m * result_scale_rot[2]
-                # print(n,m)
-                # print('rot', result_rot_rad)
+
                 # apply rotation and scale
                 rot_mat = rotation_to_matrix(result_rot_rad)
                 wcsprm_new = rotate(copy(self.current_wcsprm), rot_mat)
@@ -477,42 +732,55 @@ class FindWCS(object):
                 shift_signal, x_shift, y_shift = self.find_offset(self.ref_cat,
                                                                   wcsprm_new,
                                                                   offset_binwidth=1)
+                # print(shift_signal, x_shift, y_shift)
 
                 # apply the found shift
                 wcsprm_shifted = shift_wcs_central_pixel(wcsprm_new, x_shift, y_shift)
+
                 del wcsprm_new
 
                 # find matches
-                matches = find_matches(self.source_cat, self.ref_cat,
-                                       wcsprm_shifted,
+                ref_cat = self.get_filtered_ref_cat(wcsprm_shifted, origin=0)
+                matches = find_matches(obs=self.source_cat,
+                                       cat=ref_cat,
+                                       wcsprm_in=wcsprm_shifted,
                                        threshold=self.match_radius_px)
 
                 # unpack result
                 source_cat_matched, ref_cat_matched, obs_xy, cat_xy, _, current_score, _ = matches
                 Nobs_matched = len(obs_xy)
-                # print(Nobs_matched, current_score, result_scaling, result_rot_rad)
 
                 # update best result
-                if best_Nobs_matched <= Nobs_matched and best_score <= current_score:
+                if best_Nobs_matched <= Nobs_matched or best_score <= current_score[0]:
                     best_Nobs_matched = Nobs_matched
-                    best_score = current_score
+                    best_score = current_score[0]
                     best_scaling = result_scaling
                     best_rotation = result_rot_rad
                     best_wcsprm = copy(wcsprm_shifted)
                     best_source_cat_match = source_cat_matched
                     best_ref_cat_match = ref_cat_matched
+                    best_match_radius = self.match_radius_px
+                    best_rms = current_score[1]
+                    best_std_xy = (current_score[2], current_score[3])
 
+                # if self._debug:
+                #     plot_catalog_positions(self.source_cat,
+                #                            self.ref_cat,
+                #                            wcsprm_shifted, self.image)
+                #     plt.show()
                 del wcsprm_shifted
 
-                # plot_catalog_positions(self.source_cat,
-                #                        self.ref_cat,
-                #                        best_wcsprm, self.image)
-                # plt.show()
-        return (best_Nobs_matched, best_score, best_wcsprm, [best_scaling, best_rotation],
+        return (best_Nobs_matched, best_score, best_wcsprm,
+                [best_match_radius, best_rms, best_std_xy, best_scaling, best_rotation],
                 best_source_cat_match, best_ref_cat_match)
 
     def compute_cross_corr(self):
-        """"""
+        """
+
+        Returns
+        -------
+
+        """
 
         bins, ranges, self.binwidth_dist, self.binwidth_ang = prepare_histogram_bins_and_ranges(
             self.log_dist_obs, self.angles_obs,
@@ -528,155 +796,23 @@ class FindWCS(object):
         # calculate cross-correlation
         cross_corr = ff_obs * np.conj(ff_cat)
 
-        base_conf.clean_up(H_obs, H_cat, ff_obs, ff_cat, bins, ranges)
+        bc.clean_up(H_obs, H_cat, ff_obs, ff_cat, bins, ranges)
 
         self.cross_corr = cross_corr
 
-    def find_wcs_working(self, init_wcsprm, match_radius_fwhm=1, image=None):
-        """Run the plate-solve algorithm to find the best WCS transformation"""
-
-        has_solution = False
-        dict_rms = {"radius_px": None, "matches": None, "rms": None}
-        final_wcsprm = None
-
-        init_wcsprm = init_wcsprm.wcs
-        max_wcs_iter = self.config['MAX_WCS_FUNC_ITER']
-
-        self.log.info("> Run WCS calibration")
-
-        self.source_cat = self.source_cat_full
-        self.source_cat = self.source_cat.head(5)
-        self.get_source_cat_variables()
-        print(self.source_cat)
-
-        # update the reference catalog with the initial wcs parameters
-        ref_cat_orig = update_catalog_positions(self.reference_cat, init_wcsprm)
-        # ref_cat_orig = ref_cat_orig.head(self.config['REF_SOURCES_MAX_NO'])
-        print(self.reference_cat)
-        print(ref_cat_orig)
-
-        Nobs = len(self.source_cat)  # number of detected sources
-        Nref = len(ref_cat_orig)  # number of reference stars
-        source_ratio = (Nobs / Nref) * 100.  # source ratio in percent
-        percent_to_select = np.ceil(source_ratio * 3)
-        n_percent = percent_to_select if percent_to_select < 100 else 100
-        num_rows = int(Nref * (n_percent / 100))
-        wcs_match_radius_px = 1. * match_radius_fwhm
-
-        self.log.info(f'  Number of detected sources: {Nobs}')
-        self.log.info(f'  Number of reference sources (total): {Nref}')
-        self.log.info(f'  Ratio of detected sources to reference sources: {source_ratio:.3f}%')
-        self.log.info(f'  Initial number of reference sources selected: {num_rows}')
-        self.log.info(f'  Input radius: r_in = {match_radius_fwhm:.2f} px')
-        self.log.info(f'  WCS source match radius: 3 x r_in  = {wcs_match_radius_px:.2f} px')
-
-        # create a range of samples
-        num_samples = np.logspace(np.log10(num_rows), np.log10(Nref), max_wcs_iter,
-                                  base=10, endpoint=False, dtype=int)
-        num_samples = np.unique(num_samples)
-
-        for i, n in enumerate(num_samples):
-            c = 0  # possible solution counter
-            self.log.info(f"  > Run [{i + 1}/{len(num_samples)}]: Using {n} reference sources")
-
-            # select rows and sort by magnitude
-            selected_rows = ref_cat_orig.head(n)
-            ref_cat = selected_rows  #.sort_values(by='mag', ascending=True)
-            ref_cat.reset_index(inplace=True, drop=True)
-            self.current_ref_cat = ref_cat
-
-            best_score = -np.inf
-            best_wcsprm = None
-            best_rms_dist = np.inf
-            best_Nobs = -1
-            best_completeness = 0
-            for j, init_rot in enumerate(self.rotations):
-
-                self.log.info(
-                    f"    > [{j + 1}/{len(self.rotations)}] Test rotation matrix: [{','.join(map(str, init_rot))}]")
-                self.current_wcsprm = None
-                self.current_ref_cat = ref_cat
-
-                r = self.get_scale_rotation(init_wcsprm, init_rot, wcs_match_radius_px)
-                if r is None:
-                    self.log.info("      >> NO matches found. Moving on.")
-                    continue
-
-                Nobs_matched, completeness, score, wcsprm, result_info, source_cat_matched, ref_cat_matched = r
-                self.current_wcsprm = wcsprm
-                if self.current_wcsprm is None or Nobs_matched < self.config['MIN_SOURCE_NO_CONVERGENCE']:
-                    self.log.info("      >> NO matches found. Moving on.")
-                    continue
-
-                self.log.info(f"      >> {Nobs_matched} matches found")
-
-                self.log.info(f"      > X-match with original reference catalog (r={wcs_match_radius_px:.2f} px):")
-                ref_cat_new = self.get_updated_ref_cat(source_cat_matched,
-                                                       ref_cat_matched,
-                                                       wcs_match_radius_px)
-
-                delta_matches = len(ref_cat_new) - Nobs_matched
-                delta_str = f"{delta_matches} potential sources have been added."
-
-                self.log.info(f"        >> {len(ref_cat_new)} matches found. {delta_str}")
-                self.current_ref_cat = ref_cat_new
-
-                self.log.info(f"      > Refine scale and rotation using {len(ref_cat_new)} sources")
-                state, corrected_wcsprm = self.refine_transformation(ref_cat_new,
-                                                                     self.current_wcsprm,
-                                                                     match_radius_fwhm,
-                                                                     wcs_match_radius_px)
-                if state:
-                    self.current_wcsprm = corrected_wcsprm
-                    self.log.info("        >> Solution has improved")
-                else:
-                    self.log.info("        >> NO improvement found.")
-
-                # find matches in the full reference
-                _, _, final_obs_pos, _, _, final_score, _ = find_matches(self.source_cat,
-                                                                         self.reference_cat,
-                                                                         self.current_wcsprm,
-                                                                         threshold=wcs_match_radius_px)
-
-                current_Nobs = len(final_obs_pos)
-                current_rms_dist = 1. / (final_score * len(final_obs_pos))
-                if best_score <= final_score and current_rms_dist <= best_rms_dist:
-                    best_score = final_score
-                    best_rms_dist = current_rms_dist
-                    best_wcsprm = self.current_wcsprm
-                    best_Nobs = current_Nobs
-                    best_completeness = best_Nobs / Nobs
-                    c += 1
-
-            if best_Nobs == -1 or best_Nobs < self.config['MIN_SOURCE_NO_CONVERGENCE']:
-                self.log.info("    >> NO solution found. ... ")
-                continue
-
-            # plot_catalog_positions(self.source_cat,
-            #                        ref_cat_orig,
-            #                        best_wcsprm, image)
-            # plt.show()
-            # get rms estimate
-            dict_rms = get_rms(self.reference_cat,
-                               self.source_cat,
-                               best_wcsprm,
-                               match_radius_fwhm,
-                               best_Nobs)
-
-            self.log.info(f"    >> Best solution out of {c} possible results:")
-            self.log.info(f"       {'Matches':<20} {f'{best_Nobs}/{Nobs}'} ")
-            self.log.info(f"       {'Completeness':<20} {best_completeness:.2f} ({best_completeness * 100:.1f}%)")
-            self.log.info(f"       {'Match radius (px)':<20} {dict_rms['radius_px']:.1f} ")
-            self.log.info(f"       {'RMS (arcsec)':<20} {dict_rms['rms']:.2f} ")
-
-            has_solution = True
-            final_wcsprm = best_wcsprm
-            break
-
-        return has_solution, final_wcsprm, dict_rms
-
     def get_scale_rotation(self, init_wcsprm, init_rot, match_radius):
-        """"""
+        """
+
+        Parameters
+        ----------
+        init_wcsprm
+        init_rot
+        match_radius
+
+        Returns
+        -------
+
+        """
 
         # apply rotation
         current_wcsprm = rotate(copy(init_wcsprm), init_rot)
@@ -702,8 +838,8 @@ class FindWCS(object):
         result_scale_rot = analyse_cross_corr(cross_corr, binwidth_dist, binwidth_ang)
 
         if result_scale_rot is None:
-            base_conf.clean_up(log_dist_obs, angles_obs, log_dist_cat, angles_cat,
-                               cross_corr, binwidth_dist, binwidth_ang)
+            bc.clean_up(log_dist_obs, angles_obs, log_dist_cat, angles_cat,
+                        cross_corr, binwidth_dist, binwidth_ang)
             return
 
         best_score = 0
@@ -756,14 +892,26 @@ class FindWCS(object):
                 best_ref_cat_match = ref_cat_matched
 
         # print(best_Nobs_matched, best_completeness, best_score, best_scaling, best_rotation)
-        base_conf.clean_up(log_dist_obs, angles_obs, log_dist_cat, angles_cat,
-                           cross_corr, binwidth_dist, binwidth_ang)
+        bc.clean_up(log_dist_obs, angles_obs, log_dist_cat, angles_cat,
+                    cross_corr, binwidth_dist, binwidth_ang)
 
         return (best_Nobs_matched, best_completeness, best_score, best_wcsprm, [best_scaling, best_rotation],
                 best_source_cat_match, best_ref_cat_match)
 
     def find_offset(self, catalog, wcsprm_in, offset_binwidth=1):
-        """"""
+        """Find offset
+
+        Parameters
+        ----------
+        catalog
+        wcsprm_in
+        offset_binwidth : int, optional
+            test
+
+        Returns
+        -------
+
+        """
 
         # apply the wcs to the catalog
         cat_x, cat_y = process_catalog(catalog, wcsprm_in)
@@ -811,7 +959,19 @@ class FindWCS(object):
         return signal, x_shift, y_shift
 
     def calc_cross_corr(self, log_dist_obs, angles_obs, log_dist_cat, angles_cat):
-        """"""
+        """Calculate cross correlation spectrum
+
+        Parameters
+        ----------
+        log_dist_obs
+        angles_obs
+        log_dist_cat
+        angles_cat
+
+        Returns
+        -------
+
+        """
 
         dist_bin_size = self.dist_bin_size
         ang_bin_size = self.ang_bin_size
@@ -830,41 +990,10 @@ class FindWCS(object):
         # calculate cross-correlation
         cross_corr = ff_obs * np.conj(ff_cat)
 
-        base_conf.clean_up(H_obs, H_cat, ff_obs, ff_cat, log_dist_obs, angles_obs,
-                           log_dist_cat, angles_cat, angles_obs, angles_cat, bins, ranges)
+        bc.clean_up(H_obs, H_cat, ff_obs, ff_cat, log_dist_obs, angles_obs,
+                    log_dist_cat, angles_cat, angles_obs, angles_cat, bins, ranges)
 
         return cross_corr, binwidth_dist, binwidth_ang
-
-    def get_updated_ref_cat(self, src_cat_matched, ref_cat_matched, radius):
-        """"""
-
-        src_cat_orig = self.source_cat
-        ref_cat_orig = self.reference_cat
-
-        ref_cat_orig_updated = update_catalog_positions(ref_cat_orig, self.current_wcsprm, 1)
-
-        # get the remaining not matched source from the source catalog
-        remaining_sources = src_cat_orig[~src_cat_orig['id'].isin(src_cat_matched['id'])]
-
-        # get the closest N sources from the reference catalog for the remaining sources
-        ref_sources_to_add = match_catalogs(remaining_sources,
-                                            ref_cat_orig_updated,
-                                            radius=radius, N=1)
-
-        # get the closest N sources from the reference catalog
-        # for the matched reference sources
-        ref_cat_orig_matched = match_catalogs(ref_cat_matched,
-                                              ref_cat_orig_updated,
-                                              ra_dec_tol=1e-3, N=1)
-
-        # combine the datasets
-        ref_cat_subset_new = pd.concat([ref_cat_orig_matched, ref_sources_to_add],
-                                       ignore_index=True)
-
-        base_conf.clean_up(src_cat_matched, ref_cat_matched, ref_cat_orig, ref_cat_orig_updated,
-                           ref_sources_to_add, ref_cat_orig_matched)
-
-        return ref_cat_subset_new
 
     def refine_transformation(self, ref_cat, wcsprm_in, match_radius, compare_threshold):
         """
@@ -877,16 +1006,17 @@ class FindWCS(object):
         _, _, init_obs, _, _, init_score, _ = find_matches(self.source_cat, ref_cat,
                                                            wcsprm_in,
                                                            threshold=compare_threshold)
-        # print(compare_threshold, len(init_obs), init_score)
+        print(compare_threshold, len(init_obs), init_score)
 
-        lis = [0.1, 0.25, 0.5, 1, 2, 3, 4]
+        # lis = [0.1, 0.25, 0.5, 1, 2, 3, 4]
+        lis = [1]
         for i in lis:
 
             threshold = i * match_radius
 
             # find matches
             _, _, obs_xy, cat_xy, _, s1, _ = \
-                find_matches(self.source_cat, ref_cat, None, threshold=threshold)
+                find_matches(self.source_cat, ref_cat, wcsprm_in, threshold=threshold)
 
             if len(obs_xy[:, 0]) < self.config['MIN_SOURCE_NO_CONVERGENCE']:
                 continue
@@ -938,14 +1068,240 @@ class FindWCS(object):
             if ((len(init_obs[:, 0]) <= len(compare_obs[:, 0])) and
                     (init_score < compare_score or threshold <= compare_threshold)):
                 del log_dist_obs, log_dist_cat, scale_offset, angle_offset
-                return True, wcsprm_shifted
+                return True, wcsprm_shifted, match_radius
 
             del log_dist_obs, log_dist_cat, scale_offset, angle_offset
 
-        return False, wcsprm_copy
+        return False, wcsprm_copy, match_radius
 
-def get_updated_reference_catalog(src_cat, ref_cat, src_cat_matched, ref_cat_matched, radius):
-    """"""
+
+def compute_residual_stats(obs_df, ref_df):
+    """
+    Compute residuals and basic statistics between observed and reference positions.
+
+    Parameters:
+    - obs_xy: Nx2 array of observed source positions (e.g., in pixels)
+    - ref_xy: Nx2 array of reference source positions (e.g., in pixels)
+
+    Returns:
+    - stats: dict containing:
+        'residuals': Nx2 array of residual vectors (obs_xy - ref_xy)
+        'residual_x': Nx array of X-direction residuals
+        'residual_y': Nx array of Y-direction residuals
+        'positional_uncertainties': Nx array of per-source positional uncertainties (2D residual norm)
+        'rms': scalar, RMS of positional uncertainties
+        'mean_uncertainty': scalar, mean positional uncertainty
+        'median_uncertainty': scalar, median positional uncertainty
+        'std_x': scalar, standard deviation of residuals in X
+        'std_y': scalar, standard deviation of residuals in Y
+    """
+
+    obs_xy = obs_df[["xcentroid", "ycentroid"]].values
+    ref_xy = ref_df[["xcentroid", "ycentroid"]].values
+
+    # Compute residuals
+    residuals = obs_xy - ref_xy
+    residual_x = residuals[:, 0]
+    residual_y = residuals[:, 1]
+
+    # Per-source positional uncertainty (distance of residual vector)
+    positional_uncertainties = np.sqrt(residual_x ** 2 + residual_y ** 2)
+
+    # Compute RMS of positional uncertainties
+    rms = np.sqrt(np.mean(positional_uncertainties ** 2))
+
+    # Compute other statistics
+    mean_error = np.mean(positional_uncertainties)
+    median_error = np.median(positional_uncertainties)
+    std_x = np.std(residual_x)
+    std_y = np.std(residual_y)
+
+    # Pack results into a dictionary
+    stats = {
+        'rms': rms,
+        'score': len(obs_xy) / (1 + rms),
+        'mean_error': mean_error,
+        'median_error': median_error,
+        'std_x': std_x,
+        'std_y': std_y
+
+    }
+
+    return stats
+
+
+def get_source_matches(obs_df, ref_df, match_radius):
+    """
+    Match observed sources to reference sources by finding all candidates within the matching radius.
+    For each observed source:
+    - Find all reference sources within 'match_radius'.
+    - If multiple matches exist, select the closest one.
+    - Record information about whether multiple matches were found.
+
+    Parameters:
+    - obs_xy: Nx2 array of observed source positions (pixels)
+    - ref_xy: Mx2 array of reference source positions (pixels)
+    - match_radius: Matching radius in pixels
+
+    Returns:
+    - matches: list of dictionaries, one per observed source, containing:
+        {
+            'obs_idx': index of the observed source,
+            'matched_ref_indices': array of reference source indices within the radius,
+            'num_matches': number of matched reference sources,
+            'chosen_ref_idx': the final chosen reference source index (closest match),
+            'closest_distance': the distance to the chosen match,
+            'has_multiple_matches': boolean indicating if multiple matches were found
+        }
+    """
+
+    obs_xy = obs_df[["xcentroid", "ycentroid"]].values
+    ref_xy = ref_df[["xcentroid", "ycentroid"]].values
+
+    # Build KD-tree for reference sources
+    ref_tree = cKDTree(ref_xy)
+
+    # Query all reference sources within match_radius for each observed source
+    obs_all_matches = ref_tree.query_ball_point(obs_xy, r=match_radius, p=1)
+
+    matches = []
+    for obs_idx, ref_indices in enumerate(obs_all_matches):
+        num_matches = len(ref_indices)
+        match_info = {
+            'obs_idx': obs_idx,
+            'matched_ref_idx': np.array(ref_indices, dtype=int),
+            'num_matches': num_matches,
+            'chosen_ref_idx': None,
+            'closest_distance': None,
+            'has_match': num_matches > 0,
+            'has_single_match': num_matches == 1,
+            'has_multiple_matches': num_matches > 1
+        }
+
+        if num_matches == 0:
+            # No matches found for this observed source
+            matches.append(match_info)
+            continue
+
+        # If there are matches (one or multiple), find the closest
+        obs_point = obs_xy[obs_idx]
+        candidate_ref_points = ref_xy[ref_indices]
+        distances = np.linalg.norm(candidate_ref_points - obs_point, axis=1)
+
+        # Find the closest match among candidates
+        closest_candidate_idx = np.argmin(distances)
+        closest_ref_idx = ref_indices[closest_candidate_idx]
+        closest_distance = distances[closest_candidate_idx]
+
+        match_info['chosen_ref_idx'] = int(closest_ref_idx)
+        match_info['closest_distance'] = float(closest_distance)
+
+        matches.append(match_info)
+
+    # Cleanup
+    bc.clean_up(obs_df, ref_df, obs_xy, ref_xy, ref_tree)
+
+    return pd.DataFrame(matches)
+
+
+def match_sources_bidirectional(obs_xy, ref_xy, match_radius):
+    """
+
+    Parameters
+    ----------
+    obs_xy
+    ref_xy
+    match_radius
+
+    Returns
+    -------
+
+    """
+    # Build KD-trees
+    obs_tree = cKDTree(obs_xy)
+    ref_tree = cKDTree(ref_xy)
+
+    # Observed to Reference
+    dist_obs_to_ref, idx_obs_to_ref = ref_tree.query(obs_xy, distance_upper_bound=match_radius)
+    # Reference to Observed
+    dist_ref_to_obs, idx_ref_to_obs = obs_tree.query(ref_xy, distance_upper_bound=match_radius)
+
+    # Prepare arrays
+    matches = []
+    for obs_idx, (ref_idx, dist) in enumerate(zip(idx_obs_to_ref, dist_obs_to_ref)):
+        if dist != np.inf:
+            # Check for reciprocal match
+            if idx_ref_to_obs[ref_idx] == obs_idx:
+                matches.append((obs_idx, ref_idx))
+
+    matched_obs_indices = np.array([m[0] for m in matches])
+    matched_ref_indices = np.array([m[1] for m in matches])
+
+    return matched_obs_indices, matched_ref_indices
+
+
+def residuals_wcs(params, obs_xy, ref_ra_dec, wcsprm_in, weights):
+    """
+    Compute residuals between transformed reference points and observed points.
+
+    Parameters:
+    - params: array_like
+        Parameters to optimize [rotation (radians), scaling, x_shift, y_shift]
+    - obs_xy: array_like
+        Observed source positions in pixel coordinates (Nx2 array)
+    - ref_ra_dec: array_like
+        Reference catalog positions in world coordinates (RA, Dec in degrees)
+    - wcsprm_in: astropy.wcs.WCS
+        Initial WCS object
+
+    Returns:
+    - residuals: array_like
+        Residuals between transformed reference points and observed points (flattened array)
+    """
+
+    rotation, scaling, x_shift, y_shift = params
+
+    # Make a copy of the WCS to modify
+    wcs_n = deepcopy(wcsprm_in)
+
+    # Apply rotation
+    rot_matrix = np.array([[np.cos(rotation), -np.sin(rotation)],
+                           [np.sin(rotation), np.cos(rotation)]])
+    wcs_n = rotate(wcs_n, rot_matrix)
+
+    # Apply scaling
+    wcs_n = scale(wcs_n, scaling)
+
+    # Apply shift
+    wcs_n = shift_wcs_central_pixel(wcs_n, x_shift, y_shift)
+
+    # Transform reference RA, Dec to pixel coordinates using the updated WCS
+    wcs_r = WCS(wcs_n.to_header())
+    ref_pixel_coords = wcs_r.all_world2pix(ref_ra_dec, 0)
+
+    # Compute residuals between transformed reference points and observed points
+    residuals_r = obs_xy - ref_pixel_coords  # Nx2 array
+
+    # Apply weights
+    weighted_residuals = (residuals_r * weights[:, np.newaxis]).ravel()
+    return weighted_residuals
+
+
+def get_matched_reference_catalog(src_cat, ref_cat, src_cat_matched, ref_cat_matched, radius):
+    """
+
+    Parameters
+    ----------
+    src_cat
+    ref_cat
+    src_cat_matched
+    ref_cat_matched
+    radius
+
+    Returns
+    -------
+
+    """
 
     # get the remaining not matched source from the source catalog
     remaining_sources = src_cat[~src_cat['id'].isin(src_cat_matched['id'])]
@@ -1018,32 +1374,43 @@ def find_peaks_2d(inv_cross_power_spec, threshold_multiplier=5., apply_gaussian_
     if peak_coords:
         peak_coords = np.array(peak_coords, dtype=int)
 
-    base_conf.clean_up(inv_cross_power_spec, smoothed, detected_peaks, labeled, num_features)
+    bc.clean_up(inv_cross_power_spec, smoothed, detected_peaks, labeled, num_features)
 
     return peak_coords
 
 
 def analyse_cross_corr(cross_corr, binwidth_dist, binwidth_ang):
-    """"""
+    """
+
+    Parameters
+    ----------
+    cross_corr
+    binwidth_dist
+    binwidth_ang
+
+    Returns
+    -------
+
+    """
 
     # Inverse transform from frequency to spatial domain
     inv_fft = np.real(np.fft.ifft2(cross_corr))
-    inv_fft_shifted = np.fft.fftshift(inv_fft)  # the zero shift is at (0,0), this moves it to the middle
+    inv_fft_shifted = np.fft.fftshift(inv_fft)  # The zero shift is at (0,0), this moves it to the middle
 
     inv_fft_row_median = np.median(inv_fft_shifted, axis=1)[:, np.newaxis]
 
-    # subtract row median for peak detection
+    # Subtract row median for peak detection
     inv_fft_med_sub = inv_fft_shifted - inv_fft_row_median
 
-    # find peaks in the inverse FT
+    # Find peaks in the inverse FT
     peak_coords = find_peaks_2d(inv_fft_med_sub,
                                 threshold_multiplier=5.,
                                 gauss_sigma=1,
-                                apply_gaussian_filter=True)
+                                apply_gaussian_filter=True, size=5)
     # print('peak_coords', peak_coords)
 
     if not list(peak_coords):
-        base_conf.clean_up(cross_corr, inv_fft, inv_fft_shifted, inv_fft_med_sub)
+        bc.clean_up(cross_corr, inv_fft, inv_fft_shifted, inv_fft_med_sub)
         return None
 
     peak_results = np.zeros((len(peak_coords), 3))
@@ -1053,29 +1420,45 @@ def analyse_cross_corr(cross_corr, binwidth_dist, binwidth_ang):
         x_shift = x_shift_bins * binwidth_dist
         y_shift = y_shift_bins * binwidth_ang
 
-        # extract scale and rotation from shift
+        # Extract scale and rotation from shift
         scaling = np.e ** (-x_shift)
         rotation = y_shift
 
         # print(signal, scaling, rotation)
         peak_results[i, :] = np.array([signal, scaling, rotation])
 
-    # sort by signal strength
+    # print(peak_results)
+    # Sort by signal strength
     peak_results_sorted = peak_results[peak_results[:, 0].argsort()[::-1]][0]
+    # print(peak_results_sorted)
+    # plt.figure()
+    # plt.imshow(inv_fft_med_sub)
+    # plt.show()
 
-    base_conf.clean_up(cross_corr, inv_fft, inv_fft_shifted, inv_fft_med_sub,
-                       inv_fft_row_median, peak_results)
+    # Cleanup
+    bc.clean_up(cross_corr, inv_fft, inv_fft_shifted, inv_fft_med_sub,
+                inv_fft_row_median, peak_results)
 
     return peak_results_sorted
 
 
 def get_shift_from_peak(inv_cross_power_spec, peak):
-    """"""
+    """
+
+    Parameters
+    ----------
+    inv_cross_power_spec
+    peak
+
+    Returns
+    -------
+
+    """
     n_1 = 1
     n_2 = 2
     n = n_1 + n_2
 
-    # sum up the signal in a fixed aperture 1 pixel in each direction around the peak,
+    # Sum up the signal in a fixed aperture 1 pixel in each direction around the peak,
     # so a 3x3 array, total 9 pixel
     signal = np.nansum(inv_cross_power_spec[peak[0] - n_1:peak[0] + n_2,
                        peak[1] - n_1:peak[1] + n_2])
@@ -1091,11 +1474,11 @@ def get_shift_from_peak(inv_cross_power_spec, peak):
     middle_x = inv_cross_power_spec.shape[0] / 2.
     middle_y = inv_cross_power_spec.shape[1] / 2.
 
-    # find the sub pixel shift of the true peak
+    # Find the sub pixel shift of the true peak
     # peak_x_subpixel, peak_y_subpixel = subpixel_peak_position(around_peak)
     # print(peak_x_subpixel, peak_y_subpixel)
 
-    # calculate final shift
+    # Calculate final shift
     x_shift = peak[0] - middle_x + peak_x_subpixel
     y_shift = peak[1] - middle_y + peak_y_subpixel
 
@@ -1105,11 +1488,24 @@ def get_shift_from_peak(inv_cross_power_spec, peak):
 
 
 def get_rms(ref_cat, obs, wcsprm_in, radius_px, N_obs_matched):
-    """"""
+    """
+
+    Parameters
+    ----------
+    ref_cat
+    obs
+    wcsprm_in
+    radius_px
+    N_obs_matched
+
+    Returns
+    -------
+
+    """
     wcsprm = copy(wcsprm_in)
     N_obs = obs.shape[0]
 
-    # get the radii list
+    # Get the radii list
     r = round(3 * radius_px, 1)
     radii_list = list(frange(0.1, r, 0.1))
     result_array = np.zeros((len(radii_list), 4))
@@ -1187,6 +1583,8 @@ def match_catalogs(catalog1, catalog2, ra_dec_tol=None, radius=None, N=3):
 
 
 def plot_catalog_positions(source_catalog, reference_catalog, wcsprm_in=None, image=None):
+    """Plot image with source and reference catalog positions marked"""
+
     ref_cat = copy(reference_catalog)
 
     if wcsprm_in is not None:
@@ -1216,27 +1614,28 @@ def plot_catalog_positions(source_catalog, reference_catalog, wcsprm_in=None, im
     # plt.show()
 
 
-def find_matches(obs, cat, wcsprm_in=None, threshold=10.):
+def find_matches(obs, cat, wcsprm_in=None, threshold=10., sort=True):
     """Match observation with reference catalog using minimum distance."""
 
-    # check if the input has data
+    # Check if the input has data
     cat_has_data = cat[["xcentroid", "ycentroid"]].any(axis=0).any()
     obs_has_data = obs[["xcentroid", "ycentroid"]].any(axis=0).any()
 
     if not cat_has_data or not obs_has_data:
         return None, None, None, None, None, None, False
 
-    # convert obs to numpy
+    # Convert obs to numpy
     obs_xy = obs[["xcentroid", "ycentroid"]].to_numpy()
+    N_obs = len(obs_xy)
 
-    # set up the catalog data; use RA, Dec if used with wcsprm
+    # Set up the catalog data; use RA, Dec if used with wcsprm
     if wcsprm_in is not None:
         cat_xy = wcsprm_in.s2p(cat[["RA", "DEC"]], 0)
         cat_xy = cat_xy['pixcrd']
     else:
         cat_xy = cat[["xcentroid", "ycentroid"]].to_numpy()
 
-    # calculate the distances
+    # Calculate the distances
     dist_xy = np.sqrt((obs_xy[:, 0] - cat_xy[:, 0, np.newaxis]) ** 2
                       + (obs_xy[:, 1] - cat_xy[:, 1, np.newaxis]) ** 2)
 
@@ -1255,10 +1654,11 @@ def find_matches(obs, cat, wcsprm_in=None, threshold=10.):
     obs_matched = obs_matched.sort_values(by='mag', ascending=True)
     obs_matched.reset_index(drop=True, inplace=True)
 
-    cat_matched = cat_matched.sort_values(by='mag', ascending=True)
+    if sort:
+        cat_matched = cat_matched.sort_values(by='mag', ascending=True)
     cat_matched.reset_index(drop=True, inplace=True)
 
-    columns_to_add = ['xcentroid', 'ycentroid', 'fwhm', 'fwhm_err', 'include_fwhm']
+    columns_to_add = ['xcentroid', 'ycentroid', 'fwhm', 'include_fwhm']
     cat_matched = cat_matched.assign(**obs_matched[columns_to_add].to_dict(orient='series'))
     del obs, cat
 
@@ -1266,12 +1666,26 @@ def find_matches(obs, cat, wcsprm_in=None, threshold=10.):
     cat_xy = cat_xy[cat_idx, :]
 
     if len(min_dist_xy) == 0:  # meaning the list is empty
-        best_score = 0
-    else:
-        rms = np.sqrt(np.nanmean(np.square(min_dist_xy)))
-        best_score = len(obs_xy) / (rms + 1e-6)
+        score = 0
+        rms = np.inf
+        std_x = np.inf
+        std_y = np.inf
 
-    return obs_matched, cat_matched, obs_xy, cat_xy, min_dist_xy, best_score, True
+    else:
+        residuals = obs_xy - cat_xy
+
+        # Residuals in x and y directions
+        delta_x = residuals[:, 0]
+        delta_y = residuals[:, 1]
+
+        std_x = np.std(delta_x)
+        std_y = np.std(delta_y)
+
+        # Compute RMS
+        rms = np.sqrt(np.mean(delta_x ** 2 + delta_y ** 2))
+        score = len(obs_xy) / (rms + 1)
+
+    return obs_matched, cat_matched, obs_xy, cat_xy, min_dist_xy, (score, rms, std_x, std_y), True
 
 
 def cross_corr_to_fourier_space(a):
@@ -1279,8 +1693,8 @@ def cross_corr_to_fourier_space(a):
 
     aa = (a - np.nanmean(a)) / np.nanstd(a)
 
-    # wraps around so half the size should be fine, pads 2D array with zeros
-    aaa = np.pad(aa, (2, 2), 'constant')
+    # Wraps around so half the size should be fine, pads 2D array with zeros
+    aaa = np.pad(aa, (5, 5), 'constant')
     ff_a = np.fft.fft2(aaa)
 
     del a, aa, aaa
@@ -1313,7 +1727,7 @@ def frange(x, y, jump=1.0):
     y = float(y)  # Comparison converts y to float every time otherwise.
     x0 = x
     epsilon = jump / 2.0
-    yield float("%g" % x)  # yield always first value
+    yield float("%g" % x)  # Yield always first value
     while x + epsilon < y:
         i += 1.0
         x = x0 + i * jump
@@ -1378,7 +1792,7 @@ def calculate_dist(data_x, data_y):
 
     dist = np.sqrt(dist_x ** 2 + dist_y ** 2)
 
-    base_conf.clean_up(data_x, data_y)
+    bc.clean_up(data_x, data_y)
 
     return dist
 
@@ -1398,22 +1812,22 @@ def calculate_angles(data_x, data_y):
     data_x = np.array(data_x)
     data_y = np.array(data_y)
 
-    # get all pairs: vector differences
+    # Get all pairs: vector differences
     vec_x = data_x - data_x.T
     vec_y = data_y - data_y.T
     vec_x = vec_x[np.where(~np.eye(vec_x.shape[0], dtype=bool))]
     vec_y = vec_y[np.where(~np.eye(vec_y.shape[0], dtype=bool))]
 
-    # get the angle with x-axis.
+    # Get the angle with x-axis.
     angles = np.arctan2(vec_x, vec_y)
 
-    # make sure angles are between 0 and 2 Pi
+    # Make sure angles are between 0 and 2 Pi
     angles = angles % (2. * np.pi)
 
-    # shift to -pi to pi
+    # Shift to -pi to pi
     angles[np.where(angles > np.pi)] = -1 * (2. * np.pi - angles[np.where(angles > np.pi)])
 
-    base_conf.clean_up(data_x, data_y, vec_x, vec_y)
+    bc.clean_up(data_x, data_y, vec_x, vec_y)
 
     return angles
 
@@ -1464,7 +1878,8 @@ def translate_wcsprm(wcsprm):
 
     Returns
     -------
-    wcsprm
+    wcsprm, scales
+        The updated WCS object
     """
 
     # Initialize logging for this user-callable function
@@ -1522,6 +1937,7 @@ def process_catalog(catalog, wcsprm=None, origin=0):
 
     :param catalog: Catalog containing either RA, DEC or xcentroid, ycentroid.
     :param wcsprm: WCS parameter object (optional).
+    :param origin: Image origin. Either ´0´ or ´1´. Default is 0.
     :return: Arrays of x and y coordinates.
     """
     if wcsprm is not None:
@@ -1538,8 +1954,8 @@ def process_catalog(catalog, wcsprm=None, origin=0):
 
 
 def create_histogram(log_distance, angle, bins, ranges):
-    """
-    Create a 2D histogram from log distance and angle data.
+    """Create a 2D histogram from log distance and angle data.
+
     """
 
     vals = [log_distance, angle]
@@ -1550,8 +1966,8 @@ def create_histogram(log_distance, angle, bins, ranges):
 
 
 def apply_fft_and_normalize(H):
-    """
-    Apply FFT to the histogram and normalize the result.
+    """Apply FFT to the histogram and normalize the result.
+
     """
 
     ff = cross_corr_to_fourier_space(H)
@@ -1618,7 +2034,19 @@ def move_match_to_first(array1, array2):
 
 
 def filter_df_within_bounds(df, center_coords, shape, additional_width):
-    """"""
+    """
+
+    Parameters
+    ----------
+    df
+    center_coords
+    shape
+    additional_width
+
+    Returns
+    -------
+
+    """
     x_coord, y_coord = center_coords
     y_shape, x_shape = shape
     x_add_width, y_add_width = additional_width
@@ -1647,26 +2075,6 @@ def gaussian_2d(xy, amp, xo, yo, sigma, theta, offset):
     return g.ravel()
 
 
-def subpixel_peak_position(around_peak):
-    """"""
-    x = np.linspace(0, around_peak.shape[0] - 1, around_peak.shape[0])
-    y = np.linspace(0, around_peak.shape[1] - 1, around_peak.shape[1])
-    x, y = np.meshgrid(x, y)
-
-    try:
-        initial_guess = (around_peak.max(), 1, 1, 1, 0, 0)
-        result = curve_fit(gaussian_2d, xdata=(x, y), ydata=around_peak.ravel(), method='lm',
-                           p0=initial_guess, nan_policy='omit')
-        _, x_peak, y_peak, _, _, _ = result[0]
-        peak_x_subpixel = x_peak - 0.5
-        peak_y_subpixel = y_peak - 0.5
-
-    except (RuntimeError, ValueError):
-        peak_x_subpixel = peak_y_subpixel = 0
-
-    return peak_x_subpixel, peak_y_subpixel
-
-
 def cosine_interpolation_1d(v):
     """
     Perform cosine interpolation on a 1D array.
@@ -1682,3 +2090,597 @@ def cosine_interpolation_1d(v):
         return 0
     else:
         return (v[0] - v[2]) / (2 * denom)
+
+    # def find_wcs_work(self, input_wcsprm, match_radius_px=1, image=None):
+    #     """Run the plate-solve algorithm to find the best WCS transformation"""
+    #
+    #     def reset_best_params():
+    #         nonlocal best_Nobs, best_score, best_rms_dist, best_completeness, best_wcsprm, best_ref_cat, best_src_cat
+    #         best_Nobs = -1
+    #         best_score = -np.inf
+    #         best_rms_dist = np.inf
+    #         best_completeness = 0
+    #         best_wcsprm = None
+    #         best_ref_cat = None
+    #         best_src_cat = None
+    #
+    #     self.log.info("> Run WCS calibration")
+    #
+    #     self.image = image
+    #     self.match_radius_px = match_radius_px
+    #     match_radius_limit_px = 3. * match_radius_px
+    #
+    #     Nobs_total = len(self.source_cat_full)  # total number of detected sources
+    #     Nref_total = len(self.ref_cat_full)  # total number of reference stars
+    #
+    #     rotations = self.rotations
+    #     center_coords = [(image.shape[1] // 2, image.shape[0] // 2)]  #,
+    #     # (0, 0),
+    #     # (image.shape[1], 0),
+    #     # (0, image.shape[0]),
+    #     # (image.shape[1], image.shape[0])][:1]
+    #
+    #     search_area_shape = image.shape
+    #     search_area_additional_width = (1, 1)
+    #
+    #     result_dict = {"radius_px": None, "matches": None, "rms": None}
+    #     src_cat_match = ref_cat_match = None
+    #
+    #     initial_wcsprm = input_wcsprm.wcs
+    #     final_wcsprm = None
+    #
+    #     init_dist_bin_size = self.dist_bin_size
+    #     init_ang_bin_size = self.ang_bin_size
+    #
+    #     center_idx = 0
+    #     rot_matrix_idx = 0
+    #     ref_sample_idx = 0
+    #
+    #     solve_attempts_count = 0
+    #     high_completeness_count = 0
+    #     possible_solution_count = 0
+    #     no_solution_count = 0
+    #
+    #     max_Nobs_initial = 100
+    #     num_ref_samples = 5
+    #     max_rotations = len(rotations)
+    #     max_centers = len(center_coords)
+    #     max_wcs_solve_attempts = max_rotations * max_centers
+    #     max_no_solution_count = 3
+    #     max_wcs_eval_iter = self.config['MAX_WCS_FUNC_ITER']
+    #
+    #     use_initial_wcs_estimate = True
+    #     update_src_cat = False
+    #     update_ref_cat = False
+    #     has_large_src_cat = False if Nobs_total <= max_Nobs_initial else True
+    #     has_possible_solution = False
+    #     has_solution = False
+    #
+    #     best_Nobs = -1
+    #     best_score = -np.inf
+    #     best_rms_dist = np.inf
+    #     best_completeness = 0
+    #     best_wcsprm = None
+    #     best_ref_cat = None
+    #     best_src_cat = None
+    #
+    #     self.source_cat = self.source_cat_full.head(max_Nobs_initial)
+    #     self.get_source_cat_variables()
+    #
+    #     self.log.info(f'  Detected sources (total): {Nobs_total}')
+    #     self.log.info(f'  Reference sources (total): {Nref_total}')
+    #     self.log.info(f'  Match radius: {self.match_radius_px:.2f} px')
+    #
+    #     while True:
+    #
+    #         # failsafe
+    #         if solve_attempts_count >= max_wcs_solve_attempts:
+    #             has_solution = False
+    #             break
+    #
+    #         # set rotation matrix
+    #         current_rotMatrix = self.rotations[rot_matrix_idx]
+    #
+    #         # apply rotation matrix to WCS
+    #         if use_initial_wcs_estimate:
+    #             self.current_wcsprm = rotate(copy(initial_wcsprm), current_rotMatrix)
+    #
+    #         # apply the WCS to the full reference catalog
+    #         ref_cat_full_updated = update_catalog_positions(self.ref_cat_full,
+    #                                                         self.current_wcsprm,
+    #                                                         origin=0)
+    #
+    #         # set the cutout center to current index if no possible solution was found,
+    #         # else use the image center since the wcs was adjusted
+    #         current_cutoutCenter = center_coords[center_idx] if not has_possible_solution else center_coords[0]
+    #
+    #         # filter sources according to the current cutout center and include only sources
+    #         # within the given cutout shape plus an additional width
+    #         ref_cat_filtered = filter_df_within_bounds(ref_cat_full_updated,
+    #                                                    current_cutoutCenter,
+    #                                                    search_area_shape,
+    #                                                    search_area_additional_width)
+    #
+    #         # if the source catalog has more than 100 objects and a possible solution was found, use the full source
+    #         # catalog
+    #         if update_src_cat:
+    #             self.source_cat = self.source_cat_full
+    #             self.get_source_cat_variables()
+    #
+    #         # get current object count
+    #         Nobs_current = len(self.source_cat)
+    #         Nref_current = len(ref_cat_filtered)
+    #
+    #         # create a list with the number of samples to draw from the reference catalog, evenly spaced in log-space
+    #         ref_cat_sample_number = np.unique(np.logspace(np.log10(Nobs_current),
+    #                                                       np.log10(Nref_current),
+    #                                                       num=num_ref_samples,
+    #                                                       base=10, endpoint=False, dtype=int))
+    #         # print('update_ref_cat', update_ref_cat)
+    #         # print('ref_sample_idx', ref_sample_idx)
+    #         if update_ref_cat:
+    #
+    #             # update the reference catalog by including those objects from the reference catalog
+    #             # that fall within n times the current match radius
+    #             self.ref_cat = get_matched_reference_catalog(self.source_cat, ref_cat_filtered,
+    #                                                          src_cat_match, ref_cat_match,
+    #                                                          match_radius_limit_px)
+    #
+    #             #
+    #             self.source_cat = match_catalogs(self.ref_cat,
+    #                                              self.source_cat,
+    #                                              radius=match_radius_limit_px, N=1)
+    #         else:
+    #             # select the N brightest reference sources
+    #             self.ref_cat = ref_cat_filtered.head(ref_cat_sample_number[ref_sample_idx])
+    #         #
+    #         if no_solution_count == 0 and not has_possible_solution:
+    #             self.log.info(
+    #                 f"  > Testing configuration [{solve_attempts_count + 1}/{max_wcs_solve_attempts}]:")
+    #             self.log.info(
+    #                 f"{' ':<4}Rotation matrix [{rot_matrix_idx + 1}/{len(self.rotations)}]: "
+    #                 f"[{', '.join(map(str, current_rotMatrix))}]")
+    #             self.log.info(
+    #                 f"{' ':<4}Cutout center position (x, y): "
+    #                 f"({', '.join(map(str, current_cutoutCenter))})")
+    #
+    #             self.log.info(f"{' ':<4}Reference sources (within cutout boundaries): {Nref_current}")
+    #             if has_large_src_cat:
+    #                 self.log.info(f"{' ':<4}Detected sources (brightest): {Nobs_current} "
+    #                               f"out of {Nobs_total}")
+    #             else:
+    #                 self.log.info(f"{' ':<4}Detected sources (all): {Nobs_current}")
+    #
+    #             self.log.info(f"{' ':<4}> Try [{no_solution_count + 1}/{max_no_solution_count}] "
+    #                           f"Number of reference sources: {len(self.ref_cat)}/{Nref_current}")
+    #
+    #         elif no_solution_count != 0 and not has_possible_solution:
+    #             self.log.info(f"{' ':<4}> Try [{no_solution_count + 1}/{max_no_solution_count}] "
+    #                           f"Number of reference sources: {len(self.ref_cat)}/{Nref_current}")
+    #
+    #         # plot_catalog_positions(self.source_cat,
+    #         #                        self.ref_cat,
+    #         #                        None, self.image)
+    #         # process the current source catalog and the selected reference sources
+    #         sample_result = self.process_sample()
+    #         print(sample_result[0], sample_result[1], 1. / (sample_result[0] * sample_result[1]))
+    #
+    #         # plot_catalog_positions(self.source_cat,
+    #         #                        self.ref_cat,
+    #         #                        sample_result[2], self.image)
+    #         # plt.show()
+    #         sample_result = None
+    #         # check result
+    #         if sample_result is None or sample_result[0] <= self.config['MIN_SOURCE_NO_CONVERGENCE']:
+    #             no_solution_count += 1
+    #
+    #             if no_solution_count >= max_no_solution_count:
+    #                 self.log.warning(f"{' ':<6}> No possible solution found after {max_no_solution_count} trails. "
+    #                                  f"Skipping to next configuration.")
+    #                 ref_sample_idx = num_ref_samples - 1  # Force iteration
+    #                 no_solution_count = 0  # Reset counter for the next iteration
+    #             else:
+    #                 if sample_result is None:
+    #                     self.log.warning(f"{' ':<6}> No solution/matches found. "
+    #                                      f"Trying again with increased number of reference sources...")
+    #                 else:
+    #                     self.log.warning(f"{' ':<6}> Configuration resulted in less than "
+    #                                      f"{self.config['MIN_SOURCE_NO_CONVERGENCE']} matches. "
+    #                                      f"Trying again with increased number of reference sources...")
+    #
+    #             if ref_sample_idx == num_ref_samples - 1:
+    #                 rot_matrix_idx += 1
+    #                 ref_sample_idx = 0
+    #                 solve_attempts_count += 1
+    #             else:
+    #                 # Move to the next sample within the same iteration
+    #                 ref_sample_idx += 1
+    #
+    #             # reset switches
+    #             self.ang_bin_size = init_ang_bin_size
+    #             self.dist_bin_size = init_dist_bin_size
+    #             src_cat_match = ref_cat_match = None
+    #             use_initial_wcs_estimate = True
+    #             update_ref_cat = False
+    #             update_src_cat = False
+    #             has_possible_solution = False
+    #
+    #             # reset best result
+    #             reset_best_params()
+    #             continue
+    #         else:
+    #             has_possible_solution = True
+    #
+    #         # update possible solution count
+    #         possible_solution_count += 1
+    #
+    #         # unpack results
+    #         Nobs_matched, score, wcsprm_out, result_info, src_cat_match, ref_cat_match = sample_result
+    #
+    #         # set variables
+    #         Nref_matched = len(self.ref_cat)
+    #         completeness = Nobs_matched / Nref_matched
+    #         rms_dist = 1. / (score * Nobs_matched)
+    #         self.current_wcsprm = copy(wcsprm_out)
+    #
+    #         # check completeness
+    #         if completeness >= self.config['THRESHOLD_CONVERGENCE']:
+    #             high_completeness_count += 1
+    #
+    #         # update best result
+    #         if best_Nobs <= Nobs_matched:
+    #             if best_score < score or completeness == 1.:
+    #                 best_Nobs = Nobs_matched
+    #                 best_score = score
+    #                 best_completeness = completeness
+    #                 best_wcsprm = copy(wcsprm_out)
+    #                 best_ref_cat = self.ref_cat
+    #                 best_src_cat = self.source_cat
+    #
+    #         print(possible_solution_count, Nobs_matched, score, completeness, high_completeness_count, rms_dist)
+    #         # plot_catalog_positions(self.source_cat,
+    #         #                        self.ref_cat,
+    #         #                        self.current_wcsprm, self.image)
+    #         # plt.show()
+    #
+    #         # if there are more than the N brightest sources, increase the number of sources and re-run
+    #         if has_large_src_cat and not update_src_cat:
+    #             update_src_cat = True
+    #             update_ref_cat = True
+    #             use_initial_wcs_estimate = False
+    #
+    #             possible_solution_count = 0
+    #             high_completeness_count = 0
+    #             self.log.info(f"{' ':<6}> Possible solution found. Confirming...")
+    #             self.log.info(f"{' ':<6}Increase source number: "
+    #                           f"{Nobs_current} (brightest) --> {len(self.source_cat_full)} (all)")
+    #             continue
+    #
+    #         elif not has_large_src_cat and possible_solution_count == 1:
+    #             self.log.info(f"{' ':<6}> Possible solution found. Confirming...")
+    #
+    #         if completeness == 1.0 or high_completeness_count >= 3 or possible_solution_count >= max_wcs_eval_iter:
+    #
+    #             has_solution = True
+    #             final_wcsprm = best_wcsprm
+    #
+    #             # get rms estimate
+    #             result_dict = get_rms(best_ref_cat,
+    #                                   best_src_cat,
+    #                                   best_wcsprm,
+    #                                   self.match_radius_px,
+    #                                   best_Nobs)
+    #
+    #             self.log.info(f"{' ':<6}>> " + bc.BCOLORS.PASS + "Solution found." + bc.BCOLORS.OKGREEN)
+    #             self.log.info(f"{' ':<4}{'-' * 50}")
+    #             self.log.info(f"{' ':<4}Summary:")
+    #             self.log.info(f"{' ':<4}{'-' * 50}")
+    #             self.log.info(f"{' ':<5}{'Evaluations':<30} {possible_solution_count} ")
+    #             self.log.info(f"{' ':<5}{'Matched (detected sources)':<30} {f'{best_Nobs}/{Nobs_total}'} ")
+    #             self.log.info(f"{' ':<5}{'Matched (reference sources)':<30} {f'{len(best_ref_cat)}/{Nref_total}'} ")
+    #             self.log.info(f"{' ':<5}{'Matched (src/ref)':<30} {f'{best_Nobs}/{len(best_ref_cat)}'} ")
+    #             self.log.info(
+    #                 f"{' ':<5}{'Completeness':<30} {best_completeness:.3f} ({best_completeness * 100:.1f}%)")
+    #             self.log.info(f"{' ':<5}{'Match radius (px)':<30} {result_dict['radius_px']:.2f} ")
+    #             self.log.info(f"{' ':<5}{'RMS (arcsec)':<30} {result_dict['rms']:.2f} ")
+    #             self.log.info(f"{' ':<4}{'-' * 50}")
+    #
+    #             break
+    #         else:
+    #             # update switches for next iteration
+    #             update_ref_cat = True
+    #             use_initial_wcs_estimate = False
+    #
+    #             if possible_solution_count == 1:
+    #                 # increase resolution
+    #                 self.dist_bin_size = 0.5
+    #                 self.ang_bin_size = 0.5
+    #
+    #     return has_solution, final_wcsprm, result_dict
+    #
+    # def find_wcs_working_old(self, input_wcsprm, match_radius_px=1, image=None):
+    #     """Run the plate-solve algorithm to find the best WCS transformation"""
+    #
+    #     def reset_best_params():
+    #         nonlocal best_Nobs, best_score, best_rms_dist, best_completeness, best_wcsprm, best_ref_cat, best_src_cat
+    #         best_Nobs = -1
+    #         best_score = -np.inf
+    #         best_rms_dist = np.inf
+    #         best_completeness = 0
+    #         best_wcsprm = None
+    #         best_ref_cat = None
+    #         best_src_cat = None
+    #
+    #     self.log.info("> Run WCS calibration")
+    #
+    #     self.image = image
+    #     self.match_radius_px = match_radius_px
+    #     match_radius_limit_px = 3. * match_radius_px
+    #
+    #     Nobs_total = len(self.source_cat_full)  # total number of detected sources
+    #     Nref_total = len(self.ref_cat_full)  # total number of reference stars
+    #
+    #     rotations = self.rotations
+    #     center_coords = [(image.shape[1] // 2, image.shape[0] // 2),
+    #                      (0, 0),
+    #                      (image.shape[1], 0),
+    #                      (0, image.shape[0]),
+    #                      (image.shape[1], image.shape[0])]
+    #
+    #     search_area_shape = image.shape
+    #     search_area_additional_width = (1, 1)
+    #
+    #     result_dict = {"radius_px": None, "matches": None, "rms": None}
+    #     src_cat_match = ref_cat_match = None
+    #
+    #     initial_wcsprm = input_wcsprm.wcs
+    #     final_wcsprm = None
+    #
+    #     center_idx = 0
+    #     rot_matrix_idx = 0
+    #     ref_sample_idx = 0
+    #
+    #     solve_attempts_count = 0
+    #     high_completeness_count = 0
+    #     possible_solution_count = 0
+    #     no_solution_count = 0
+    #
+    #     max_Nobs_initial = 100
+    #     num_ref_samples = 5
+    #     max_rotations = len(rotations)
+    #     max_centers = len(center_coords)
+    #     max_wcs_solve_attempts = max_rotations * max_centers
+    #     max_no_solution_count = 3
+    #     max_wcs_eval_iter = self.config['MAX_WCS_FUNC_ITER']
+    #
+    #     use_initial_wcs_estimate = True
+    #     update_src_cat = False
+    #     update_ref_cat = False
+    #     has_large_src_cat = False if Nobs_total <= max_Nobs_initial else True
+    #     has_possible_solution = False
+    #     has_solution = False
+    #
+    #     best_Nobs = -1
+    #     best_score = -np.inf
+    #     best_rms_dist = np.inf
+    #     best_completeness = 0
+    #     best_wcsprm = None
+    #     best_ref_cat = None
+    #     best_src_cat = None
+    #
+    #     self.source_cat = self.source_cat_full.head(max_Nobs_initial)
+    #     self.get_source_cat_variables()
+    #
+    #     self.log.info(f'  Detected sources (total): {Nobs_total}')
+    #     self.log.info(f'  Reference sources (total): {Nref_total}')
+    #     self.log.info(f'  Match radius: {self.match_radius_px:.2f} px')
+    #
+    #     while True:
+    #
+    #         # failsafe
+    #         if solve_attempts_count >= max_wcs_solve_attempts:
+    #             has_solution = False
+    #             break
+    #
+    #         # set rotation matrix
+    #         current_rotMatrix = self.rotations[rot_matrix_idx]
+    #
+    #         # apply rotation matrix to WCS
+    #         if use_initial_wcs_estimate:
+    #             self.current_wcsprm = rotate(copy(initial_wcsprm), current_rotMatrix)
+    #
+    #         # apply the WCS to the full reference catalog
+    #         ref_cat_full_updated = update_catalog_positions(self.ref_cat_full,
+    #                                                         self.current_wcsprm,
+    #                                                         origin=0)
+    #
+    #         # set the cutout center to current index if no possible solution was found,
+    #         # else use the image center since the wcs was adjusted
+    #         current_cutoutCenter = center_coords[center_idx] if not has_possible_solution else center_coords[0]
+    #
+    #         # filter sources according to the current cutout center and include only sources
+    #         # within the given cutout shape plus an additional width
+    #         ref_cat_filtered = filter_df_within_bounds(ref_cat_full_updated,
+    #                                                    current_cutoutCenter,
+    #                                                    search_area_shape,
+    #                                                    search_area_additional_width)
+    #
+    #         # if the source catalog has more than 100 objects and a possible solution was found, use the full source
+    #         # catalog
+    #         if update_src_cat:
+    #             self.source_cat = self.source_cat_full
+    #             self.get_source_cat_variables()
+    #
+    #         # get current object count
+    #         Nobs_current = len(self.source_cat)
+    #         Nref_current = len(ref_cat_filtered)
+    #
+    #         # create a list with the number of samples to draw from the reference catalog, evenly spaced in log-space
+    #         ref_cat_sample_number = np.unique(np.logspace(np.log10(Nobs_current),
+    #                                                       np.log10(Nref_current),
+    #                                                       num=num_ref_samples,
+    #                                                       base=10, endpoint=False, dtype=int))
+    #
+    #         if update_ref_cat:
+    #
+    #             # update the reference catalog by including those objects from the reference catalog
+    #             # that fall within n times the current match radius
+    #             self.ref_cat = get_matched_reference_catalog(self.source_cat, ref_cat_filtered,
+    #                                                          src_cat_match, ref_cat_match,
+    #                                                          match_radius_limit_px)
+    #
+    #             #
+    #             self.source_cat = match_catalogs(self.ref_cat,
+    #                                              self.source_cat,
+    #                                              radius=match_radius_limit_px, N=1)
+    #         else:
+    #             # select the N brightest reference sources
+    #             self.ref_cat = ref_cat_filtered.head(ref_cat_sample_number[ref_sample_idx])
+    #
+    #         if no_solution_count == 0 and not has_possible_solution:
+    #             self.log.info(
+    #                 f"  > Testing configuration [{solve_attempts_count + 1}/{max_wcs_solve_attempts}]:")
+    #             self.log.info(
+    #                 f"{' ':<4}Rotation matrix [{rot_matrix_idx + 1}/{len(self.rotations)}]: "
+    #                 f"[{', '.join(map(str, current_rotMatrix))}]")
+    #             self.log.info(
+    #                 f"{' ':<4}Cutout center position [{center_idx + 1}/{len(center_coords)}] (x, y): "
+    #                 f"({', '.join(map(str, current_cutoutCenter))})")
+    #
+    #             self.log.info(f"{' ':<4}Reference sources (within cutout): {Nref_current}")
+    #             if has_large_src_cat:
+    #                 self.log.info(f"{' ':<4}Detected sources (brightest): {Nobs_current} "
+    #                               f"out of {Nobs_total}")
+    #             else:
+    #                 self.log.info(f"{' ':<4}Detected sources (all): {Nobs_current}")
+    #
+    #             self.log.info(f"{' ':<4}> Try [{no_solution_count + 1}/{max_no_solution_count}] "
+    #                           f"Initial number of reference sources: {len(self.ref_cat)}/{Nref_current}")
+    #
+    #         elif no_solution_count != 0 and not has_possible_solution:
+    #             self.log.info(f"{' ':<4}> Try [{no_solution_count + 1}/{max_no_solution_count}] "
+    #                           f"Increasing number of reference sources: {len(self.ref_cat)}/{Nref_current}")
+    #
+    #         # process the current source catalog and the selected reference sources
+    #         sample_result = self.process_sample()
+    #
+    #         # check result
+    #         if sample_result is None or sample_result[0] < self.config['MIN_SOURCE_NO_CONVERGENCE']:
+    #             no_solution_count += 1
+    #
+    #             if no_solution_count >= max_no_solution_count:
+    #                 self.log.warning(f"{' ':<6}> No solution found after {max_no_solution_count} trails. "
+    #                                  f"Skipping to next configuration.")
+    #                 ref_sample_idx = num_ref_samples - 1  # Force iteration
+    #                 no_solution_count = 0  # Reset counter for the next iteration
+    #             else:
+    #                 if sample_result is None:
+    #                     self.log.warning(f"{' ':<6}> No solution/matches found. Trying again...")
+    #                 else:
+    #                     self.log.warning(f"{' ':<6}> Configuration resulted in less than "
+    #                                      f"{self.config['MIN_SOURCE_NO_CONVERGENCE']} matches. "
+    #                                      f"Trying again...")
+    #
+    #             # increase counter
+    #             if center_idx == max_centers - 1:
+    #                 rot_matrix_idx += 1
+    #                 center_idx = 0
+    #                 solve_attempts_count += 1
+    #             else:
+    #                 if ref_sample_idx == num_ref_samples - 1:
+    #                     center_idx += 1
+    #                     ref_sample_idx = 0
+    #                     solve_attempts_count += 1
+    #                 else:
+    #                     # Move to the next sample within the same iteration
+    #                     ref_sample_idx += 1
+    #
+    #             # reset switches
+    #             src_cat_match = ref_cat_match = None
+    #             use_initial_wcs_estimate = True
+    #             update_ref_cat = False
+    #             update_src_cat = False
+    #             has_possible_solution = False
+    #
+    #             # reset best result
+    #             reset_best_params()
+    #             continue
+    #         else:
+    #             has_possible_solution = True
+    #
+    #         # update possible solution count
+    #         possible_solution_count += 1
+    #
+    #         # unpack results
+    #         Nobs_matched, score, wcsprm_out, result_info, src_cat_match, ref_cat_match = sample_result
+    #
+    #         # set variables
+    #         Nref_matched = len(self.ref_cat)
+    #         completeness = Nobs_matched / Nref_matched
+    #         rms_dist = 1. / (score * Nobs_matched)
+    #         self.current_wcsprm = copy(wcsprm_out)
+    #
+    #         # check completeness
+    #         if completeness >= self.config['THRESHOLD_CONVERGENCE']:
+    #             high_completeness_count += 1
+    #
+    #         # update best result
+    #         if best_score < score and best_Nobs <= Nobs_matched:
+    #             best_Nobs = Nobs_matched
+    #             best_score = score
+    #             best_completeness = completeness
+    #             best_wcsprm = copy(wcsprm_out)
+    #             best_ref_cat = self.ref_cat
+    #             best_src_cat = self.source_cat
+    #
+    #         # print(possible_solution_count, Nobs_matched, score, completeness, high_completeness_count, rms_dist)
+    #
+    #         # if there are more than the N brightest sources, increase the number of sources and re-run
+    #         if has_large_src_cat and not update_src_cat:
+    #             update_src_cat = True
+    #             update_ref_cat = True
+    #             use_initial_wcs_estimate = False
+    #
+    #             possible_solution_count = 0
+    #             high_completeness_count = 0
+    #             self.log.info(f"{' ':<6}> Possible solution found. Confirming...")
+    #             self.log.info(f"{' ':<6}Increase source number: "
+    #                           f"{Nobs_current} (brightest) --> {len(self.source_cat_full)} (all)")
+    #             continue
+    #
+    #         elif not has_large_src_cat and possible_solution_count == 1:
+    #             self.log.info(f"{' ':<6}> Possible solution found. Confirming...")
+    #
+    #         if completeness == 1.0 or high_completeness_count >= 3 or possible_solution_count >= max_wcs_eval_iter:
+    #
+    #             has_solution = True
+    #             final_wcsprm = best_wcsprm
+    #
+    #             # get rms estimate
+    #             result_dict = get_rms(best_ref_cat,
+    #                                   best_src_cat,
+    #                                   best_wcsprm,
+    #                                   self.match_radius_px,
+    #                                   best_Nobs)
+    #
+    #             self.log.info(f"{' ':<6}>> " + bc.BCOLORS.PASS + "Solution found." + bc.BCOLORS.OKGREEN)
+    #             self.log.info(f"{' ':<4}{'-' * 50}")
+    #             self.log.info(f"{' ':<4}Summary:")
+    #             self.log.info(f"{' ':<4}{'-' * 50}")
+    #             self.log.info(f"{' ':<5}{'Evaluations':<30} {possible_solution_count} ")
+    #             self.log.info(f"{' ':<5}{'Matched (detected sources)':<30} {f'{best_Nobs}/{Nobs_total}'} ")
+    #             self.log.info(f"{' ':<5}{'Matched (reference sources)':<30} {f'{len(best_ref_cat)}/{Nref_total}'} ")
+    #             self.log.info(f"{' ':<5}{'Matched (src/ref)':<30} {f'{best_Nobs}/{len(best_ref_cat)}'} ")
+    #             self.log.info(
+    #                 f"{' ':<5}{'Completeness':<30} {best_completeness:.3f} ({best_completeness * 100:.1f}%)")
+    #             self.log.info(f"{' ':<5}{'Match radius (px)':<30} {result_dict['radius_px']:.2f} ")
+    #             self.log.info(f"{' ':<5}{'RMS (arcsec)':<30} {result_dict['rms']:.2f} ")
+    #             self.log.info(f"{' ':<4}{'-' * 50}")
+    #
+    #             break
+    #         else:
+    #             # update switches for next iteration
+    #             update_ref_cat = True
+    #             use_initial_wcs_estimate = False
+    #
+    #     return has_solution, final_wcsprm, result_dict

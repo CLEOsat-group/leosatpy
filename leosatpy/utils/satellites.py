@@ -37,14 +37,13 @@ from datetime import datetime
 from dateutil import parser
 from geopy import distance
 from lmfit import Model
-from lmfit.models import (ConstantModel, GaussianModel, Gaussian2dModel,
+from lmfit.models import (ConstantModel, GaussianModel,
                           ExponentialGaussianModel, LognormalModel)
 
 from pyorbital import astronomy
 
 from scipy import ndimage as nd
 from scipy.sparse import csr_matrix
-from scipy.special import erf
 from scipy.integrate import quad
 from scipy.optimize import brentq
 from scipy.stats import norm
@@ -90,7 +89,7 @@ else:
     matplotlib.rc('ps', fonttype=42)
 
 # pipeline-specific modules
-from . import base_conf as _base_conf
+from . import base_conf as bc
 
 # -----------------------------------------------------------------------------
 
@@ -166,7 +165,7 @@ def get_average_magnitude(flux, flux_err, std_fluxes, std_mags, mag_corr, mag_co
     mag_avg_w = np.nanmean(mag_cleaned)
     mag_avg_err = np.nanmean(mag_err_cleaned)
 
-    _base_conf.clean_up(flux, flux_err, std_fluxes, std_mags, mag_corr)
+    bc.clean_up(flux, flux_err, std_fluxes, std_mags, mag_corr)
 
     return mag_avg_w, mag_avg_err
 
@@ -230,8 +229,8 @@ def get_radius_earth(B):
     """Get the radius of Earth for a given observation site latitude"""
     B = math.radians(B)  # converting into radians
 
-    a = _base_conf.REARTH_EQU  # Radius at sea level at the equator
-    b = _base_conf.REARTH_POL  # Radius at poles
+    a = bc.REARTH_EQU  # Radius at sea level at the equator
+    b = bc.REARTH_POL  # Radius at poles
 
     c = (a ** 2 * math.cos(B)) ** 2
     d = (b ** 2 * math.sin(B)) ** 2
@@ -243,6 +242,19 @@ def get_radius_earth(B):
 
 
 def ang_distance(lat1, lat2, lon1, lon2):
+    """
+
+    Parameters
+    ----------
+    lat1
+    lat2
+    lon1
+    lon2
+
+    Returns
+    -------
+
+    """
     # Haversine formula
     if lon2 > lon1:
         delta_lambda = math.radians(lon2 - lon1)
@@ -264,7 +276,7 @@ def ang_distance(lat1, lat2, lon1, lon2):
 def get_solar_phase_angle(sat_az, sat_alt, geo_loc, obs_range, obsDate):
     """Get the solar phase angle via the Sun-Sat angle"""
 
-    au = _base_conf.AU_TO_KM
+    au = bc.AU_TO_KM
     sun = ephem.Sun()
     sun.compute(obsDate)
 
@@ -302,7 +314,20 @@ def get_solar_phase_angle(sat_az, sat_alt, geo_loc, obs_range, obsDate):
 
 
 def get_observer_angle(sat_lat, geo_lat, sat_h_orb_km, h_obs_km, sat_range_km):
-    """"""
+    """
+
+    Parameters
+    ----------
+    sat_lat
+    geo_lat
+    sat_h_orb_km
+    h_obs_km
+    sat_range_km
+
+    Returns
+    -------
+
+    """
     # Initialize logging for this user-callable function
     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
 
@@ -367,6 +392,18 @@ def poly_func(x, a0, a1, a2):
 
 
 def compute_indices(c, ws, length):
+    """
+
+    Parameters
+    ----------
+    c
+    ws
+    length
+
+    Returns
+    -------
+
+    """
     # default setting: % operations to accommodate odd/even window sizes
     low, high = c - (ws // 2), c + (ws // 2) + ws % 2
 
@@ -380,6 +417,18 @@ def compute_indices(c, ws, length):
 
 
 def extract_peak_window(arr, coords, window_size=(3, 3)):
+    """
+
+    Parameters
+    ----------
+    arr
+    coords
+    window_size
+
+    Returns
+    -------
+
+    """
     # extract array shapes and window sizes into single variables
     len_r, len_c = arr.shape
     wsr, wsc = window_size
@@ -552,8 +601,7 @@ def fit_trail_params(Hij, rhos, thetas, theta_0, image_size, cent_ind, win_size,
 # noinspection PyAugmentAssignment
 def create_hough_space_vectorized(image: np.ndarray,
                                   dtheta: float = 0.05,
-                                  drho: float = 1,
-                                  silent: bool = False):
+                                  drho: float = 1):
     """ Create Hough transform parameter space H(theta, rho).
 
     Vectorized implementation.
@@ -568,9 +616,6 @@ def create_hough_space_vectorized(image: np.ndarray,
         dtheta:
             Number of angle values.
             Defaults to 720=0.5deg
-        silent:
-            If True, minimal output.
-            Defaults to False.
     """
 
     # Initialize logging for this user-callable function
@@ -619,12 +664,24 @@ def create_hough_space_vectorized(image: np.ndarray,
     # rhos in rows and thetas in columns (rho, theta)
     accumulator = np.transpose(accumulator)
 
-    _base_conf.clean_up(rho_values, ranges, bins)
+    bc.clean_up(rho_values, ranges, bins)
 
     return accumulator, rhos, thetas, drho, dtheta
 
 
 def quantize(df, colname='orientation', tolerance=0.005):
+    """
+
+    Parameters
+    ----------
+    df
+    colname
+    tolerance
+
+    Returns
+    -------
+
+    """
     model = AgglomerativeClustering(distance_threshold=tolerance,
                                     linkage='complete',
                                     n_clusters=None).fit(df[[colname]].values)
@@ -641,16 +698,28 @@ def quantize(df, colname='orientation', tolerance=0.005):
 
 
 def get_min_trail_length(config: dict):
-    """"""
+    """
+
+    Parameters
+    ----------
+    config
+
+    Returns
+    -------
+
+    """
     sat_id = config['sat_id']
     pixscale = config['pixscale']
 
-    # get nominal orbit altitude
-    sat_h_orb_ref = _base_conf.SAT_HORB_REF['ONEWEB']
-    if 'STARLINK' in sat_id:
-        sat_h_orb_ref = _base_conf.SAT_HORB_REF['STARLINK']
-    if 'BLUEWALKER' in sat_id:
-        sat_h_orb_ref = _base_conf.SAT_HORB_REF['BLUEWALKER']
+    # Get nominal orbit altitude
+    sat_h_orb_ref = bc.get_nominal_orbit_altitude(sat_id)
+
+    # # get nominal orbit altitude
+    # sat_h_orb_ref = bc.SAT_HORB_REF['ONEWEB']
+    # if 'STARLINK' in sat_id:
+    #     sat_h_orb_ref = bc.SAT_HORB_REF['STARLINK']
+    # if 'BLUEWALKER' in sat_id:
+    #     sat_h_orb_ref = bc.SAT_HORB_REF['BLUEWALKER']
 
     H_sat = sat_h_orb_ref * 1000.
     R = const.R_earth.value + H_sat
@@ -661,7 +730,7 @@ def get_min_trail_length(config: dict):
 
 def detect_sat_trails(image: np.ndarray,
                       config: dict,
-                      alpha: float = 10.,
+                      amount: float = 10.,
                       sigma_blurr: float = 4.,
                       borderLen: int = 1,
                       mask: np.ndarray = None,
@@ -722,7 +791,7 @@ def detect_sat_trails(image: np.ndarray,
     # apply un-sharpen mask
     blurred_f = nd.gaussian_filter(image, 3.)
     filter_blurred_f = nd.gaussian_filter(blurred_f, sigma_blurr)
-    sharpened = blurred_f + alpha * (blurred_f - filter_blurred_f)
+    sharpened = blurred_f + amount * (blurred_f - filter_blurred_f)
 
     # apply gaussian to get rid of unwanted edges
     sharpened = nd.gaussian_filter(sharpened, 3.)
@@ -799,13 +868,13 @@ def detect_sat_trails(image: np.ndarray,
     # create labels
     labels = cat.labels[combined_mask]
 
-    _base_conf.clean_up(cat, ecc_mask, combined_mask)
+    bc.clean_up(cat, ecc_mask, combined_mask)
 
     # first check if there are any labels
     if labels.size == 0:
         if not silent:
             log.info("  ==> NO satellite trail(s) detected.")
-        _base_conf.clean_up(sharpened, labels, segm, segm_init)
+        bc.clean_up(sharpened, labels, segm, segm_init)
         return None, False
 
     # keep only the good label
@@ -821,7 +890,7 @@ def detect_sat_trails(image: np.ndarray,
         if df_init['eccentricity'].values[0] < 0.999:
             if not silent:
                 log.info("  ==> NO satellite trail(s) detected.")
-            _base_conf.clean_up(sharpened, segm, segm_init, labels, df_init)
+            bc.clean_up(sharpened, segm, segm_init, labels, df_init)
             return None, False
         else:
             df_search = df_init.copy()
@@ -836,7 +905,7 @@ def detect_sat_trails(image: np.ndarray,
         if df_quantize.empty:
             if not silent:
                 log.info("  ==> NO satellite trails detected.")
-            _base_conf.clean_up(sharpened, segm, segm_init,
+            bc.clean_up(sharpened, segm, segm_init,
                                 labels, df_init, df_quantize, grouped)
             return None, False
         else:
@@ -849,7 +918,7 @@ def detect_sat_trails(image: np.ndarray,
             ind = idx_sorted[0]
             df_search = grouped.get_group(ind)
 
-            _base_conf.clean_up(df_quantize, s, res, ind, grouped)
+            bc.clean_up(df_quantize, s, res, ind, grouped)
 
     reg_dict, n_trail_total = get_trail_properties(segm, df_search, config, silent=silent)
 
@@ -859,12 +928,12 @@ def detect_sat_trails(image: np.ndarray,
 
     if not np.isfinite(check_props).all():
         if not silent:
-            log.warning(f"    => Trail parameter fit {_base_conf.fail_str} ")
+            log.warning(f"    => Trail parameter fit {bc.fail_str} ")
         has_trail = False
         n_trail_total -= 1
     else:
         if not silent:
-            log.info(f"    => Trail parameter fit was {_base_conf.pass_str}")
+            log.info(f"    => Trail parameter fit was {bc.pass_str}")
         has_trail = True
 
     if config['roi_offset'] is not None:
@@ -886,7 +955,7 @@ def detect_sat_trails(image: np.ndarray,
         log.info(f"  ==> Total number of satellite trail(s) detected: {n_trail_total}")
 
     # del image, sharpened, segm, segm_init, df, labels
-    _base_conf.clean_up(sharpened, segm, segm_init, df_init, labels)
+    bc.clean_up(sharpened, segm, segm_init, df_init, labels)
 
     return trail_data, has_trail
 
@@ -919,12 +988,11 @@ def get_trail_properties(segm_map, df, config,
     del binary_img
 
     if not silent:
-        log.info(f"    Create Hough space accumulator array")
+        log.info(f"    Create Hough space accumulator array (This may take a second!)")
     # create hough space and get peaks
     hspace_smooth, peaks, dist, theta = get_hough_transform(dilated,
                                                             theta_bin_size=theta_bin_size,
-                                                            rho_bin_size=rho_bin_size,
-                                                            silent=silent)
+                                                            rho_bin_size=rho_bin_size)
 
     n_trail = 0
     if len(peaks) > 1:
@@ -986,8 +1054,7 @@ def get_trail_properties(segm_map, df, config,
         # create hough space and get peaks
         hspace_smooth, peaks, dist, theta = get_hough_transform(dilated,
                                                                 theta_bin_size=theta_bin_size,
-                                                                rho_bin_size=rho_bin_size,
-                                                                silent=silent)
+                                                                rho_bin_size=rho_bin_size)
         del binary_img
     else:
         n_trail = 1
@@ -1028,22 +1095,20 @@ def get_trail_properties(segm_map, df, config,
                     'trail_mask': dilated
                 }}
 
-    _base_conf.clean_up(segm_map, fit_res, dilated, df, hspace_smooth,
+    bc.clean_up(segm_map, fit_res, dilated, df, hspace_smooth,
                         indices, row_ind, col_ind, dist, theta)
     return reg_dict, n_trail
 
 
 def get_hough_transform(image: np.ndarray, sigma: float = 2.,
                         theta_bin_size=0.02,
-                        rho_bin_size=1,
-                        silent: bool = False):
+                        rho_bin_size=1):
     """ Perform a Hough transform on the selected region and fit parameter """
 
     # generate Hough space H(theta, rho)
     res = create_hough_space_vectorized(image=image,
                                         dtheta=theta_bin_size,
-                                        drho=rho_bin_size,
-                                        silent=silent)
+                                        drho=rho_bin_size)
     hspace, dist, theta, _, _ = res
 
     # apply gaussian filter to smooth the image
@@ -1244,6 +1309,18 @@ def fit_single_model(x, y, fwhm, yerr=None, model_type='gaussian'):
 
 
 def adjust_center_init(x, center_init, shift_percentage=10.):
+    """
+
+    Parameters
+    ----------
+    x
+    center_init
+    shift_percentage
+
+    Returns
+    -------
+
+    """
     x_min, x_max = np.min(x), np.max(x)
     x_range = x_max - x_min
     max_shift = x_range * shift_percentage
@@ -1257,7 +1334,21 @@ def adjust_center_init(x, center_init, shift_percentage=10.):
 def fit_line_profile_two_comps(x, y, fwhm, model_type='gaussian',
                                yerr=None,
                                shift_percentage=10.):
+    """
 
+    Parameters
+    ----------
+    x
+    y
+    fwhm
+    model_type
+    yerr
+    shift_percentage
+
+    Returns
+    -------
+
+    """
     sky_mod = ConstantModel(prefix='const_', independent_vars=['x'], nan_policy='omit')
     sky_mod.set_param_hint(name='c', value=0.)
     pars = sky_mod.make_params()
@@ -1322,11 +1413,35 @@ def fit_line_profile_two_comps(x, y, fwhm, model_type='gaussian',
 
 
 def composite_gaussian(x, params):
+    """
+
+    Parameters
+    ----------
+    x
+    params
+
+    Returns
+    -------
+
+    """
     return sum(p['A'] * np.exp(-0.5 * ((x - p['mu']) / p['sigma'])**2) for p in params.values())
 
 
 def find_gaussian_bounds(params, sigma, xtol=1e-5, rtol=1e-5, maxiter=500):
+    """
 
+    Parameters
+    ----------
+    params
+    sigma
+    xtol
+    rtol
+    maxiter
+
+    Returns
+    -------
+
+    """
     total_area, _ = quad(composite_gaussian, -np.inf, np.inf, args=(params,))
 
     lower_percentile = norm.cdf(-sigma)

@@ -43,7 +43,7 @@ from astropy.io import fits
 from ccdproc import ImageFileCollection
 
 # Project modules
-from . import base_conf as _base_conf
+from . import base_conf as bc
 from . import telescope_conf as _tele_conf
 
 # -----------------------------------------------------------------------------
@@ -102,7 +102,7 @@ class DataSet(object):
         self._mode = prog_typ
         self._sub_mode = prog_sub_typ
         self._prefix = prefix
-        self._root_dir = _base_conf.ROOT_DIR
+        self._root_dir = bc.ROOT_DIR
         self._s = False
 
         self._check_input_for_fits()
@@ -295,7 +295,7 @@ class DataSet(object):
                     log.info("  Directory detected. Searching for .fits file(s).")
                 path = os.walk(name)
                 for root, dirs, files in path:
-                    f = sorted([s for s in files if re.search(regex_ext, s)])
+                    f = sorted([s for s in files if re.search(regex_ext, s) and not s.startswith('.')])
                     if len(f) > 0:
 
                         # [fits_image_filenames.append(Path(os.path.join(root, s))) for s in f
@@ -396,25 +396,22 @@ class DataSet(object):
 
             inst_dict[inst]['telescope'] = telescope
             inst_dict[inst]['obsparams'] = obsparams
+
             # filter fits files by science image type
-            # todo: implement here a possibility to only use flats,
-            #  bias or dark keywords maybe?
             add_filters = {"telescop": telescope}
             if telescope == 'CBNUO-JC':
                 add_filters = {'observat': telescope}
             if telescope in ['CTIO 0.9 meter telescope', 'CTIO 4.0-m telescope']:
                 add_filters = {'observat': 'CTIO'}
-            # if telescope == 'CTIO 4.0-m telescope':
-            #     add_filters = {'observat': 'CTIO'}
 
             add_filters[obsparams['instrume'].lower()] = inst
 
             if mode == 'reduceCalibObs':
-                combos = _base_conf.IMAGETYP_COMBOS
+                combos = bc.IMAGETYP_COMBOS
                 image_typs = [combos[s] for s in self._sub_mode]
                 imagetyp = '|'.join(image_typs)
             else:
-                imagetyp = _base_conf.IMAGETYP_COMBOS['light']
+                imagetyp = bc.IMAGETYP_COMBOS['light']
 
             if telescope == 'DDOTI 28-cm f/2.2':
                 add_filters['exptype'] = imagetyp
@@ -483,7 +480,7 @@ class DataSet(object):
 
             # open fits header and extract instrument name
             header = hdulist[0].header
-            for key in _base_conf.INSTRUMENT_KEYS:
+            for key in bc.INSTRUMENT_KEYS:
                 if key in header:
                     inst = header[key]
                     if inst == 'GROND':
@@ -499,7 +496,7 @@ class DataSet(object):
 
         if len(instruments) == 0:
             log.error('Cannot identify any supported telescope/instrument. Please update'
-                      '_base_conf.INSTRUMENT_KEYS accordingly.')
+                      'bc.INSTRUMENT_KEYS accordingly.')
             sys.exit()
 
         return list(set(instruments))
@@ -601,11 +598,11 @@ class DataSet(object):
 
         while not s and c <= 3:
             try:
-                title = _base_conf.BCOLORS.OKGREEN \
+                title = bc.BCOLORS.OKGREEN \
                         + '[  SELECT] Select folder/file [' + x + '] (default=0): ' \
-                        + _base_conf.BCOLORS.ENDC
+                        + bc.BCOLORS.ENDC
                 # _log.info('  Select folder [' + x + '] (default=0):')
-                ans = inputimeout(prompt=title, timeout=_base_conf.DEF_TIMEOUT)
+                ans = inputimeout(prompt=title, timeout=bc.DEF_TIMEOUT)
                 # ans = int(input(title))
                 ans = int(ans)
                 _ = data[ans]

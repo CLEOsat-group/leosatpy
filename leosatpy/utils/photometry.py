@@ -22,6 +22,7 @@
 """ Modules """
 import gc
 import os
+import sys
 import inspect
 import logging
 from concurrent.futures import ProcessPoolExecutor
@@ -51,7 +52,7 @@ else:
     matplotlib.rc('figure', dpi=150, facecolor='w', edgecolor='k')
     matplotlib.rc('text.latex', preamble=r'\usepackage{sfmath}')
 
-from astropy.stats import (sigma_clipped_stats, SigmaClip, mad_std)
+from astropy.stats import sigma_clipped_stats
 from photutils.aperture import (aperture_photometry,
                                 ApertureStats,
                                 CircularAperture,
@@ -60,7 +61,7 @@ from photutils.aperture import (aperture_photometry,
                                 RectangularAnnulus)
 
 # pipeline-specific modules
-from . import base_conf as _base_conf
+from . import base_conf as bc
 
 # -----------------------------------------------------------------------------
 
@@ -84,13 +85,15 @@ MODULE_PATH = os.path.dirname(inspect.getfile(inspect.currentframe()))
 
 # -----------------------------------------------------------------------------
 
-def convert_ssds_to_bvri(f, x1, x2, x3):
-    """Convert SSDS magnitudes to BVRI magnitudes.
+def convert_sdss_to_BVRI_lupton(f, x1, x2, x3):
+    """
+    Convert to BVRI magnitudes using SDSS magnitudes.
+
     Lupton et al.(2005) BibCode: 2005AAS...20713308L
 
     """
 
-    coeff_dict = _base_conf.CONV_SSDS_BVRI
+    coeff_dict = bc.CONV_SSDS_BVRI
 
     y1 = x2[:, 0] + coeff_dict[f][0][0] * (x1[:, 0] - x2[:, 0]) + coeff_dict[f][0][1]
     e_y1 = np.sqrt((coeff_dict[f][0][0] * x1[:, 1]) ** 2 +
@@ -114,10 +117,51 @@ def convert_ssds_to_bvri(f, x1, x2, x3):
 
     return _mags, e_mags
 
+def convert_sdss_to_U_jester(u, g, r):
+    """
+    Convert to U magnitude using SDSS magnitudes.
+
+    Jester et al.(2005)
+
+    """
+
+    B = g[:, 0] + 0.33 * (g[:, 0] - r[:, 0]) + 0.20
+    U = 0.77 * (u[:, 0] - g[:, 0]) - 0.88 + B
+    e_U = np.sqrt((0.77 * u[:, 1])**2 +
+                  (0.10 * g[:, 1])**2 +
+                  (0.33 * r[:, 1])**2)
+
+    return U, e_U
 
 # Define the function that will be executed in parallel
-def process_aper_photometry(r_aper, image, src_pos, mask, aper_mode, fwhm, exp_time,
-                            r_in=1.9, r_out=2.2, width=500, theta=0., gain=1., rdnoise=0):
+def process_aper_photometry(r_aper, iteration, image, src_pos, mask, aper_mode, fwhm, exp_time,
+                            r_in=1.9, r_out=2.2, width=500, theta=0., gain=1., rdnoise=0,
+                            total=1, use_lock=False):
+    """
+
+    Parameters
+    ----------
+    r_aper
+    iteration
+    image
+    src_pos
+    mask
+    aper_mode
+    fwhm
+    exp_time
+    r_in
+    r_out
+    width
+    theta
+    gain
+    rdnoise
+    total
+    use_lock
+
+    Returns
+    -------
+
+    """
     if aper_mode == 'circ':
 
         phot_res = get_aper_photometry(image, src_pos, mask=mask,
@@ -146,6 +190,10 @@ def process_aper_photometry(r_aper, image, src_pos, mask, aper_mode, fwhm, exp_t
                            t_exp=exp_time, area=area,
                            gain=gain, rdnoise=rdnoise, dc=0.)
     del image, mask
+
+    bc.print_progress_bar(iteration, total,  length=80,
+                          color=bc.BCOLORS.OKGREEN, use_lock=use_lock)
+
     return aper_flux, aper_bkg, snr, snr_err
 
 
@@ -160,7 +208,26 @@ def get_opt_aper_trail(image,
                        gain: float = 1,
                        rdnoise: float = 0,
                        silent: bool = False):
-    """"""
+    """
+
+    Parameters
+    ----------
+    image
+    src_pos
+    fwhm
+    exp_time
+    config
+    img_mask
+    width
+    theta
+    gain
+    rdnoise
+    silent
+
+    Returns
+    -------
+
+    """
     # Initialize logging for this user-callable function
     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
 
@@ -175,38 +242,37 @@ def get_opt_aper_trail(image,
     r_in = config['RSKYIN'] * 1.10
     r_out = config['RSKYOUT'] * 1.10
 
-    # Create the executor
-    executor = ProcessPoolExecutor()
-
+    total_rapers = len(rapers)
     try:
         # Create a partial function with the common parameters
         func = partial(process_aper_photometry, image=image, src_pos=src_pos,
-                       mask=img_mask,
-                       fwhm=fwhm, exp_time=exp_time, aper_mode='rect',
-                       r_in=r_in, r_out=r_out,
-                       width=width, theta=theta,
-                       gain=gain, rdnoise=rdnoise)
+                       mask=img_mask, fwhm=fwhm, exp_time=exp_time, aper_mode='rect',
+                       r_in=r_in, r_out=r_out, width=width, theta=theta,
+                       gain=gain, rdnoise=rdnoise, total=total_rapers, use_lock=True)
 
-        # Map the function over the range of rapers
-        results = executor.map(func, rapers)
+        # Map the function over the range of rapers and get the results
+        with ProcessPoolExecutor() as executor:
+            results = list(executor.map(func, rapers, range(1, total_rapers + 1)))
 
         # Store the results in the output array
         for i, result in enumerate(results):
+            # Assuming result is of the form suitable to be assigned to the output array
             output[i, :, 0], output[i, :, 1], output[i, :, 2], output[i, :, 3] = result
+
+        bc.print_progress_bar(total_rapers, total_rapers,  length=80,
+                              color=bc.BCOLORS.OKGREEN, use_lock=True)
 
     finally:
         # Ensure the executor is shut down properly
         executor.shutdown(wait=True)
+        sys.stdout.write('\n')
+
+    del executor
 
     max_snr_idx = np.nanargmax(output[:, :, 2], axis=0)
     max_snr_aprad = float(rapers[max_snr_idx])
     optimum_aprad = max_snr_aprad * 1.25
     qlf_aptrail = True
-    # if optimum_aprad * 2. > 6.:
-    #     log.warning('Optimum width seems high [%.1f x FWHM] '
-    #                 '- setting to %.1f x FWHM' % ((optimum_aprad * 2), (aper_height * 2)))
-    #     optimum_aprad = aper_height
-    #     qlf_aptrail = False
 
     if not silent:
         log.info('    ==> best-fit aperture height: %3.1f (FWHM)' % (max_snr_aprad * 2))
@@ -227,7 +293,26 @@ def get_optimum_aper_rad(image: np.ndarray,
                          gain: float = 1,
                          rdnoise: float = 0,
                          silent: bool = False):
-    """"""
+    """
+
+    Parameters
+    ----------
+    image
+    std_cat
+    fwhm
+    exp_time
+    config
+    aper_rad
+    r_in
+    r_out
+    gain
+    rdnoise
+    silent
+
+    Returns
+    -------
+
+    """
 
     # Initialize logging for this user-callable function
     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
@@ -252,49 +337,30 @@ def get_optimum_aper_rad(image: np.ndarray,
     output = np.zeros((len(rapers), len(src_pos), 4))
     output[output == 0] = np.nan
 
-    # Create the executor
-    executor = ProcessPoolExecutor()
-
+    total_rapers = len(rapers)
     try:
         # Create a partial function with the common parameters
         func = partial(process_aper_photometry, fwhm=fwhm,
                        exp_time=exp_time, gain=gain, rdnoise=rdnoise, image=image,
                        src_pos=src_pos, mask=img_mask, r_in=r_in, r_out=r_out,
-                       aper_mode='circ')
+                       aper_mode='circ', total=total_rapers, use_lock=True)
 
-        # Map the function over the range of rapers
-        results = executor.map(func, rapers)
+        # Map the function over the range of rapers and get the results
+        with ProcessPoolExecutor() as executor:
+            results = list(executor.map(func, rapers, range(1, total_rapers + 1)))
 
         # Store the results in the output array
         for i, result in enumerate(results):
             output[i, :, 0], output[i, :, 1], output[i, :, 2], output[i, :, 3] = result
 
+        bc.print_progress_bar(total_rapers, total_rapers,  length=80,
+                              color=bc.BCOLORS.OKGREEN, use_lock=True)
     finally:
         # Ensure the executor is shut down properly
         executor.shutdown(wait=True)
+        sys.stdout.write('\n')
 
     del executor
-    # for i, r_aper in enumerate(rapers):
-    #
-    #     phot_res = get_aper_photometry(image, src_pos, mask=mask,
-    #                                    r_aper=r_aper * fwhm,
-    #                                    r_in=r_in * fwhm,
-    #                                    r_out=r_out * fwhm)
-    #     aper_flux_counts, _, _, aper_bkg_counts, _ = phot_res
-    #
-    #     aper_flux = aper_flux_counts / exp_time
-    #     aper_bkg = aper_bkg_counts / exp_time
-    #
-    #     # calculate the Signal-to-Noise ratio
-    #     snr, snr_err = get_snr(flux_star=aper_flux, flux_bkg=aper_bkg,
-    #                            t_exp=exp_time,
-    #                            r=r_aper * fwhm,
-    #                            gain=gain, rdnoise=rdnoise, dc=0.)
-    #
-    #     output[i, :, 0] = aper_flux
-    #     output[i, :, 1] = aper_bkg
-    #     output[i, :, 2] = snr
-    #     output[i, :, 3] = snr_err
 
     # if there are more than 5 sources
     if output.shape[1] > config['NUM_STD_MIN']:
@@ -328,7 +394,22 @@ def get_optimum_aper_rad(image: np.ndarray,
 def get_snr(flux_star: np.array, flux_bkg: np.array,
             t_exp: float, area: float,
             gain: float = 1., rdnoise: float = 0., dc: float = 0.):
-    """"""
+    """
+
+    Parameters
+    ----------
+    flux_star
+    flux_bkg
+    t_exp
+    area
+    gain
+    rdnoise
+    dc
+
+    Returns
+    -------
+
+    """
 
     counts_source = flux_star * t_exp
     sky_shot = flux_bkg * t_exp * area
@@ -389,13 +470,18 @@ def get_aper_photometry(image: np.ndarray,
     # print(bkg_median, bkg_std)
 
     if np.any(image) < 0:
-        error = None
+        img_error = None
     else:
         from photutils.datasets import make_noise_image
         image_masked = image * ~mask if mask is not None else image
-        error = make_noise_image(image.shape,
-                                 distribution='poisson',
-                                 mean=np.nanmean(image_masked))
+        img_mean = np.nanmean(image_masked)
+        if img_mean < 0:
+            img_error = None
+        else:
+
+            img_error = make_noise_image(image.shape,
+                                     distribution='poisson',
+                                     mean=img_mean)
 
     # error = None
     # aper_stats = ApertureStats(image, aperture, mask=mask,
@@ -414,10 +500,11 @@ def get_aper_photometry(image: np.ndarray,
     aperture_area = aperture.area_overlap(data=image, mask=mask, method=sum_method)
     annulus_area = annulus_aperture.area_overlap(data=image, mask=mask, method=sum_method)
     # print(aperture_area, annulus_area)
+
     # do aperture photometry
     phot_table = aperture_photometry(image, aperture,
                                      mask=mask,
-                                     error=error,
+                                     error=img_error,
                                      method=sum_method)
     del mask, aperture, annulus_aperture
 
@@ -435,14 +522,13 @@ def get_aper_photometry(image: np.ndarray,
     # subtract background
     phot_bkgsub = phot_table['aperture_sum'] - total_bkg
     # print(phot_bkgsub, total_bkg)
-    # if telescope == 'CTIO 4.0-m telescope':
-    #     phot_bkgsub = phot_table['aperture_sum']
+
     phot_table['aperture_sum_bkgsub'] = phot_bkgsub
     phot_table.loc[phot_table['aperture_sum_bkgsub'] <= 0] = 0
 
     # compute the flux error using DAOPHOT style
     flux_variance = phot_table['aperture_sum_bkgsub'].values
-    if error is not None:
+    if img_error is not None:
         flux_variance = phot_table['aperture_sum_err'].values ** 2
 
     bkg_var = (aperture_area * bkg_std ** 2.) * (1. + aperture_area / annulus_area)
@@ -497,7 +583,6 @@ def get_sat_photometry(image, img_mask, src_pos, fwhm, width, theta, config):
 
     # mask unwanted pixel
     mask = (image < 0)
-    # img_mask = config['img_mask']
     if img_mask is not None:
         mask |= img_mask
 
@@ -531,7 +616,23 @@ def get_sat_photometry(image, img_mask, src_pos, fwhm, width, theta, config):
 
 def get_glint_photometry(image, valid_mask, src_pos, width, height, theta, config,
                          sum_method='exact'):
-    """"""
+    """
+
+    Parameters
+    ----------
+    image
+    valid_mask
+    src_pos
+    width
+    height
+    theta
+    config
+    sum_method
+
+    Returns
+    -------
+
+    """
     gain = 1.
     res_cat = {}
     negative_mask = (image < 0)
@@ -583,8 +684,7 @@ def get_glint_photometry(image, valid_mask, src_pos, width, height, theta, confi
         # subtract background
         phot_bkgsub = phot_table['aperture_sum'] - total_bkg
         # print(phot_bkgsub, total_bkg)
-        # if telescope == 'CTIO 4.0-m telescope':
-        #     phot_bkgsub = phot_table['aperture_sum']
+
         phot_table['aperture_sum_bkgsub'] = phot_bkgsub
         phot_table.loc[phot_table['aperture_sum_bkgsub'] <= 0] = 0
 
@@ -610,7 +710,7 @@ def order_shift(x):
 
     ..math::
 
-       order\_of\_mag (x) = 10^{MAX(FLOOR(Log_{10}(x)))}
+       order_of_mag (x) = 10^{MAX(FLOOR(Log_{10}(x)))}
 
     :param x: Array of values
     :type x: float

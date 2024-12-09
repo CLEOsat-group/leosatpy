@@ -279,7 +279,7 @@ Once all programs have been executed, the final folder structure should look lik
 
     * the raw FITS-files contain data
     * FITS-header keywords (e.g., `IMAGETYP` of bias, flats, or science files) are correctly labeled
-    * corresponding raw FITS calibration images are available (e.g., binning, exposure time, filter)
+    * and the corresponding raw FITS calibration images are available (e.g., binning, exposure time, filter).
 
 
 LEOSatpy is now ready for use.
@@ -342,7 +342,7 @@ When publishing data processed and analysed with LEOSatpy, please cite:
 
 ::
 
-    Adam et al. (2023) (in preparation). "Estimating the impact to astronomy from the Oneweb satellite constellation using multicolour observations". https://doi.org/10.5281/zenodo.8012131
+    Adam et al. (2024) (in preparation). "Estimating the impact to astronomy from the Oneweb satellite constellation using multicolour observations". https://doi.org/10.5281/zenodo.8012131
     Software pipeline available at https://github.com/CLEOsat-group/leosatpy.
 
 Acknowledgements
