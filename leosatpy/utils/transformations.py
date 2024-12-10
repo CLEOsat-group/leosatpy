@@ -943,7 +943,21 @@ class FindWCS(object):
         H = fhist.histogram2d(*vals, bins=bins, range=ranges)
 
         # find the peak for the x and y distance where the two sets overlap and take the first peak
-        peak = np.argwhere(H == np.max(H))[0]
+        highest_peak = np.argwhere(H == np.max(H))[0]
+
+        # Check if the highest peak is out of bounds in x_edges or y_edges
+        if highest_peak[0] >= len(x_edges) - 1 or highest_peak[1] >= len(y_edges) - 1:
+            # Mask the highest peak to discard it
+            H[highest_peak[0], highest_peak[1]] = -np.inf
+
+            # Find the next highest peak
+            next_peak = np.argwhere(H == np.max(H))[0]
+
+            # Use the next highest peak
+            peak = next_peak
+        else:
+            # Use the highest peak
+            peak = highest_peak
 
         # sum up the signal in the fixed aperture 1 pixel in each direction around the peak,
         # so a 3x3 array, total 9 pixel
