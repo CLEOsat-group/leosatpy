@@ -28,7 +28,6 @@ from copy import copy, deepcopy
 import inspect
 import logging
 import fast_histogram as fhist
-from PyQt5.QtCore import qInfo
 
 # scipy
 from scipy.spatial import KDTree, cKDTree
@@ -174,12 +173,12 @@ class FindWCS(object):
 
         Nobs_total = len(self.source_cat_full)  # Total number of detected sources
         Nref_total = len(self.ref_cat_full)  # Total number of reference stars
+        self.config['MIN_SOURCE_NO_CONVERGENCE'] = self.config['MIN_SOURCE_NO_CONVERGENCE'] if Nobs_total > 15 else 3
 
         initial_wcsprm = input_wcsprm.wcs
 
         solve_attempts_count = 0
         max_no_solution_count = self.config['MAX_NO_SOLUTION_COUNT']
-        max_wcs_eval_iter = self.config['MAX_WCS_FUNC_ITER']
 
         use_initial_wcs_estimate = True  # Flag to indicate the use of the initial WCS
         has_large_src_cat = False if Nobs_total <= max_src_num else True
@@ -194,10 +193,11 @@ class FindWCS(object):
             self.source_cat = self.source_cat_full.copy()
         self.get_source_cat_variables()
 
-        self.log.info(f"  {'Detected sources (total)':<26}: {Nobs_total}")
-        self.log.info(f"  {'Reference sources (total)':<26}: {Nref_total}")
-        self.log.info(f"  {'Match radius (r)':<26}: {self.match_radius_px:.2f} px")
-        self.log.info(f"  {'Match radius limit (n x r)':<26}: {match_radius_limit_px:.2f} px")
+        self.log.info(f"  {'Detected sources (total)':<28}: {Nobs_total}")
+        self.log.info(f"  {'Reference sources (total)':<28}: {Nref_total}")
+        self.log.info(f"  {'Match radius (r)':<28}: {self.match_radius_px:.2f} px")
+        str_match_radius = f"Match radius limit ({int(self.config['MATCH_RADIUS_LIM'])} x r)"
+        self.log.info(f"  {str_match_radius:<28}: {match_radius_limit_px:.2f} px")
         self.log.info(f"  > Search possible solutions (This may take a second.)")
 
         total_iterations = len(rotations) * num_ref_samples
@@ -326,7 +326,6 @@ class FindWCS(object):
             top_solutions = possible_solutions[:max_num_top_solution]
 
             confirmed_solutions = []
-            convergence_reached = False  # Flag to indicate convergence
             best_overall_completeness = 0.
             best_overall_rms = np.inf
             best_overall_solution = None
@@ -336,9 +335,6 @@ class FindWCS(object):
 
             # Loop over top solutions
             for idx, solution in enumerate(top_solutions):
-                # if convergence_reached:
-                #     self.log.info(f"{' ':<4}==> Convergence reached. Skipping remaining solutions.")
-                #     break  # Convergence reached with a previous solution, stop testing further solutions
 
                 solution['has_converged'] = False
 
@@ -359,22 +355,6 @@ class FindWCS(object):
                     self.apply_wcs_and_filter_sources(current_wcsprm=current_wcsprm,
                                                       source_df=source_df,
                                                       match_radius=match_radius_limit_px))
-
-                #
-                src_df_before, ref_df_before = self.extract_sources_subset(matched_src_df,
-                                                                           ref_cat_filtered,
-                                                                           has_m_before,
-                                                                           dist_mask_before)
-
-                # Compute residual statistics before the fit
-                residual_stats_before = compute_residual_stats(src_df_before, ref_df_before)
-                # print(residual_stats_before)
-
-                Nobs_matched_r_lim_before = has_m_before.sum()
-                Nobs_matched_r_before = dist_mask_before.sum()
-
-                rms_before = residual_stats_before['rms']
-                score_before = residual_stats_before['score']
 
                 # Prepare data for fitting
                 src_df_fit, ref_df_fit = self.extract_sources_subset(matched_src_df,
@@ -399,19 +379,13 @@ class FindWCS(object):
 
                 # Compute residual statistics for the fit results
                 residual_stats_after = compute_residual_stats(src_df_after, ref_df_after)
-                # print(residual_stats_after)
 
                 Nobs_matched_r_lim_after = has_m_after.sum()
                 Nobs_matched_r_after = dist_mask_after.sum()
 
                 # Update solution metrics
                 rms_after = residual_stats_after['rms']
-                score_after = residual_stats_after['score']
                 completeness_after = Nobs_matched_r_after / Nobs_matched_r_lim_after
-
-                # print(Nobs_matched_r_before, Nobs_matched_r_after,
-                #       Nobs_matched_r_lim_before, Nobs_matched_r_lim_after,
-                #       rms_before, rms_after, score_before, score_after, completeness_after)
 
                 solution.update({
                     'Nobs_matched': Nobs_matched_r_after,
@@ -1640,7 +1614,6 @@ def find_matches(obs, cat, wcsprm_in=None, threshold=10., sort=True):
 
     # Convert obs to numpy
     obs_xy = obs[["xcentroid", "ycentroid"]].to_numpy()
-    N_obs = len(obs_xy)
 
     # Set up the catalog data; use RA, Dec if used with wcsprm
     if wcsprm_in is not None:

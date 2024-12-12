@@ -274,30 +274,43 @@ def build_source_catalog(data, mask, input_catalog=None, known_fwhm=None,
     box_size = default_box_size if known_fwhm is None else 2. * box_size
 
     log.info(f'{" ":<4}> Find sources and estimate Full Width Half Maximum (FWHM)')
+    if mask is None:
+        mask = np.zeros(data.shape, dtype=bool)
 
-    # create threshold map
+    mask = make_border_mask(mask, borderLen=box_size // 2)
+
+    # Create threshold map
     threshold_value = detect_threshold(data, nsigma=nsigma, mask=mask)
 
-    # detect and deblend sources
-    segm = detect_sources(data, threshold_value, npixels=9, connectivity=8, mask=mask)
-    segm_deblend = deblend_sources(data, segm,
-                                   npixels=9, nlevels=32, contrast=0.001, connectivity=8,
-                                   progress_bar=False)
+    npixels = 9
+    connectivity = 8
+    if config['bin_str'] == '4x4':
+        npixels = 3
+        connectivity = 8
+    try:
+        # Detect and deblend sources
+        segm = detect_sources(data, threshold_value, npixels=npixels, connectivity=connectivity, mask=mask)
+        segm_deblend = deblend_sources(data, segm,
+                                       npixels=npixels, nlevels=32, contrast=0.001, connectivity=connectivity,
+                                       progress_bar=False)
+    except ValueError:
+        log.critical("{" ":<4}>> Source detection failed")
+        return None, None, False, ['', '', '']
 
     # Create a catalog of sources
     catalog = SourceCatalog(data, segm_deblend, mask=mask)
 
-    # select columns
+    # Select columns
     sources = catalog.to_table(
         columns=['label', 'xcentroid', 'ycentroid',
                  'max_value', 'segment_flux',
                  'eccentricity', 'fwhm', 'gini']).to_pandas()
 
-    # rename the flux column
+    # Rename the flux column
     sources.rename(columns={"segment_flux": "flux"}, inplace=True)
     sources['mag'] = -2.5 * np.log10(sources['flux'].values)
 
-    # sort by maximum value
+    # Sort by maximum value
     sources.sort_values(by='flux', ascending=False, inplace=True)
 
     log.info(f'{" ":<6}Initial number of sources: {len(sources)}')
@@ -305,11 +318,10 @@ def build_source_catalog(data, mask, input_catalog=None, known_fwhm=None,
     log.info(f'{" ":<6}Run profile fit (This may take a second.)')
     sources = fit_source_cat(data, sources, box_size, init_fwhm,
                              update_position=True, **config)
-
-    log.info(f"{' ':<6}>> Usable sources found: {np.sum(sources['fit_mask'])}")
-    log.info(f'{" ":<4}> Filter outlier')
-
     df = sources.copy()
+
+    log.info(f"{' ':<6}>> Sources found: {np.sum(sources['fit_mask'])}")
+    log.info(f'{" ":<4}> Filter outlier')
 
     # List of columns to apply sigma clipping on, in sequence
     columns_to_clip = ['eccentricity', 'fwhm']
@@ -327,7 +339,7 @@ def build_source_catalog(data, mask, input_catalog=None, known_fwhm=None,
                                  cenfunc=np.nanmedian,
                                  stdfunc=mad_std)
         current_mask = ~masked_data.mask  # Get a boolean mask of valid (unmasked) values
-        log.info(f'{" ":<6}Masked {column} outlier: {np.sum(~current_mask)}')
+        log.info(f'{" ":<6}{f"Masked {column} outlier":<28}: {np.sum(~current_mask)}')
 
         # Update the cumulative mask based on the current mask
         temp_mask = cumulative_mask.copy()
@@ -347,10 +359,8 @@ def build_source_catalog(data, mask, input_catalog=None, known_fwhm=None,
     image_fwhm_err = np.nanstd(sources['masked_fwhm'].values)
 
     if input_catalog is None:
-
-        log.info(f'{" ":<2}==> Usable sources: {len(sources[cumulative_mask])}, '
-                 f'FWHM: {image_fwhm:.3f} +/- {image_fwhm_err:.3f} [ pixels ]')
-
+        log.info(f'{" ":<2}{f"==> Detected sources":<20}: {len(sources[cumulative_mask])}')
+        log.info(f'{" ":<6}{f"FWHM":<16}: {image_fwhm:.3f} +/- {image_fwhm_err:.3f} px')
         return (image_fwhm, image_fwhm_err), sources, True, None
     else:
         obs_df = sources[cumulative_mask]
@@ -1454,8 +1464,6 @@ def compute_2d_background(imgarr, mask, box_size, win_size,
     bkg = None
     exclude_percentiles = [10, 25, 50, 75]
     for percentile in exclude_percentiles:
-        if not silent:
-            log.info(f"    Percentile in use: {percentile}")
 
         try:
 
@@ -1466,8 +1474,7 @@ def compute_2d_background(imgarr, mask, box_size, win_size,
             segment_img = detect_sources(imgarr, threshold, mask=mask,
                                          npixels=9, connectivity=8)
 
-            footprint = None
-            src_mask = segment_img.make_source_mask(footprint=footprint)
+            src_mask = segment_img.make_source_mask(footprint=None)
 
             if mask is not None:
                 src_mask |= mask
@@ -1481,6 +1488,7 @@ def compute_2d_background(imgarr, mask, box_size, win_size,
                                 bkg_estimator=bkg_estimator,
                                 bkgrms_estimator=rms_estimator,
                                 edge_method="pad")
+
             # print(bkg.background_median, bkg.background_rms_median)
             # plt.figure()
             # norm = ImageNormalize(stretch=LinearStretch())
@@ -1504,7 +1512,7 @@ def compute_2d_background(imgarr, mask, box_size, win_size,
     # the background to be used in source identification
     if bkg is None:
         if not silent:
-            log.warning("     Background2D failure detected. "
+            log.warning("    Background2D failure detected. "
                         "Using alternative background calculation instead....")
 
         # detect the sources
@@ -1633,6 +1641,24 @@ def convert_astrometric_table(table: Table, catalog_name: str) -> Table:
 
     return table
 
+def make_border_mask(mask, borderLen=10):
+    """"""
+
+    if not isinstance(borderLen, int):
+        borderLen = int(borderLen)
+
+    # Create a mask of the same size as the image, initially False (no mask)
+    # mask = np.zeros(image.shape, dtype=bool)
+
+    # Set the top and bottom borders to True
+    mask[:borderLen, :] = True
+    mask[-borderLen:, :] = True
+
+    # Set the left and right borders to True
+    mask[:, :borderLen] = True
+    mask[:, -borderLen:] = True
+
+    return mask
 
 def extract_source_catalog(imgarr,
                            source_catalog=None,
@@ -1666,7 +1692,6 @@ def extract_source_catalog(imgarr,
     # Initialize logging for this user-callable function
     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
 
-    # todo: update this
     log.info("> Extract sources from image")
 
     img_mask = config['image_mask']
@@ -1703,32 +1728,6 @@ def extract_source_catalog(imgarr,
                                                              known_fwhm=known_fwhm,
                                                              mask=img_mask, **config)
 
-    # fwhm, source_cat, state, fail_msg = auto_build_source_catalog(data=imgarr_bkg_subtracted,
-    #                                                               img_std=bkg_rms_median,
-    #                                                               mask=img_mask,
-    #                                                               use_catalog=source_catalog,
-    #                                                               fwhm=known_fwhm,
-    #                                                               source_box_size=config['SOURCE_BOX_SIZE'],
-    #                                                               fwhm_init_guess=config['FWHM_INIT_GUESS'],
-    #                                                               threshold_value=config['THRESHOLD_VALUE'],
-    #                                                               min_source_no=config['SOURCE_MIN_NO'],
-    #                                                               max_source_no=config['SOURCE_MAX_NO'],
-    #                                                               fudge_factor=config['THRESHOLD_FUDGE_FACTOR'],
-    #                                                               fine_fudge_factor=config[
-    #                                                                   'THRESHOLD_FINE_FUDGE_FACTOR'],
-    #                                                               max_iter=config['MAX_FUNC_ITER'],
-    #                                                               fitting_method=config['FITTING_METHOD'],
-    #                                                               use_gauss=config['USE_GAUSS'],
-    #                                                               lim_threshold_value=config['THRESHOLD_VALUE_LIM'],
-    #                                                               default_moff_beta=config['DEFAULT_MOFF_BETA'],
-    #                                                               min_good_fwhm=config['FWHM_LIM_MIN'],
-    #                                                               max_good_fwhm=config['FWHM_LIM_MAX'],
-    #                                                               sigmaclip_fwhm_sigma=config['SIGMACLIP_FWHM_SIGMA'],
-    #                                                               isolate_sources_fwhm_sep=config[
-    #                                                                   'ISOLATE_SOURCES_FWHM_SEP'],
-    #                                                               init_iso_dist=config['ISOLATE_SOURCES_INIT_SEP'],
-    #                                                               sat_lim=config['sat_lim'])
-
     if not state or len(source_cat) == 0:
         del imgarr, imgarr_bkg_subtracted
         gc.collect()
@@ -1742,8 +1741,9 @@ def extract_source_catalog(imgarr,
 
 def get_reference_catalog_astro(ra, dec, sr: float = 0.5,
                                 epoch: Time = None, catalog: str = 'GAIADR3',
-                                mag_lim: float | int = -1, silent: bool = False):
+                                mag_lim= -1, silent: bool = False):
     """ Extract reference catalog from VO web service.
+
     Queries the catalog available at the ``SERVICELOCATION`` specified
     for this module to get any available astrometric source catalog entries
     around the specified position in the sky based on a cone-search.
@@ -1752,26 +1752,26 @@ def get_reference_catalog_astro(ra, dec, sr: float = 0.5,
 
     Parameters
     ----------
-    mag_lim
-    ra: float
+    ra : float
         Right Ascension (RA) of center of field-of-view (in decimal degrees)
-    dec: float
+    dec : float
         Declination (Dec) of center of field-of-view (in decimal degrees)
-    sr: float, optional
+    sr : float, optional
         Search radius (in decimal degrees) from field-of-view center to use
         for sources from catalog. Default: 0.5 degrees
-    epoch: float, optional
+    epoch : float, optional
         Catalog positions returned for this field-of-view will have their
         proper motions applied to represent their positions at this date, if
         a value is specified at all, for catalogs with proper motions.
-    catalog: str, optional
+    catalog : str, optional
         Name of catalog to query, as defined by web-service.  Default: 'GSC242'
-    silent: bool, optional
+    mag_lim : float or int, optional
+    silent : bool, optional
         Set to True to suppress most console output
 
     Returns
     -------
-    csv: CSV object
+    csv : CSV object
         CSV object of returned sources with all columns as provided by catalog
     """
 
@@ -2082,6 +2082,7 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
 
     # get RA and DEC value
     ra, dec = wcsprm.crval
+
     # set FoV
     fov_radius = config["fov_radius"]
 

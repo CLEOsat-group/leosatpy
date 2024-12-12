@@ -2382,12 +2382,23 @@ class AnalyseSatObs(object):
             if self._force_extract:
                 estimate_bkg = True
 
+            # check binning keyword
+            if isinstance(obsparam['binning'][0], str) and isinstance(obsparam['binning'][1], str):
+                bin_x = int(hdr[obsparam['binning'][0]])
+                bin_y = int(hdr[obsparam['binning'][1]])
+            else:
+                bin_x = int(obsparam['binning'][0])
+                bin_y = int(obsparam['binning'][1])
+
+            bin_str = f'{bin_x}x{bin_y}'
+
             # extract sources on detector
             params_to_add = dict(fov_radius=None,
                                  _filter_val=band,
                                  _trail_data=trail_data,
                                  src_cat_fname=None, ref_cat_fname=None,
                                  photo_ref_cat_fname=self._photo_ref_cat_fname,
+                                 bin_str=bin_str,
                                  estimate_bkg=estimate_bkg, bkg_fname=bkg_file_name,
                                  force_extract=self._force_extract,
                                  force_download=self._force_download,

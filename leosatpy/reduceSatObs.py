@@ -796,7 +796,9 @@ class ReduceSatObs(object):
             # create bad pixel map if non exists
             if self._ccd_mask_fname is None:
                 ccd_mask = self.create_bad_pixel_map(ccd.header, obsparams,
-                                                     mflat_ccd, mflat_ccd, mbias_ccd, ccd_mask_fname)
+                                                     mflat_ccd, mbias_ccd,
+                                                     ccd_mask_fname,
+                                                     vignette=self._config['VIGNETTE_FRAC'])
                 if ccd_is_cropped:
                     ccd_mask = self.crop_image(img_ccd=ccd_mask,
                                                hdr=ccd_hdr,
@@ -1098,7 +1100,8 @@ class ReduceSatObs(object):
                                                                                flat_filter,
                                                                                self._bin_str))
 
-        self.create_bad_pixel_map(combine.header, obsparams, combine, mbias_ccd, ccd_mask_fname)
+        self.create_bad_pixel_map(combine.header, obsparams, combine, mbias_ccd,
+                                  ccd_mask_fname, vignette=self._config['VIGNETTE_FRAC'])
         self._ccd_mask_fname = ccd_mask_fname
 
         # update fits header
@@ -1431,7 +1434,7 @@ class ReduceSatObs(object):
         return combine
 
     def create_bad_pixel_map(self, hdr, obsparams,
-                             mflat_ccd, mbias_ccd, ccd_mask_fname, silent=False):
+                             mflat_ccd, mbias_ccd, ccd_mask_fname, vignette=0.975, silent=False):
         """
         Create a bad pixel map from master flat and optionally master bias frames.
 
@@ -1447,6 +1450,8 @@ class ReduceSatObs(object):
             The master bias frame data. If provided, it is also used for masking.
         ccd_mask_fname : str
             The filename to save the bad pixel mask.
+        vignette : float, optional
+
         silent : bool, optional
             If True, suppress log messages. Default is False.
 
@@ -1465,7 +1470,7 @@ class ReduceSatObs(object):
             vignette_mask = None
             if hdr['FILTER'] in ['U'] and self._telescope == 'DK-1.54':
                 vignette_mask = self.create_vignette_mask(original_size=mflat_ccd.data.shape,
-                                                          vignette=0.9)
+                                                          vignette=vignette)
 
                 vignette_mask = self.crop_image(img_ccd=vignette_mask,
                                                 hdr=mflat_ccd.header,

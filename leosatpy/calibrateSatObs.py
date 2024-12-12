@@ -175,12 +175,12 @@ class CalibrateObsWCS(object):
         self._radius = args.radius
         self._src_cat_fname = args.source_cat_fname
         self._ref_cat_fname = args.source_ref_fname
-        self._wcs_check = None, None
         self._cat_path = None
         self._config = collections.OrderedDict()
         self._obsTable = None
         self._wcsprm = None
-        self._fov_radius = 30.
+        self._fov_radius = 0.5
+        self._bin_str = None
 
         # run calibration
         self.run_calibration_all(silent=silent, verbose=verbose)
@@ -284,13 +284,6 @@ class CalibrateObsWCS(object):
         Create the required folder and run full calibration procedure.
 
         """
-        ccd_mask_dict = {'CTIO 0.9 meter telescope': [[1405, 1791, 1850, 1957],
-                                                      [1520, 1736, 1850, 1957],
-                                                      [1022, 1830, 273, 275],
-                                                      [1022, 1791, 1845, 1957],
-                                                      [0, 2046, 0, 50],
-                                                      [0, 2046, 2000, 2048]],
-                         'CBNUO-JC': [[225, 227, 1336, 2048]]}
 
         report = {}
         obsparams = self._obsparams
@@ -385,6 +378,7 @@ class CalibrateObsWCS(object):
                              src_cat_fname=self._src_cat_fname,
                              ref_cat_fname=self._ref_cat_fname,
                              image_mask=img_mask,
+                             bin_str=self._bin_str,
                              estimate_bkg=estimate_bkg,
                              ref_cat_mag_lim=self._config['REF_CATALOG_MAG_LIM'],
                              bkg_fname=(bkg_fname, bkg_fname_short),
@@ -538,8 +532,6 @@ class CalibrateObsWCS(object):
                             state)
 
     def check_image_wcs(self, wcsprm, hdr, obsparams,
-                        ra_input=None, dec_input=None,
-                        projection_ra=None, projection_dec=None,
                         radius=-1.):
         """Check the WCS coordinate system for a given image.
 
@@ -550,15 +542,15 @@ class CalibrateObsWCS(object):
         wcsprm: astropy.wcs.wcsprm
             World coordinate system object describing translation between image and skycoord
         hdr: header
+        obsparams
+        radius
         """
 
         # Initialize logging for this function
         log = self._log
-        INCREASE_FOV_FLAG = False
-        PIXSCALE_UNCLEAR = False
 
         if not self._silent:
-            log.info("> Check header information")
+            log.info("> Gather header information")
 
         # check binning keyword
         if isinstance(obsparams['binning'][0], str) and isinstance(obsparams['binning'][1], str):
@@ -567,6 +559,8 @@ class CalibrateObsWCS(object):
         else:
             bin_x = int(obsparams['binning'][0])
             bin_y = int(obsparams['binning'][1])
+
+        self._bin_str = f'{bin_x}x{bin_y}'
 
         if self._telescope in ['DK-1.54', 'PlaneWave CDK24']:
             wcs_rebinned = WCS(wcsprm.to_header()).slice((np.s_[::bin_x], np.s_[::bin_y]))
@@ -577,8 +571,6 @@ class CalibrateObsWCS(object):
             log.error("NAXIS1 or NAXIS2 missing in file. Please add!")
             sys.exit(1)
         else:
-            # axis1 = hdr[obsparams['extent'][0]]
-            # axis2 = hdr[obsparams['extent'][1]]
             axis1 = obsparams['image_size_1x1'][0] // bin_x
             axis2 = obsparams['image_size_1x1'][1] // bin_y
 
@@ -622,6 +614,7 @@ class CalibrateObsWCS(object):
             wcsprm.radesys = hdr['RADESYS']
 
         wcsprm = WCS(hdr).wcs
+
         if isinstance(obsparams['secpix'][0], str) and \
                 isinstance(obsparams['secpix'][1], str):
             pixscale_x = float(hdr[obsparams['secpix'][0]])
@@ -650,7 +643,6 @@ class CalibrateObsWCS(object):
                 wcsprm.pc = [[1, 0], [0, 1]]
                 guess = pixscale_x / 3600.
                 wcsprm.cdelt = [guess, guess]
-                PIXSCALE_UNCLEAR = True
 
         # test if found pixel scale makes sense
         test_wcs2 = (120. > x_size > 0.5) & \
@@ -668,41 +660,18 @@ class CalibrateObsWCS(object):
                 # if yes, then replace the wcs scale with the pixel scale information
                 wcsprm.cdelt = [pixscale_x, pixscale_y]
                 wcsprm.pc = [[1, 0], [0, 1]]
-                PIXSCALE_UNCLEAR = True
-
-        if not self._silent:
-            log.info("  Changed pixel scale to "
-                     "{:.3g} x {:.3g} deg/pixel".format(wcsprm.cdelt[0], wcsprm.cdelt[1]))
 
         # if the central pixel is not in the header, set to image center pixel
-        # if np.array_equal(wcsprm.crpix, [0, 0]):
-        #     wcsprm.crpix = [axis1 // 2, axis2 // 2]
         wcsprm.crpix = [axis1 // 2, axis2 // 2]
 
         # check sky position
         if np.array_equal(wcsprm.crval, [0, 0]):
-            INCREASE_FOV_FLAG = True
             # If the sky position is not found check header for RA and DEC information
             wcsprm.crval = [ra_deg, dec_deg]
-        else:
-            if not self._silent:
-                log.info("  RA and DEC information found in the header.")
-                log.info("  {}".format(" ".join(np.array(wcsprm.crval, str))))
 
-        if ra_input is not None:  # use user input if provided
-            wcsprm.crval = [ra_input, wcsprm.crval[1]]
-            wcsprm.crpix = [axis1 // 2, wcsprm.crpix[1]]
-
-        if dec_input is not None:
-            wcsprm.crval = [wcsprm.crval[0], dec_input]
-            wcsprm.crpix = [wcsprm.crpix[0], axis2 // 2]
 
         if np.array_equal(wcsprm.ctype, ["", ""]):
-            INCREASE_FOV_FLAG = True
-            if projection_ra is not None and projection_dec is not None:
-                wcsprm.ctype = [projection_ra, projection_dec]
-            else:
-                wcsprm.ctype = ['RA---TAN', 'DEC--TAN']  # this is a guess
+           wcsprm.ctype = ['RA---TAN', 'DEC--TAN']  # this is a guess
 
         wcs = WCS(wcsprm.to_header())
 
@@ -710,19 +679,22 @@ class CalibrateObsWCS(object):
         fov_radius = sext.compute_radius(wcs, axis1, axis2)
 
         if radius > 0.:
-            fov_radius = radius
+            fov_radius = radius / 60.
         else:
             # increase FoV for SPM data
-            # ['DDOTI 28-cm f/2.2', 'PlaneWave CDK24']
             if self._telescope in ['DDOTI 28-cm f/2.2', 'CTIO 0.9 meter telescope']:
                 fov_radius *= 2.
 
         if not self._silent:
-            log.info("  Using field-of-view radius: {:.3g} deg".format(fov_radius))
+            log.info(f"{' ':<2}{'Pointing (deg)':<24}: RA={wcsprm.crval[0]:.8g}, "
+                     f"DEC={wcsprm.crval[1]:.8g}")
+            log.info(f"{' ':<2}{'Pixel scale (deg/pixel)':<24}: "
+                     f"{wcsprm.cdelt[0]:.3g} x {wcsprm.cdelt[1]:.3g}")
+            log.info(f"{' ':<2}{'FoV radius (deg)':<24}: {fov_radius:.3g}")
+        # log.info(f"{' ':<2}>> Using the best available solution.")
 
         self._wcsprm = wcs
         self._fov_radius = fov_radius
-        self._wcs_check = (INCREASE_FOV_FLAG, PIXSCALE_UNCLEAR)
 
     def write_wcs_to_hdr(self, original_filename, filename_base,
                          destination, wcsprm, report, hdul_idx=0):
