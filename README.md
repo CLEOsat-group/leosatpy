@@ -51,7 +51,7 @@ at the Oukaïmeden Observatory, Morocco.
 at the Calar Alto Observatory, Spain.
 
 
-[!NOTE]  
+> [!NOTE]  
 If you want your telescope added to the list, please contact [Jeremy Tregloan-Reed](jeremy.tregloan-reed@uda.cl).
 
 
@@ -129,7 +129,7 @@ If no error messages are shown, LEOSatpy is most likely installed correctly.
 LEOSatpy comes with a configuration file, called [leosatpy_config.ini](/leosatpy/leosatpy_config.ini), 
 containing an extensive list of parameter that can be adjusted to modify the behaviour of LEOSatpy.
 
-[!IMPORTANT]  
+> [!IMPORTANT]  
 Upon the first execution, a copy of the leosatpy configuration file is
 placed in the `/home/user` directory. Please modify the file as required
 and re-run the program.
@@ -172,8 +172,8 @@ on the obs date from the science data header and the names of folder in
 the given path. Possible formats are, e.g., 20221110, 2022-11-20,
 tel_20221011_satxy, 2022-11-26_satxy_obs1, etc.
 
-[!NOTE]
-The program can detect and handle if the name of the folder does not
+> [!NOTE]
+> The program can detect and handle if the name of the folder does not
 correspond to the observation date. However, the difference in date
 should not exceed 7 days. For example, data observed on 2022-11-11 UTC
 might be located in a folder named 2022-11-10. \<-- This is detected.
@@ -207,13 +207,13 @@ look like this:
     └── YYYY-MM-DD
 ```
 
-[!WARNING] To prevent unexpected behaviour during the program execution, please
-also check and make sure that:
--   the raw FITS-files contain data
--   FITS-header keywords (e.g., <span class="title-ref">IMAGETYP</span>
+> [!WARNING] 
+> To prevent unexpected behaviour during the program execution, please also check and make sure that:
+> -   the raw FITS-files contain data
+> -   FITS-header keywords (e.g., <span class="title-ref">IMAGETYP</span>
     of bias, flats, or science files) are correctly labeled
--   and the corresponding raw FITS calibration images are available 
-(e.g., binning, exposure time, filter).
+> -   and the corresponding raw FITS calibration images are available 
+> (e.g., binning, exposure time, filter).
 
 LEOSatpy is now ready for use.
 
