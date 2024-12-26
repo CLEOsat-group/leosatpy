@@ -245,7 +245,7 @@ To reduce all data from a telescope at once with:
 $ (leosatpy_env) reduceSatObs PATH/TO/TELESCOPE/DATA
 ```
 
-> [!HINT]  
+> [!TIP]  
 The usage of partial and multiple inputs as shown above also works for
 the other programs in the package.
 
