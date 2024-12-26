@@ -52,7 +52,7 @@ at the Calar Alto Observatory, Spain.
 
 
 > [!NOTE]  
-If you want your telescope added to the list, please contact [Jeremy Tregloan-Reed](jeremy.tregloan-reed@uda.cl).
+If you want your telescope added to the list, please contact [Jeremy Tregloan-Reed](mailto:jeremy.tregloan-reed@uda.cl).
 
 
 ## How to use LEOSatpy
@@ -245,7 +245,7 @@ To reduce all data from a telescope at once with:
 $ (leosatpy_env) reduceSatObs PATH/TO/TELESCOPE/DATA
 ```
 
-[!HINT]  
+> [!HINT]  
 The usage of partial and multiple inputs as shown above also works for
 the other programs in the package.
 
@@ -287,11 +287,11 @@ The authors of these packages and code are gratefully acknowledged.
 Special thanks go out to the following people for their ideas and
 contributions to the development of the LEOSat Python package:
 
-- [Jeremy Tregloan-Reed](jeremy.tregloan-reed@uda.cl), Universidad de Atacama
-- [Eduardo Unda-Sanzana](eduardo.unda@uamail.cl), Universidad de Antofagasta
-- [Edgar Ortiz](ed.ortizm@gmail.com), Universidad de Antofagasta
-- [Maria Isabel Romero Colmenares](maria.romero.21@alumnos.uda.cl), Universidad de Atacama
-- [Sangeetha Nandakumar](an.sangeetha@gmail.coml), Universidad de Atacama
+- [Jeremy Tregloan-Reed](mailto:jeremy.tregloan-reed@uda.cl), Universidad de Atacama
+- [Eduardo Unda-Sanzana](mailto:eduardo.unda@uamail.cl), Universidad de Antofagasta
+- [Edgar Ortiz](mailto:ed.ortizm@gmail.com), Universidad de Antofagasta
+- [Maria Isabel Romero Colmenares](mailto:maria.romero.21@alumnos.uda.cl), Universidad de Atacama
+- [Sangeetha Nandakumar](mailto:an.sangeetha@gmail.coml), Universidad de Atacama
 
 The project would not have been possible without the help of everyone
 who contributed.
@@ -308,11 +308,11 @@ providing as much detail as possible (error message, operating system,
 Python version, etc.).
 
 If you have further feedback, questions or comments you can also send an
-e-mail to [Jeremy Tregloan-Reed](jeremy.tregloan-reed@uda.cl), or
-[Christian Adam](christian.adam84@gmail.com).
+e-mail to [Jeremy Tregloan-Reed](mailto:jeremy.tregloan-reed@uda.cl), or
+[Christian Adam](mailto:christian.adam84@gmail.com).
 
 ## Author
 
-[Christian Adam](christian.adam84@gmail.com), Centro de Investigación,
+[Christian Adam](mailto:christian.adam84@gmail.com), Centro de Investigación,
 Tecnología, Educación y Vinculación Astronómica (CITEVA), Universidad de
 Antofagasta, Antofagasta, Chile
