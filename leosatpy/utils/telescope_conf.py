@@ -73,21 +73,21 @@ dk154_params = {
     'radec_separator': ':',  # RA/Dec hms separator, use 'XXX' if already in degrees
     'equinox': 'EQUINOX',
 
-    # observation keywords
+    # Observation keywords
     'date_keyword': 'DATE-OBS',  # obs date/time
 
     'imagetyp': 'IMAGETYP',
     'object': 'OBJECT',  # object name keyword
-    'filter': 'FILTB',  # filter keyword
+    'filter': 'FILTB',  # Filter keyword
 
-    # filter name translation dictionary
+    # Filter name translation dictionary
     'filter_translations': {'U': 'U', 'B': 'B', 'V': 'V', 'R': 'R',
                             'I': 'I', 'empty': None},
 
     'exptime': 'EXPTIME',  # exposure time keyword (s)
     'airmass': 'AIRMASS',  # airmass keyword
 
-    # reduction keywords
+    # Reduction keywords
     'ampsec': None,
     'oscansec': None,
     'trimsec': None,
@@ -164,19 +164,19 @@ cbnuo_params = {
     'radec_separator': ':',  # RA/Dec hms separator, use 'XXX' if already in degrees
     'equinox': None,
 
-    # observation keywords
+    # Observation keywords
     'date_keyword': 'DATE-OBS',  # obs date/time
 
     'imagetyp': 'IMAGETYP',
     'object': 'OBJECT',  # object name keyword
-    'filter': 'FILTER',  # filter keyword
+    'filter': 'FILTER',  # Filter keyword
     'filter_translations': {'V': 'V', 'R': 'R',
-                            'I': 'I', 'B': 'B', 'N': None},  # filter name translation dictionary
+                            'I': 'I', 'B': 'B', 'N': None},  # Filter name translation dictionary
 
     'exptime': 'EXPTIME',  # exposure time keyword (s)
     'airmass': 'AIRMASS',  # airmass keyword
 
-    # reduction keywords
+    # Reduction keywords
     'ampsec': None,
     'oscansec': None,
     'trimsec': None,
@@ -247,12 +247,12 @@ ca123dlrmkiii_param = {
     'radec_separator': 'XXX',  # RA/Dec hms separator, use 'XXX' if already in degrees
     'equinox': 'EQUINOX',
 
-    # observation keywords
+    # Observation keywords
     'date_keyword': 'DATE-OBS',  # obs date/time
 
     'imagetyp': 'IMAGETYP',
     'object': 'OBJECT',  # object name keyword
-    'filter': 'FILTER',  # filter keyword
+    'filter': 'FILTER',  # Filter keyword
     # filtername translation dictionary
     'filter_translations': {'V': 'V',
                             'R': 'R',
@@ -260,7 +260,7 @@ ca123dlrmkiii_param = {
     'exptime': 'EXPTIME',  # exposure time keyword (s)
     'airmass': 'AIRMASS',  # airmass keyword
 
-    # reduction keywords
+    # Reduction keywords
     'ampsec': None,
     'oscansec': None,
     'trimsec': None,
@@ -320,7 +320,7 @@ ckoir_param = {
     'image_size_1x1': (4096, 4096),
     'pc_matrix': None,  # Preferred CCD PC matrix
 
-    # gain and readout noise taken from https://people.bsu.edu/rberring/observing-facilities/
+    # Gain and readout noise taken from https://people.bsu.edu/rberring/observing-facilities/
     # for FLI PL16801 camera
     'gain': 1.43,  # CD gain in el/DN
     'readnoise': 10.83,  # CCD Read Out Noise (e-)
@@ -336,7 +336,7 @@ ckoir_param = {
 
     'imagetyp': 'IMAGETYP',
     'object': 'OBJECT',  # object name keyword
-    'filter': 'FILTER',  # filter keyword
+    'filter': 'FILTER',  # Filter keyword
 
     # filtername translation dictionary
     'filter_translations': {'u\'': 'u', 'g\'': 'g',
@@ -346,7 +346,7 @@ ckoir_param = {
     'exptime': 'EXPTIME',  # exposure time keyword (s)
     'airmass': 'AIRMASS',  # airmass keyword
 
-    # reduction keywords
+    # Reduction keywords
     'ampsec': None,
     'oscansec': None,
     'trimsec': None,
@@ -422,7 +422,7 @@ ctio_90cm_params = {
 
     'imagetyp': 'IMAGETYP',
     'object': 'OBJECT',  # object name keyword
-    'filter': 'FILTER2',  # filter keyword
+    'filter': 'FILTER2',  # Filter keyword
 
     # filtername translation dictionary
     'filter_translations': {'u': 'U', 'b': 'B',
@@ -432,7 +432,7 @@ ctio_90cm_params = {
     'exptime': 'EXPTIME',  # exposure time keyword (s)
     'airmass': 'AIRMASS',  # airmass keyword
 
-    # reduction keywords
+    # Reduction keywords
     'ampsec': 'ADSEC',
     'oscansec': 'BSEC',
     'trimsec': 'TSEC',
@@ -541,7 +541,7 @@ ctio_400cm_params = {
 
     'imagetyp': 'IMAGETYP',
     'object': 'OBJECT',  # object name keyword
-    'filter': 'BAND',  # filter keyword
+    'filter': 'BAND',  # Filter keyword
 
     # filtername translation dictionary
     'filter_translations': {'u': 'u', 'g': 'g',
@@ -606,7 +606,7 @@ spm_params = {
     'date_keyword': 'DATE-OBS',  # obs date/time
 
     'object': 'BLKNM',  # object name keyword
-    'filter': 'FILTER',  # filter keyword
+    'filter': 'FILTER',  # Filter keyword
     'imagetyp': 'EXPTYPE',
 
     # filtername translation dictionary
@@ -688,7 +688,7 @@ ouka_params = {
     'date_keyword': 'DATE-OBS',  # obs date/time
 
     'object': 'OBJECT',  # object name keyword
-    'filter': 'FILTER',  # filter keyword
+    'filter': 'FILTER',  # Filter keyword
     'imagetyp': 'IMAGETYP',
 
     # filtername translation dictionary
