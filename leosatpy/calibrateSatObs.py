@@ -154,7 +154,7 @@ class CalibrateObsWCS(object):
         if plt is None or silent or not plot_images:
             plt.ioff()
 
-        # set variables
+        # Set variables
         self._dataset_object = None
         self._root_dir = bc.ROOT_DIR
         self._input_path = input_path
@@ -166,9 +166,9 @@ class CalibrateObsWCS(object):
         self._log_level = log_level
         self._silent = silent
         self._verbose = verbose
-        self._plot_images = plot_images
-        self._force_extract = args.force_detection
-        self._force_download = args.force_download
+        self.plot_images = plot_images
+        self.force_extract = args.force_detection
+        self.force_download = args.force_download
         self._instrument = None
         self._telescope = None
         self._obsparams = None
@@ -182,7 +182,7 @@ class CalibrateObsWCS(object):
         self._fov_radius = 0.5
         self._bin_str = None
 
-        # run calibration
+        # Run calibration
         self.run_calibration_all(silent=silent, verbose=verbose)
 
     def run_calibration_all(self, silent=False, verbose=False):
@@ -199,12 +199,12 @@ class CalibrateObsWCS(object):
         if verbose:
             self._log.debug("  > Check input argument(s)")
 
-        # prepare dataset from input argument
+        # Check the input arguments and prepare the dataset
         ds = DataSet(input_args=self._input_path,
                      prog_typ='calibWCS',
                      log=self._log, log_level=self._log_level)
 
-        # load configuration
+        # Load configuration
         ds.load_config()
         self._config = ds.config
 
@@ -229,7 +229,7 @@ class CalibrateObsWCS(object):
             obsfile_list = ds.valid_sci_obs
             self._dataset_object = obsfile_list
 
-            # loop over groups and run reduction for each group
+            # Loop over groups and run reduction for each group
             for src_path, files in obsfile_list:
                 if not silent:
                     self._log.info("====> Astrometric calibration run <====")
@@ -242,10 +242,11 @@ class CalibrateObsWCS(object):
                     multiple = True
                 # not_converged = []
                 converged_counter = 0
+                progress_counter = 0
                 pass_str = bc.BCOLORS.PASS + "SUCCESSFUL" + bc.BCOLORS.ENDC
                 fail_str = bc.BCOLORS.FAIL + "FAILED" + bc.BCOLORS.ENDC
-                for row_index, file_df in files.iterrows():
-                    progress = f"{row_index + 1}/{len(files)}"
+                for _, file_df in files.iterrows():
+                    progress = f"{progress_counter + 1}/{len(files)}"
                     self.run_calibration_single(src_path, file_df, progress,
                                                 hdu_idx=self._hdu_idx)
 
@@ -258,6 +259,7 @@ class CalibrateObsWCS(object):
                         # not_converged.append(file_df['input'])
                         with open(fail_fname, "a", encoding="utf8") as file:
                             file.write('{}\t{}\n'.format(self._telescope, file_df["input"]))
+                    progress_counter += 1
 
                 if multiple:
                     self._log.info(">> Final report:")
@@ -291,7 +293,7 @@ class CalibrateObsWCS(object):
         file_name = file_df['file_name']
         fbase = file_name.replace('_red', '')
 
-        # create folder
+        # Create needed folder
         if self._verbose:
             self._log.debug("  > Create folder")
         cal_path = Path(file_src_path, 'calibrated')
@@ -310,14 +312,14 @@ class CalibrateObsWCS(object):
 
         self._log.info(f"==> Run astrometric calibration for {file_name} [{progress}] <==")
 
-        # set background file name and create folder
+        # Set background file name and create folder
         bkg_fname_short = file_name.replace('_red', '_bkg')
         bkg_fname = os.path.join(aux_path, bkg_fname_short)
         estimate_bkg = True
-        if os.path.isfile(f'{bkg_fname}.fits') and not self._force_extract:
+        if os.path.isfile(f'{bkg_fname}.fits') and not self.force_extract:
             estimate_bkg = False
 
-        # load fits file
+        # Load FITS file
         img_mask = None
         with fits.open(abs_file_path) as hdul:
             hdul.verify('fix')
@@ -357,22 +359,23 @@ class CalibrateObsWCS(object):
         #     else:
         #         img_mask |= vignette_mask
 
+        # Get the satellite ID
         sat_id, _ = self._obsTable.get_satellite_id(hdr[obsparams['object']])
         plt_path_final = plt_path / sat_id
         if not plt_path_final.exists():
             plt_path_final.mkdir(exist_ok=True)
 
-        # get wcs and an original copy
+        # Get WCS from header and an original copy
         wcsprm = WCS(hdr).wcs
 
-        # run checks on wcs and get an initial guess
+        # Run checks on wcs and get an initial guess
         self.check_image_wcs(wcsprm=wcsprm, hdr=hdr,
                              obsparams=obsparams,
                              radius=self._radius)
         init_wcs = self._wcsprm
         init_wcsprm = self._wcsprm.wcs
 
-        # update configuration
+        # Update configuration
         config = obsparams.copy()
         params_to_add = dict(fov_radius=self._fov_radius,
                              src_cat_fname=self._src_cat_fname,
@@ -382,15 +385,15 @@ class CalibrateObsWCS(object):
                              estimate_bkg=estimate_bkg,
                              ref_cat_mag_lim=self._config['REF_CATALOG_MAG_LIM'],
                              bkg_fname=(bkg_fname, bkg_fname_short),
-                             force_extract=self._force_extract,
-                             force_download=self._force_download)
+                             force_extract=self.force_extract,
+                             force_download=self.force_download)
 
-        # add to configuration
+        # Add the parameters to the configuration
         config.update(params_to_add)
         for key, value in self._config.items():
             config[key] = value
 
-        # get detector saturation limit
+        # Get detector saturation limit
         sat_lim = config['saturation_limit']
         if isinstance(config['saturation_limit'], str) and config['saturation_limit'] in hdr:
             sat_lim = hdr[obsparams['saturation_limit']]
@@ -398,21 +401,22 @@ class CalibrateObsWCS(object):
 
         config['image_shape'] = imgarr.shape
 
-        # extract sources on detector
+        # Extract sources and create a source catalog
         extraction_result, state, _ = sext.get_src_and_cat_info(fbase, cat_path,
                                                                 imgarr, hdr, init_wcsprm,
                                                                 silent=self._silent,
                                                                 **config)
-        # unpack extraction result tuple
+        # Unpack extraction result
         (src_tbl_raw, ref_tbl, ref_catalog, src_cat_fname, ref_cat_fname,
          kernel_fwhm) = extraction_result
 
-        # check execution state and update result table
+        # Check execution state and update result table
         if not state or len(src_tbl_raw) == 0:
             self._converged = False
+
+            # Make sure that the RA and DEC are consistent and rounded to the same decimal
             ra = hdr[obsparams['ra']]
             dec = hdr[obsparams['dec']]
-
             if obsparams['radec_separator'] == 'XXX':
                 ra = round(hdr[obsparams['ra']], bc.ROUND_DECIMAL)
                 dec = round(hdr[obsparams['dec']], bc.ROUND_DECIMAL)
@@ -428,26 +432,26 @@ class CalibrateObsWCS(object):
 
             return
 
-        # use only the entries with good fwhm values
+        # Use only the entries with good fwhm values
         src_tbl = src_tbl_raw.query('include_fwhm')
         if len(src_tbl) < 5:
             src_tbl = src_tbl_raw
 
-        # set the match radius either based on the fwhm or as absolute value
+        # Set the match radius either based on the fwhm or as absolute value
         match_radius = self._config['MATCH_RADIUS']
         match_radius = kernel_fwhm[0] if match_radius == 'fwhm' else match_radius
 
-        # get the default PC matrix
+        # Get the default PC matrix
         self._config['pc_matrix'] = obsparams['pc_matrix']
 
-        # initialize find
+        # Initialize find WCS object
         get_wcs = imtrans.FindWCS(src_tbl, ref_tbl, hdr, config, self._log)
 
-        # run wcs analysis
+        # Run the WCS analysis
         wcs_res = get_wcs.find_wcs(init_wcs, imgarr, match_radius)
         has_solution, best_wcsprm, dict_rms = wcs_res
 
-        # check result sate
+        # Check the result sate
         status_str = bc.BCOLORS.PASS + "PASS" + bc.BCOLORS.ENDC
         if not has_solution or best_wcsprm is None:
             status_str = bc.BCOLORS.FAIL + "FAIL" + bc.BCOLORS.ENDC
@@ -459,16 +463,16 @@ class CalibrateObsWCS(object):
         if not self._silent:
             self._log.info("  ==> Calibration status: " + status_str)
 
-        # get updated reference catalog positions
+        # Get updated reference catalog positions
         ref_tbl_adjusted = imtrans.update_catalog_positions(ref_tbl, wcsprm, origin=0)
 
-        # update file header and save
+        # Update file header and save
         if has_solution:
 
-            # get pixel scale
+            # Get the pixel scale
             wcs_pixscale = imtrans.get_wcs_pixelscale(wcsprm)
 
-            # update report dict
+            # Update the report dictionary
             report["converged"] = has_solution
             report["catalog"] = ref_catalog
             report["fwhm"] = kernel_fwhm[0]
@@ -476,20 +480,23 @@ class CalibrateObsWCS(object):
             report["matches"] = int(dict_rms["matches"])
             report["match_radius"] = dict_rms["radius_px"]
             report["match_rms"] = dict_rms["rms"]
+            report["std_x"] = dict_rms["std_x"]
+            report["std_y"] = dict_rms["std_y"]
             report["pix_scale"] = np.mean(abs(wcs_pixscale)) * 3600. if wcs_pixscale is not np.nan else np.nan
-            report["scale_x"] = abs(wcs_pixscale[1]) * 3600.
-            report["scale_y"] = abs(wcs_pixscale[0]) * 3600.
+            report["scale_x"] = abs(wcs_pixscale[0]) * 3600.
+            report["scale_y"] = abs(wcs_pixscale[1]) * 3600.
 
-            # save the result to the fits-file
+            # Save the result to the FITS-file
             self.write_wcs_to_hdr(original_filename=abs_file_path,
                                   filename_base=fbase,
                                   destination=cal_path,
                                   wcsprm=wcsprm,
                                   report=report, hdul_idx=hdu_idx)
-            # plot final figures
+
+            # Get the source positions
             src_positions = list(zip(src_tbl['xcentroid'], src_tbl['ycentroid']))
 
-            # match results within 1 fwhm radius for plot
+            # Match results within 1 fwhm radius for plot
             matches = imtrans.find_matches(src_tbl,
                                            ref_tbl_adjusted,
                                            wcsprm,
@@ -499,6 +506,7 @@ class CalibrateObsWCS(object):
             if not self._silent:
                 self._log.info("> Plot WCS calibration result")
 
+            # Plot the final result
             config['match_radius_px'] = dict_rms["radius_px"]
             self.plot_final_result(imgarr=imgarr, src_pos=src_positions,
                                    ref_pos=ref_positions_after,
@@ -509,7 +517,8 @@ class CalibrateObsWCS(object):
             bc.clean_up(src_positions, ref_positions_after, matches)
 
         else:
-            # dic_rms = {"radius_px": None, "matches": None, "rms": None}
+
+            # Make sure that the RA and DEC are consistent and rounded to the same decimal
             ra = hdr[obsparams['ra']]
             dec = hdr[obsparams['dec']]
             if obsparams['radec_separator'] == 'XXX':
@@ -521,6 +530,7 @@ class CalibrateObsWCS(object):
                       obsparams['ra']: ra,
                       obsparams['dec']: dec,
                       'AST_CAL': False}
+
             self._obsTable.update_obs_table(file=fbase, kwargs=kwargs, obsparams=obsparams)
 
         self._converged = has_solution
@@ -539,7 +549,7 @@ class CalibrateObsWCS(object):
 
         Parameters
         ----------
-        wcsprm: astropy.wcs.wcsprm
+        wcsprm: WCS.wcs
             World coordinate system object describing translation between image and skycoord
         hdr: header
         obsparams
@@ -552,7 +562,7 @@ class CalibrateObsWCS(object):
         if not self._silent:
             log.info("> Gather header information")
 
-        # check binning keyword
+        # Check binning keyword
         if isinstance(obsparams['binning'][0], str) and isinstance(obsparams['binning'][1], str):
             bin_x = int(hdr[obsparams['binning'][0]])
             bin_y = int(hdr[obsparams['binning'][1]])
@@ -566,7 +576,7 @@ class CalibrateObsWCS(object):
             wcs_rebinned = WCS(wcsprm.to_header()).slice((np.s_[::bin_x], np.s_[::bin_y]))
             wcsprm = wcs_rebinned.wcs
 
-        # check axes keywords
+        # Check axes keywords
         if "NAXIS1" not in hdr or "NAXIS2" not in hdr:
             log.error("NAXIS1 or NAXIS2 missing in file. Please add!")
             sys.exit(1)
@@ -574,7 +584,7 @@ class CalibrateObsWCS(object):
             axis1 = obsparams['image_size_1x1'][0] // bin_x
             axis2 = obsparams['image_size_1x1'][1] // bin_y
 
-        # read out ra and dec from header
+        # Read out RA and Dec from header
         if obsparams['radec_separator'] == 'XXX':
             ra_deg = float(hdr[obsparams['ra']])
             dec_deg = float(hdr[obsparams['dec']])
@@ -588,7 +598,7 @@ class CalibrateObsWCS(object):
             if dec_string[0].find('-') > -1:
                 dec_deg *= -1
 
-        # transform to equinox J2000, if necessary
+        # Transform to equinox J2000, if necessary
         wcsprm.equinox = 2000.
         if 'EQUINOX' in hdr:
             equinox = float(hdr['EQUINOX'])
@@ -613,8 +623,10 @@ class CalibrateObsWCS(object):
         else:
             wcsprm.radesys = hdr['RADESYS']
 
+        # Recompile the WCS object
         wcsprm = WCS(hdr).wcs
 
+        # Get the pixel scale in arcseconds from the header or the telescope configuration
         if isinstance(obsparams['secpix'][0], str) and \
                 isinstance(obsparams['secpix'][1], str):
             pixscale_x = float(hdr[obsparams['secpix'][0]])
@@ -626,13 +638,15 @@ class CalibrateObsWCS(object):
             pixscale_x = float(obsparams['secpix'][0])
             pixscale_y = float(obsparams['secpix'][1])
 
-        # apply CCD binning factor
+        # Apply the CCD binning factor
         pixscale_x *= bin_x
         pixscale_y *= bin_y
+
+        # Estimate the size of the FoV in arcmin
         x_size = axis1 * pixscale_x / 60.  # arcmin
         y_size = axis2 * pixscale_y / 60.  # arcmin
 
-        # test if the current pixel scale makes sense
+        # Test if the current pixel scale makes sense
         wcs_pixscale = imtrans.get_wcs_pixelscale(wcsprm)
 
         test_wcs1 = ((np.abs(wcs_pixscale[0])) < 1e-7 or (np.abs(wcs_pixscale[1])) < 1e-7 or
@@ -644,7 +658,7 @@ class CalibrateObsWCS(object):
                 guess = pixscale_x / 3600.
                 wcsprm.cdelt = [guess, guess]
 
-        # test if found pixel scale makes sense
+        # Test if found pixel scale makes sense
         test_wcs2 = (120. > x_size > 0.5) & \
                     (120. > y_size > 0.5)
 
@@ -656,32 +670,32 @@ class CalibrateObsWCS(object):
 
             if wcs_pixscale[0] / pixscale_x < 0.1 or wcs_pixscale[0] / pixscale_x > 10 \
                     or wcs_pixscale[1] / pixscale_y < 0.1 or wcs_pixscale[1] / pixscale_y > 10:
-                # check if there is a huge difference in the scales
+                # Check if there is a huge difference in the scales
                 # if yes, then replace the wcs scale with the pixel scale information
                 wcsprm.cdelt = [pixscale_x, pixscale_y]
                 wcsprm.pc = [[1, 0], [0, 1]]
 
-        # if the central pixel is not in the header, set to image center pixel
+        # Set the central pixel to the image center pixel
         wcsprm.crpix = [axis1 // 2, axis2 // 2]
 
-        # check sky position
+        # Check sky position
         if np.array_equal(wcsprm.crval, [0, 0]):
             # If the sky position is not found check header for RA and DEC information
             wcsprm.crval = [ra_deg, dec_deg]
 
-
         if np.array_equal(wcsprm.ctype, ["", ""]):
            wcsprm.ctype = ['RA---TAN', 'DEC--TAN']  # this is a guess
 
-        wcs = WCS(wcsprm.to_header())
+        # Recompile the WCS object
+        wcs_n = WCS(wcsprm.to_header())
 
-        # estimate size of FoV
-        fov_radius = sext.compute_radius(wcs, axis1, axis2)
+        # Estimate the size of the FoV
+        fov_radius = sext.compute_radius(wcs_n, axis1, axis2)
 
         if radius > 0.:
             fov_radius = radius / 60.
         else:
-            # increase FoV for SPM data
+            # Increase the FoV for SPM data
             if self._telescope in ['DDOTI 28-cm f/2.2', 'CTIO 0.9 meter telescope']:
                 fov_radius *= 2.
 
@@ -691,31 +705,34 @@ class CalibrateObsWCS(object):
             log.info(f"{' ':<2}{'Pixel scale (deg/pixel)':<24}: "
                      f"{wcsprm.cdelt[0]:.3g} x {wcsprm.cdelt[1]:.3g}")
             log.info(f"{' ':<2}{'FoV radius (deg)':<24}: {fov_radius:.3g}")
-        # log.info(f"{' ':<2}>> Using the best available solution.")
 
-        self._wcsprm = wcs
+        self._wcsprm = wcs_n
         self._fov_radius = fov_radius
 
     def write_wcs_to_hdr(self, original_filename, filename_base,
                          destination, wcsprm, report, hdul_idx=0):
-        """Update the header of the fits file itself.
+        """
+        Update the header of the FITS file itself.
 
         Parameters
         ----------
-        original_filename: str
-            Original filename of the fits-file.
-        wcsprm: astropy.wcs.wcsprm
-            World coordinate system object describing translation between image and skycoord
-        filename_base
-        destination
-        report
-        hdul_idx
+        original_filename : str
+            Original filename of the FITS file.
+        filename_base : str
+            Base name for the output file.
+        destination : pathlib.Path
+            Destination directory for the output file.
+        wcsprm : astropy.wcs.WCS.wcs
+            World coordinate system object describing translation between image and sky coordinates.
+        report : dict
+            Dictionary containing the calibration report.
+        hdul_idx : int, optional
+            Index of the HDU list to update, by default 0.
 
         Returns
         -------
-
+        None
         """
-
         if not self._silent:
             self._log.info("> Update FITS file.")
 
@@ -724,33 +741,36 @@ class CalibrateObsWCS(object):
             hdu = hdul[hdul_idx]
             hdr_file = hdu.header
 
-            # throughout CD which contains the scaling and separate into pc and Cdelt
+            # Throughout CD which contains the scaling and separate into PC and CDELT
             for old_parameter in ['CD1_1', 'CD1_2', 'CD2_1', 'CD2_2',
                                   "PC1_1", "PC1_2", "PC2_1", "PC2_2"]:
                 if old_parameter in hdr_file:
                     del hdr_file[old_parameter]
 
-            # update wcs
+            # Update WCS
             wcs = WCS(wcsprm.to_header())
             hdr_file.update(wcs.to_header())
 
-            # get y-axis length as limit
+            # Get the transformation matrix
             matrix = wcsprm.pc * wcsprm.cdelt[:, np.newaxis]
 
             # Rotation angle
             theta = np.rad2deg(-np.arctan2(matrix[1, 0], matrix[1, 1]))
 
-            # adding report
-            hdr_file['PIXSCALE'] = (report["pix_scale"], 'Average pixel scale [arcsec/pixel]')
-            hdr_file['SCALEX'] = (report["scale_x"], 'Pixel scale in X [arcsec/pixel]')
-            hdr_file['SCALEY'] = (report["scale_y"], 'Pixel scale in Y [arcsec/pixel]')
-            hdr_file['DETROTANG'] = (theta, 'Detection rotation angel [deg]')
-            hdr_file['FWHM'] = (report["fwhm"], 'FWHM [pixel]')
-            hdr_file['FWHMERR'] = (report["e_fwhm"], 'FWHM error [pixel]')
-            hdr_file['AST_SCR'] = ("Astrometry", 'Astrometric calibration by Christian Adam')
+            # Add report to the header
+            hdr_file['PIXSCALE'] = (f'{report["pix_scale"]:.5f}', 'Average pixel scale [arcsec/pixel]')
+            hdr_file['SCALEX'] = (f'{report["scale_x"]:.5f}', 'Pixel scale in X [arcsec/pixel]')
+            hdr_file['SCALEY'] = (f'{report["scale_y"]:.5f}', 'Pixel scale in Y [arcsec/pixel]')
+            hdr_file['DETROTANG'] = (f'{theta:.2f}', 'Detection rotation angel [deg]')
+            hdr_file['FWHM'] = (f'{report["fwhm"]:.3f}', 'FWHM [pixel]')
+            hdr_file['FWHMERR'] = (f'{report["e_fwhm"]:.3f}', 'FWHM error [pixel]')
+            hdr_file['POSERRX'] = (f'{report["std_x"]:.3f}', 'Position error in X [pixel]')
+            hdr_file['POSERRY'] = (f'{report["std_y"]:.3f}', 'Position error in Y [pixel]')
+            hdr_file['AST_SCR'] = ("leosatpy", 'Program used for astrometric calibration')
+            hdr_file['AST_VER'] = (__version__, 'Program version')
             hdr_file['AST_CAT'] = (report["catalog"], 'Catalog used')
             hdr_file['AST_MAT'] = (report["matches"], 'Number of catalog matches')
-            hdr_file['AST_RAD'] = (report["match_radius"], 'match radius in pixel')
+            hdr_file['AST_RAD'] = (f'{report["match_radius"]:.3f}', 'match radius in pixel')
             hdr_file['AST_CONV'] = (report["converged"], "T or F for astrometry converged or not")
             hdr_file['AST_CAL'] = (True, "T or F for astrometric calibration executed or not")
 
@@ -767,6 +787,7 @@ class CalibrateObsWCS(object):
 
             fits_header = hdu.header
 
+        # Make sure that the RA and DEC are consistent and rounded to the same decimal
         obsparams = self._obsparams
         if obsparams['radec_separator'] == 'XXX':
             fits_header[obsparams['ra']] = round(fits_header[obsparams['ra']],
@@ -796,16 +817,16 @@ class CalibrateObsWCS(object):
 
         """
 
-        # load fits file
+        # Load fits file
         bkg_fname = config['bkg_fname']
         with fits.open(f'{bkg_fname[0]}.fits') as hdul:
             hdul.verify('fix')
             bkg_background = hdul[0].data.astype('float32')
 
-        # subtract the background from the image
+        # Subtract the background from the image
         imgarr -= bkg_background
 
-        # get y-axis length as limit
+        # Get y-axis length as limit
         matrix = wcsprm.pc * wcsprm.cdelt[:, np.newaxis]
 
         # Scale
@@ -814,11 +835,11 @@ class CalibrateObsWCS(object):
         # Rotation angle
         theta = -np.arctan2(matrix[1, 0], matrix[1, 1])
 
-        # get x, y-axis length as limits
+        # Get x, y-axis length as limits
         plim = imgarr.shape[0]  # Image height
         xplim = imgarr.shape[1]  # Image width
 
-        # # get the scale and angle
+        # # Get the scale and angle
         # scale = wcsprm.cdelt[0]
         # angle = np.arccos(wcsprm.pc[0][0])
         # theta = angle / np.pi * 180.
@@ -828,7 +849,7 @@ class CalibrateObsWCS(object):
         obs_xy = np.array(src_pos)
         cat_xy = ref_pos
 
-        # calculate the distances
+        # Calculate the distances
         dist_xy = np.sqrt((obs_xy[:, 0] - cat_xy[:, 0, np.newaxis]) ** 2
                           + (obs_xy[:, 1] - cat_xy[:, 1, np.newaxis]) ** 2)
 
@@ -840,7 +861,7 @@ class CalibrateObsWCS(object):
         obs_idx = idx_arr[1][mask]
         obs_xy = obs_xy[obs_idx, :]
 
-        # adjust position offset
+        # Adjust position offset
         px_offset = -0.
         adjusted_ref_pos = [(x + px_offset, y + px_offset) for x, y in ref_pos]
         apertures_catalog = CircularAperture(adjusted_ref_pos, r=10.)
@@ -873,15 +894,15 @@ class CalibrateObsWCS(object):
 
         apertures_catalog.plot(axes=ax, **{'color': 'green', 'lw': 1.25, 'alpha': 0.85})
 
-        # add image scale
+        # Add an image scale
         self.add_image_scale(ax=ax, plim_x=xplim, plim_y=plim, scale=scale_x)
 
-        # Add compass
+        # Add a compass
         self.add_compass(ax=ax, image_shape=imgarr.shape,
                          scale_arrow=self._config['ARROW_LENGTH'], theta_rad=theta,
                          color='k')
         # -----------------------------------------------------------------------------
-        # Make color bar
+        # Make the color bar
         # -----------------------------------------------------------------------------
         divider = make_axes_locatable(ax)
         cax = divider.append_axes("top", size="5%", pad=0.075)
@@ -938,7 +959,7 @@ class CalibrateObsWCS(object):
 
         self.save_plot(fname)
 
-        if self._plot_images:
+        if self.plot_images:
             plt.show()
 
         plt.close(fig=fig)
@@ -1085,7 +1106,7 @@ def main():
 # -----------------------------------------------------------------------------
 
 
-# standard boilerplate to set 'main' as starting function
+# Standard boilerplate to set 'main' as starting function
 if __name__ == '__main__':
     main()
 # -----------------------------------------------------------------------------
