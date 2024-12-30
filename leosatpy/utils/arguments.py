@@ -19,15 +19,13 @@
 from __future__ import annotations
 import argparse
 
-from . import version
-
-__version__ = version.__version__
+from .version import __version__
 
 # -----------------------------------------------------------------------------
 
 """ Meta-info """
 __author__ = "Christian Adam"
-__copyright__ = 'Copyright 2021-2023, CLEOSat group'
+__copyright__ = 'Copyright 2021-2025, CLEOSat group'
 __credits__ = ["Eduardo Unda-Sanzana, Jeremy Tregloan-Reed, Christian Adam"]
 __license__ = "GPL-3.0 license"
 __maintainer__ = "Christian Adam"
@@ -120,7 +118,7 @@ class ParseArguments(object):
                             help="Input path(s) or image(s) separated by whitespace. "
                                  "A combination of folder or multiple images is supported.")
 
-        # image related args
+        # Image related args
         imageArgs = parser.add_argument_group('image control')
 
         imageArgs.add_argument("-hdu_idx", "--hdu_idx", type=int, default=0,
@@ -146,7 +144,7 @@ class ParseArguments(object):
                                     "to file for later use if output is True. "
                                     "Set to the filename without extension. Default: None.")
 
-        # output related args
+        # Output related args
         outputArgs = parser.add_argument_group('output control')
         outputArgs.add_argument("-p", "--plot_images", action='store_true', default=False,
                                 help="Set True to show plots during process.")
@@ -176,7 +174,7 @@ class ParseArguments(object):
                             help="Input path(s) or image(s) separated by whitespace. "
                                  "A combination of folder or multiple images is supported.")
 
-        # image related args
+        # Image related args
         imageArgs = parser.add_argument_group('image control')
 
         imageArgs.add_argument("-hdu_idx", "--hdu_idx", type=int, default=0,
@@ -192,7 +190,7 @@ class ParseArguments(object):
                                     "Default: not used. Set to 1 for circle that touches the sides. "
                                     "Less to cut off more.")
 
-        # calibration related arguments
+        # Calibration related arguments
         calibArgs = parser.add_argument_group('calibration control')
         calibArgs.add_argument("-c", "--catalog",
                                help="Catalog to use for position reference. Defaults to `GAIAdr3`.",
@@ -212,7 +210,7 @@ class ParseArguments(object):
                                     "to file for later use if output is True. "
                                     "Set to the filename without extension. Default: None")
 
-        # output related args
+        # Output related args
         outputArgs = parser.add_argument_group('output control')
         outputArgs.add_argument("-p", "--plot_images", action='store_true', default=False,
                                 help="Set True to show plots during process.")
@@ -242,7 +240,7 @@ class ParseArguments(object):
                             help="Input path(s) or image(s) separated by whitespace. "
                                  "A combination of folder or multiple images is supported.")
 
-        # reduction related args
+        # Reduction related args
         reduceArgs = parser.add_argument_group('reduction control')
 
         reduceArgs.add_argument("-f", "--force-reduction", dest='force_reduction', action='store_true', default=False,
@@ -288,7 +286,7 @@ class ParseArguments(object):
                             help="Input path(s) or image(s) separated by whitespace. "
                                  "A combination of folder or multiple images is also supported.")
 
-        # reduction related args
+        # Reduction related args
         reduceArgs = parser.add_argument_group('reduction mode')
 
         reduceArgs.add_argument("-b", "--bias", action="store_true", default=False,
