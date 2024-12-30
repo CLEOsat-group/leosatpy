@@ -92,7 +92,6 @@ def convert_sdss_to_BVRI_lupton(f, x1, x2, x3):
     Lupton et al.(2005) BibCode: 2005AAS...20713308L
 
     """
-
     coeff_dict = bc.CONV_SSDS_BVRI
 
     y1 = x2[:, 0] + coeff_dict[f][0][0] * (x1[:, 0] - x2[:, 0]) + coeff_dict[f][0][1]
@@ -124,7 +123,6 @@ def convert_sdss_to_U_jester(u, g, r):
     Jester et al.(2005)
 
     """
-
     B = g[:, 0] + 0.33 * (g[:, 0] - r[:, 0]) + 0.20
     U = 0.77 * (u[:, 0] - g[:, 0]) - 0.88 + B
     e_U = np.sqrt((0.77 * u[:, 1])**2 +
@@ -185,13 +183,13 @@ def process_aper_photometry(r_aper, iteration, image, src_pos, mask, aper_mode, 
     aper_flux = aper_flux_counts / exp_time
     aper_bkg = aper_bkg_counts / exp_time
 
-    # calculate the Signal-to-Noise ratio
+    # Calculate the Signal-to-Noise ratio
     snr, snr_err = get_snr(flux_star=aper_flux, flux_bkg=aper_bkg,
                            t_exp=exp_time, area=area,
                            gain=gain, rdnoise=rdnoise, dc=0.)
     del image, mask
 
-    bc.print_progress_bar(iteration, total,  length=80,
+    bc.print_progress_bar(iteration, total, length=80,
                           color=bc.BCOLORS.OKGREEN, use_lock=use_lock)
 
     return aper_flux, aper_bkg, snr, snr_err
@@ -313,11 +311,10 @@ def get_optimum_aper_rad(image: np.ndarray,
     -------
 
     """
-
     # Initialize logging for this user-callable function
     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
 
-    # mask unwanted pixel
+    # Mask unwanted pixel
     mask = (image < 0)
     img_mask = config['img_mask']
     # if img_mask is not None:
@@ -328,10 +325,10 @@ def get_optimum_aper_rad(image: np.ndarray,
     stop = config['APER_STOP']
     rapers = np.linspace(start, stop, int((stop - start) / dstep + 1))
 
-    # select only the 25 brightest sources
+    # Select only the 25 brightest sources
     std_cat = std_cat.head(25)
 
-    # get positions
+    # Get positions
     src_pos = np.array(list(zip(std_cat['xcentroid'], std_cat['ycentroid'])))
 
     output = np.zeros((len(rapers), len(src_pos), 4))
@@ -362,7 +359,7 @@ def get_optimum_aper_rad(image: np.ndarray,
 
     del executor
 
-    # if there are more than 5 sources
+    # If there are more than 5 sources
     if output.shape[1] > config['NUM_STD_MIN']:
         x = np.nanmax(output[:, :, 2], axis=0)
         idx = np.where(x >= np.nanmean(x))[0]
@@ -410,7 +407,6 @@ def get_snr(flux_star: np.array, flux_bkg: np.array,
     -------
 
     """
-
     counts_source = flux_star * t_exp
     sky_shot = flux_bkg * t_exp * area
 
@@ -457,7 +453,7 @@ def get_aper_photometry(image: np.ndarray,
                                        h=height,
                                        theta=theta)
 
-    # get statistics with mask in mind
+    # Get statistics with mask in mind
     bkg_stats = ApertureStats(image, annulus_aperture,
                               mask=mask,
                               # sigma_clip=sigclip,
@@ -501,32 +497,32 @@ def get_aper_photometry(image: np.ndarray,
     annulus_area = annulus_aperture.area_overlap(data=image, mask=mask, method=sum_method)
     # print(aperture_area, annulus_area)
 
-    # do aperture photometry
+    # Run the aperture photometry
     phot_table = aperture_photometry(image, aperture,
                                      mask=mask,
                                      error=img_error,
                                      method=sum_method)
     del mask, aperture, annulus_aperture
 
-    # rename pix position to make it consistent
+    # Rename pix position to make it consistent
     names = ('xcenter', 'ycenter')
     new_names = ('xcentroid', 'ycentroid')
     phot_table.rename_columns(names, new_names)
 
-    # convert to pandas dataframe
+    # Convert to pandas dataframe
     phot_table = phot_table.to_pandas()
 
-    # get total background
+    # Get total background
     total_bkg = bkg_median * aperture_area
 
-    # subtract background
+    # Subtract background
     phot_bkgsub = phot_table['aperture_sum'] - total_bkg
     # print(phot_bkgsub, total_bkg)
 
     phot_table['aperture_sum_bkgsub'] = phot_bkgsub
     phot_table.loc[phot_table['aperture_sum_bkgsub'] <= 0] = 0
 
-    # compute the flux error using DAOPHOT style
+    # Compute the flux error using DAOPHOT style
     flux_variance = phot_table['aperture_sum_bkgsub'].values
     if img_error is not None:
         flux_variance = phot_table['aperture_sum_err'].values ** 2
@@ -549,7 +545,7 @@ def get_std_photometry(image, std_cat, src_pos, fwhm, config):
     aper_dict = dict(aper=config['APER_RAD_OPT'] * fwhm,
                      inf_aper=config['INF_APER_RAD_OPT'] * fwhm)
     # print(aper_dict)
-    # mask unwanted pixel
+    # Mask unwanted pixel
     mask = (image < 0)
     img_mask = config['img_mask']
     if img_mask is not None:
@@ -581,7 +577,7 @@ def get_sat_photometry(image, img_mask, src_pos, fwhm, width, theta, config):
     aper_dict = dict(aper=config['APER_RAD_RECT'],
                      inf_aper=config['INF_APER_RAD_RECT'])
 
-    # mask unwanted pixel
+    # Mask unwanted pixel
     mask = (image < 0)
     if img_mask is not None:
         mask |= img_mask
@@ -638,10 +634,10 @@ def get_glint_photometry(image, valid_mask, src_pos, width, height, theta, confi
     negative_mask = (image < 0)
     sat_lim_mask = (image > config['sat_lim'])
 
-    # mask only invalid and negative values
+    # Mask only invalid and negative values
     negative_mask |= valid_mask
 
-    # mask negative and saturated pixel
+    # Mask negative and saturated pixel
     sat_lim_mask |= negative_mask
     sat_lim_mask |= valid_mask
 
@@ -664,31 +660,31 @@ def get_glint_photometry(image, valid_mask, src_pos, width, height, theta, confi
         aperture_area = aperture.area_overlap(data=image, mask=mask, method=sum_method)
         annulus_area = aperture.area_overlap(data=image, mask=mask_img, method=sum_method)
 
-        # do aperture photometry
+        # Run the aperture photometry
         phot_table = aperture_photometry(image, aperture,
                                          mask=mask,
                                          method=sum_method)
         del aperture
 
-        # rename pix position to make it consistent
+        # Rename pix position to make it consistent
         names = ('xcenter', 'ycenter')
         new_names = ('xcentroid', 'ycentroid')
         phot_table.rename_columns(names, new_names)
 
-        # convert to pandas dataframe
+        # Convert to pandas dataframe
         phot_table = phot_table.to_pandas()
 
-        # get total background
+        # Get total background
         total_bkg = bkg_median * aperture_area
 
-        # subtract background
+        # Subtract background
         phot_bkgsub = phot_table['aperture_sum'] - total_bkg
         # print(phot_bkgsub, total_bkg)
 
         phot_table['aperture_sum_bkgsub'] = phot_bkgsub
         phot_table.loc[phot_table['aperture_sum_bkgsub'] <= 0] = 0
 
-        # compute the flux error using DAOPHOT style
+        # Compute the flux error using DAOPHOT style
         flux_variance = phot_table['aperture_sum_bkgsub'].values
         bkg_var = (aperture_area * bkg_std ** 2.) * (1. + aperture_area / annulus_area)
         flux_error = (flux_variance / gain + bkg_var) ** 0.5
@@ -718,7 +714,6 @@ def order_shift(x):
     :rtype: float
 
     """
-
     idx = (np.isnan(x)) | (np.isinf(x)) | (x <= 0)
 
     order_of_mag = 10 ** np.nanmax(np.floor(np.log10(x[~idx])))
