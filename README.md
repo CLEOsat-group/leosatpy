@@ -49,7 +49,8 @@ at the Oukaïmeden Observatory, Morocco.
 [Chungbuk National University Observatory](https://www.chungbuk.ac.kr/site/english/main.do) in Jincheon, South Korea.
 - [1.23-metre telescope](https://www.caha.es/CAHA/Telescopes/1.2m.html) 
 at the Calar Alto Observatory, Spain.
-
+- 0.6-metre [Fjernstyrede Undervisnings Teleskop](https://phys.au.dk/en/news/item/artikel/fut-det-fjernstyrede-undervisningsteleskop-er-klar-til-de-foerste-gymnasieklasser-1) 
+(FUT) from Aarhus University at the [Mt. Kent Observatory](https://science.desi.qld.gov.au/research/capability-directory/mount-kent-observatory), Australia.
 
 > [!NOTE]  
 If you want your telescope added to the list, please contact [Jeremy Tregloan-Reed](mailto:jeremy.tregloan-reed@uda.cl).
@@ -65,8 +66,8 @@ for example [conda](https://conda.io/projects/conda/en/latest/user-guide/install
 A new conda environment can be created and activated with:
 
 ```sh
-$ conda create -n leosatpy_env python=3.9
-$ conda activate leosatpy_env
+  $ conda create -n leosatpy_env python=3.9
+  $ conda activate leosatpy_env
 ```
 
 ### Installation
@@ -74,7 +75,7 @@ $ conda activate leosatpy_env
 LEOSatpy is available on [PyPI](https://pypi.org/project/leosatpy/), and can be installed using pip:
 
 ```bash
-$ (leosatpy_env) pip install leosatpy
+  $ (leosatpy_env) pip install leosatpy
 ```
 
 Alternatively, the latest release of LEOSatpy is also available from the
@@ -83,7 +84,7 @@ Alternatively, the latest release of LEOSatpy is also available from the
 1.  Clone the repository using git:  
     
     ```sh
-    $ (leosatpy_env) git clone https://github.com/CLEOsat-group/leosatpy.git
+      $ (leosatpy_env) git clone https://github.com/CLEOsat-group/leosatpy.git
     ```
 
 2.  Download the zip file from the GitHub repository:  
@@ -94,28 +95,28 @@ Once cloned or downloaded and extracted, LEOSatpy can be installed from
 anywhere by typing:
 
 ```bash
-$ (leosatpy_env) pip install -e PATH/TO/CLONED/GITHUB
+  $ (leosatpy_env) pip install -e PATH/TO/CLONED/GITHUB
 ```
 
 or by navigating to the downloaded folder:
 
 ```sh
-$ (leosatpy_env) cd PATH/TO/CLONED/GITHUB
+  $ (leosatpy_env) cd PATH/TO/CLONED/GITHUB
 ```
 
 and using the following command in the terminal:
 
 ```bash
-$ (leosatpy_env) python setup.py install
+  $ (leosatpy_env) python setup.py install
 ```
 
 The successful installation of LEOSatpy can be tested by trying to
 access the help or the version of LEOSatpy via:
 
 ```bash
-$ (leosatpy_env) reduceSatObs --help
+  $ (leosatpy_env) reduceSatObs --help
 
-$ (leosatpy_env) reduceSatObs --version
+  $ (leosatpy_env) reduceSatObs --version
 ```
 
 If no error messages are shown, LEOSatpy is most likely installed correctly.
@@ -223,26 +224,26 @@ The reduction of all raw FITS-files in a folder can be performed via the
 following line:
 
 ```sh
-$ (leosatpy_env) reduceSatObs PATH/TO/DATA
+  $ (leosatpy_env) reduceSatObs PATH/TO/DATA
 ```
 
 LEOSatpy also accepts relative paths and multiple inputs, for example:
 
 ```sh
-$ (leosatpy_env) reduceSatObs ../Telescope-Identifier/YYYY-MM-DD/
+  $ (leosatpy_env) reduceSatObs ../Telescope-Identifier/YYYY-MM-DD/
 
 ```
 
 or
 
 ```sh
-$ (leosatpy_env) reduceSatObs PATH/TO/DATA/NIGHT_1 PATH/TO/DATA/NIGHT_2
+  $ (leosatpy_env) reduceSatObs PATH/TO/DATA/NIGHT_1 PATH/TO/DATA/NIGHT_2
 ```
 
 To reduce all data from a telescope at once with:
 
 ```sh
-$ (leosatpy_env) reduceSatObs PATH/TO/TELESCOPE/DATA
+  $ (leosatpy_env) reduceSatObs PATH/TO/TELESCOPE/DATA
 ```
 
 > [!TIP]  
@@ -254,7 +255,7 @@ the other programs in the package.
 To apply the astrometric calibration type:
 
 ```sh
-$ (leosatpy_env) calibrateSatObs PATH/TO/DATA
+  $ (leosatpy_env) calibrateSatObs PATH/TO/DATA
 ```
 
 #### Satellite trail detection and analysis
@@ -263,7 +264,7 @@ To run the satellite detection and analysis on all files in the input
 type:
 
 ```sh
-$ (leosatpy_env) analyseSatObs PATH/TO/DATA
+  $ (leosatpy_env) analyseSatObs PATH/TO/DATA
 ```
 
 ## Citing LEOSatpy
