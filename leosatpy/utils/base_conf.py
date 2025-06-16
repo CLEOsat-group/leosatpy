@@ -93,7 +93,7 @@ fail_str = BCOLORS.FAIL + "FAILED" + BCOLORS.ENDC
 
 # List of potential FITS header keywords that can be used to identify the instrument
 # Any unique header keyword serves as an identifier
-INSTRUMENT_KEYS = ['PPINSTRU', 'LCAMMOD', 'INSTRUME',
+INSTRUMENT_KEYS = ['PPINSTRU', 'LCAMMOD', 'INSTRUME', 'INSTRUM',
                    'TELESCOP', 'FLI', 'FPA', 'CAM_NAME']
 
 # Default timeout in seconds for reference image selection
@@ -138,7 +138,7 @@ IMAGETYP_REDUCE_ORDER = np.array(['bias', 'darks', 'flats'])
 IMAGETYP_COMBOS = {'bias': "zero|bias|bias frame",
                    'darks': "dark|dark frame",
                    'flats': "flat|flat frame|dflat|sflat",
-                   'light': "science|light|object|light frame"}
+                   'light': "science|light|object|sky|light frame"}
 
 BINNING_DKEYS = ('BINX', 'BINY')
 
@@ -170,7 +170,7 @@ DEF_RES_TBL_COL_NAMES = ['File', 'Object', 'Sat-Name', 'AltID', 'UniqueID',
                          'TrailCRA', 'e_TrailCRA', 'TrailCDEC', 'e_TrailCDEC',
                          'TrailANG', 'e_TrailANG', 'OptAperHeight',
                          'CalRA', 'CalDEC', 'CentX', 'e_CentX', 'CentY', 'e_CentY', 'PixScale', 'DetRotAng', 'FWHM', 'e_FWHM',
-                         'bias_cor', 'dark_cor', 'flat_cor', 'WCS_cal', 'mag_conv', 'QlfAperRad']
+                         'bias_cor', 'dark_cor', 'flat_cor', 'WCS_cal', 'mag_conv', 'QlfAperRad', 'TrailDetMethod']
 
 # To be implemented. Default result table column units.
 DEF_RES_TBL_COL_UNITS = ['', '', '', '', '',
@@ -199,7 +199,7 @@ DEF_RES_TBL_COL_UNITS = ['', '', '', '', '',
                          'deg', 'arcsec', 'deg', 'arcsec',
                          'deg', 'arcsec', 'px',
                          'deg', 'deg', 'px', 'px', 'px', 'px', 'arcsec/px', 'deg', 'px', 'px',
-                         '', '', '', '', '', '']
+                         '', '', '', '', '', '', '']
 
 # Default visibility file table column names.
 DEF_VIS_TBL_COL_NAMES = ['ID', 'AltID', 'UniqueID', 'UT Date', 'UT time',
@@ -211,14 +211,14 @@ DEF_VIS_TBL_COL_NAMES = ['ID', 'AltID', 'UniqueID', 'UT Date', 'UT time',
 # Translations between table and fits header keywords
 DEF_KEY_TRANSLATIONS = {
     'Object': ['OBJECT', 'BLKNM'],
-    'Instrument': ['INSTRUME'],
+    'Instrument': ['INSTRUME', 'INSTRUM'],
     'Telescope': ['TELESCOP', 'OBSERVAT'],
     'HDU_idx': ['HDU_IDX'],
     'DetPosID': ['DETPOS'],
     'Filter': ['FILTER', 'BAND'],
     'ExpTime': ['EXPTIME'],
-    'RA': ['RA', 'OBSRA', 'OBJRA', 'OBJCTRA', 'STRRQRA'],
-    'DEC': ['DEC', 'OBSDEC', 'OBJDEC', 'OBJCTDEC', 'STRRQDE'],
+    'RA': ['RA', 'OBSRA', 'OBJRA', 'OBJCTRA', 'STRRQRA', 'OBJ-RA'],
+    'DEC': ['DEC', 'OBSDEC', 'OBJDEC', 'OBJCTDEC', 'STRRQDE', 'OBJ-DEC'],
     'CalRA': ['CRVAL1'],
     'CalDEC': ['CRVAL2'],
     'CentX': ['CRPIX1'],
@@ -230,12 +230,12 @@ DEF_KEY_TRANSLATIONS = {
     'FWHM': ['FWHM'],
     'e_FWHM': ['FWHMERR'],
     'Airmass': ['AIRMASS', 'STROBAM'],
-    'Date-Obs': ['DATE-OBS'],
+    'Date-Obs': ['DATE-OBS', 'DATE-BEG'],
     'Binning': ['BINNING'],
     'bias_cor': ['BIAS_COR'],
     'dark_cor': ['DARK_COR'],
     'flat_cor': ['FLAT_COR'],
-    'WCS_cal': ['AST_CAL', 'WCSCAL'],
+    'WCS_cal': ['AST_CAL', 'WCSCAL', 'WCS-STAT'],
     'HasTrail': ['HASTRAIL'],
     'NTrail': ['NTRAIL']
 }
