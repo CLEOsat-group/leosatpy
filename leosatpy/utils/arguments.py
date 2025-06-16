@@ -138,6 +138,8 @@ class ParseArguments(object):
         photoArgs.add_argument("-d", "--force-download", dest='force_download', action='store_true', default=False,
                                help="Set True to force the reference catalog download. "
                                     "Default is False. If False, the corresponding present .cat files are used.")
+        photoArgs.add_argument("-m", "--manual-select", dest='select_faint_trail', action='store_true', default=False,
+                               help="Set True to manually select the faint trail. Default is False.")
         photoArgs.add_argument("-photo_ref_fname", "--photo_ref_fname", dest='ref_cat_phot_fname',
                                type=str, default=None,
                                help="Save the sky positions from the photometry catalog of the reference sources "
