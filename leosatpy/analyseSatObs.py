@@ -54,7 +54,7 @@ from astropy.visualization.mpl_normalize import ImageNormalize
 from astropy.coordinates import (Angle, SkyCoord, EarthLocation)
 
 # photutils
-from photutils.aperture import (RectangularAperture, CircularAperture)
+from photutils.aperture import (RectangularAperture, RectangularAnnulus, CircularAperture)
 from photutils.segmentation import (SourceCatalog, detect_sources, detect_threshold)
 
 # pyorbital
@@ -101,8 +101,9 @@ try:
 except ModuleNotFoundError:
     from utils.version import __version__
     from utils.arguments import ParseArguments
-    from utils.dataset import DataSet
+    from utils.dataset import DataSet, update_binning
     from utils.tables import ObsTables
+    from utils.select_trail import confirm_trail_and_select_aperture_gui
     import utils.sources as sext
     import utils.satellites as sats
     import utils.transformations as imtrans
@@ -111,8 +112,9 @@ except ModuleNotFoundError:
 else:
     from leosatpy.utils.version import __version__
     from leosatpy.utils.arguments import ParseArguments
-    from leosatpy.utils.dataset import DataSet
+    from leosatpy.utils.dataset import DataSet, update_binning
     from leosatpy.utils.tables import ObsTables
+    from leosatpy.utils.select_trail import confirm_trail_and_select_aperture_gui
     import leosatpy.utils.sources as sext
     import leosatpy.utils.satellites as sats
     import leosatpy.utils.transformations as imtrans
@@ -222,10 +224,12 @@ class AnalyseSatObs(object):
 
         self._obsTable = None
         self._obj_info = None
-        self._roi_info = None
 
         self._glint_mask_data = None
         self._image_mask_collection = {}
+
+        self._faint_trail_data = None
+        self._manual_trail_selection = args.select_faint_trail
 
         self.fails = []
         self.current_location = ''
@@ -270,6 +274,9 @@ class AnalyseSatObs(object):
 
         # Load Glint mask
         self._obsTable.load_glint_mask_table()
+
+        # Load faint trail data
+        self._obsTable.load_faint_trail_table()
 
         self._dataset_all = ds
 
@@ -320,17 +327,17 @@ class AnalyseSatObs(object):
 
                 # In case of an error, comment the following line to see where the error occurs;
                 # This needs some fixing and automation
-                # exec_state = self.analyse_sat_trails(files=files, sat_name=sat_name)
-                try:
-                    exec_state = self.analyse_sat_trails(files=files, sat_name=sat_name)
-                except Exception as e:
-                    exc_type, exc_obj, exc_tb = sys.exc_info()
-                    fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-                    self._log.critical(f"Unexpected behaviour: {e} in file {fname}, "
-                                       f"line {exc_tb.tb_lineno}")
-                    exec_state = 0
-                    self.update_failed_processes([str(e), 'Unexpected behaviour',
-                                                  'Please create a ticket url'])
+                exec_state = self.analyse_sat_trails(files=files, sat_name=sat_name)
+                # try:
+                #     exec_state = self.analyse_sat_trails(files=files, sat_name=sat_name)
+                # except Exception as e:
+                #     exc_type, exc_obj, exc_tb = sys.exc_info()
+                #     fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                #     self._log.critical(f"Unexpected behaviour: {e} in file {fname}, "
+                #                        f"line {exc_tb.tb_lineno}")
+                #     exec_state = 0
+                #     self.update_failed_processes([str(e), 'Unexpected behaviour',
+                #                                   'Please create a ticket url'])
 
                 if exec_state == 1:
                     self._log.info(f">> Report: Satellite detection and analysis was {pass_str}")
@@ -409,6 +416,7 @@ class AnalyseSatObs(object):
 
                 final_status = 0
                 continue
+
             # Get catalogs excluding the trail area and including it
             trail_img_dict = self.filter_catalog(data=trail_img_dict)
 
@@ -467,7 +475,8 @@ class AnalyseSatObs(object):
 
                 # Prepare trail image and perform aperture photometry with optimum aperture
                 sat_apphot = self.run_satellite_photometry(data_dict=data_dict,
-                                                           img_dict=trail_img_dict, img_idx=trail_img_idx,
+                                                           img_dict=trail_img_dict,
+                                                           img_idx=trail_img_idx,
                                                            hidx=h, hdu_idx=hdu_idx,
                                                            qlf_aprad=qlf_aprad)
 
@@ -1343,6 +1352,7 @@ class AnalyseSatObs(object):
         # Mask saturated objects
         image_mask_saturation = (trail_img > 0.95 * config['sat_lim'])
         image_mask_combined |= image_mask_saturation
+        min_image_mask = image_mask_combined.copy()
 
         # Mask borders
         # borderLen = int(config['ISOLATE_SOURCES_INIT_SEP'])
@@ -1409,7 +1419,7 @@ class AnalyseSatObs(object):
         # Create a mask for the detected trail
         trail_mask, _ = self.create_mask(image=trail_img_bkg_sub,
                                          reg_data=reg_data_all,
-                                         fac=1.)
+                                         fac=3.)
         trail_mask |= image_mask_combined
 
         # Detect sources in the trail image with the trail masked
@@ -1445,7 +1455,7 @@ class AnalyseSatObs(object):
             # Get trail parameters
             src_pos = reg_info['coords']
             src_pos_err = reg_info['coords_err']
-            width = reg_info['width']
+            width = reg_info['width']  # i.e. length of the trail
             ang = Angle(reg_info['orient_deg'], 'deg')
 
             # Get positional error from astrometric calibration if available
@@ -1482,14 +1492,15 @@ class AnalyseSatObs(object):
             self.plot_aperture_photometry(fluxes=fluxes,
                                           rapers=rapers,
                                           opt_aprad=opt_aprad,
-                                          file_base=file_name_plot, mode='trail')
+                                          file_base=file_name_plot,
+                                          mode='trail')
 
             # Update aperture values with the optimum aperture
             config['APER_RAD_RECT'] = opt_aprad
-            config['INF_APER_RAD_RECT'] = opt_aprad + 1.5
+            config['INF_APER_RAD_RECT'] = opt_aprad + 5
 
-            config['RSKYIN_OPT_RECT'] = opt_aprad + 1.
-            config['RSKYOUT_OPT_RECT'] = opt_aprad + 2.
+            config['RSKYIN_OPT_RECT'] = opt_aprad + 4.
+            config['RSKYOUT_OPT_RECT'] = opt_aprad + 6.
 
             # Update the configuration
             self._config = config
@@ -1507,8 +1518,8 @@ class AnalyseSatObs(object):
 
             # Set optimum aperture parameters
             optimum_apheight = opt_aprad * image_fwhm * 2.
-            r_in = opt_aprad + 1.
-            r_out = opt_aprad + 2.
+            r_in = opt_aprad + 4.
+            r_out = opt_aprad + 6.
             w_in = width + r_in * image_fwhm
             w_out = width + r_out * image_fwhm
 
@@ -1518,7 +1529,7 @@ class AnalyseSatObs(object):
             if not self._silent:
                 self._log.info(f'  > Measure photometry for satellite trail')
 
-            # Perform aperture photometry
+            # Perform aperture photometry on satellite trail
             _, _, sat_phot, _, _, _ = phot.get_aper_photometry(image=trail_img,
                                                                src_pos=src_pos,
                                                                mask=image_mask_combined,
@@ -1529,30 +1540,6 @@ class AnalyseSatObs(object):
                                                                theta=ang)
             # Add the estimated magnitude correction to the photometry table
             sat_phot['mag_corr'] = mag_corr
-
-            # this can be helpful
-            # from photutils.aperture import (RectangularAperture, RectangularAnnulus)
-
-            # annulus_aperture = RectangularAnnulus(src_pos[0], w_in=w_in, w_out=w_out,
-            #                                       h_in=h_in, h_out=h_out,
-            #                                       theta=ang)
-            # aperture = RectangularAperture(src_pos[0],
-            #                                w=width,
-            #                                h=optimum_apheight,
-            #                                theta=ang)
-            # plt_img = trail_img
-            # plt_img[mask] = np.nan
-            # plt.figure()
-            # plt.imshow(plt_img, interpolation='nearest')
-            #
-            # ap_patches = aperture.plot(**{'color': 'white',
-            #                               'lw': 2, 'label': 'Photometry aperture'})
-            # ann_patches = annulus_aperture.plot(**{'color': 'red',
-            #                                        'lw': 2, 'label': 'Background annulus'})
-            # handles = (ap_patches[0], ann_patches[0])
-            # plt.legend(loc='best', facecolor='#458989', labelcolor='white',
-            #            handles=handles, prop={'weight': 'bold', 'size': 11})
-            # plt.show()
 
             # Update the photometry dictionary
             sat_phot_dict[i] = sat_phot
@@ -1994,11 +1981,6 @@ class AnalyseSatObs(object):
             mask, mask_list = self.create_mask(image=imgarr,
                                                reg_data=data['trail_data'][i]['reg_info_lst'],
                                                fac=5.)
-            # Mask = mask * 1.
-
-            # # Add mask data to data dictionary
-            # data['trail_data'][i]['mask'] = mask
-            # data['trail_data'][i]['mask_list'] = mask_list
 
             if ref_tbl_photo is None or ref_tbl_photo.empty or not mask.any():
                 del imgarr, ref_tbl_photo, mask_list, mask
@@ -2014,11 +1996,11 @@ class AnalyseSatObs(object):
                                                                     catalog=ref_tbl_photo,
                                                                     fwhm=fwhm)
             if ref_cat_cln is None:
-                del imgarr, ref_tbl_photo, ref_cat_cln, ref_cat_removed, mask_list, mask
                 self.update_failed_processes(['SrcMatchError',
                                               'No standard stars left after removing stars close to trail',
                                               'To be solved'])
                 self.current_hdu_exec_state[i] = False
+                del imgarr, ref_tbl_photo, ref_cat_cln, ref_cat_removed, mask_list, mask
                 continue
 
             del imgarr, mask_list, mask
@@ -2047,7 +2029,7 @@ class AnalyseSatObs(object):
         Returns
         -------
         result : dict
-            A Dictionary with all relevant data for image
+            A Dictionary with all relevant data for image analysis
         """
         res_keys = ['images', 'hdus', 'has_trail', 'img_mask', 'hdr',
                     'fname', 'loc', 'cat', 'band', 'src_tbl',
@@ -2244,7 +2226,7 @@ class AnalyseSatObs(object):
             file_name = Path(file_loc).stem
             file_name_clean = file_name.replace('_cal', '')
 
-            # Load extensions of interest iv available
+            # Load extensions of interest if available
             self._obsTable.get_ext_oi(file_name_clean)
             ext_oi_data = self._obsTable.ext_oi_data
             if list(ext_oi_data):
@@ -2331,8 +2313,9 @@ class AnalyseSatObs(object):
                         detect_mask[yx[0]:yx[1], yx[2]:yx[3]] = 1
                     detect_mask = np.where(detect_mask == 1, True, False)
 
-                masks_dict = None
+                result_dict = {}
                 has_trail = False
+                automated_selection = False
                 if hdu_idx == 31 and self._telescope == 'CTIO 4.0-m telescope':
                     apply_detect = False
 
@@ -2363,15 +2346,25 @@ class AnalyseSatObs(object):
                         img = imgarr - bkg
                         del bkg
 
+                    # Add satellite id to config
                     _config['sat_id'] = sat_id
+
+                    # The FUT data can already be processed, but we have to verify the header to ensure
+                    # the required header keywords are present
+                    if self._telescope == 'FUT':
+                        self.verify_fut_header(img, hdr, obspar, _config, img_mask)
+
+                    # Update the config
                     _config['pixscale'] = hdr['PIXSCALE']
                     if self._telescope in ['CTIO 0.9 meter telescope']:
                         _config['fwhm'] = 2 * np.sqrt(2 * np.log(2)) * hdr['SEEING']
                     else:
                         _config['fwhm'] = hdr['FWHM']
 
+                    # Create a copy of the original image
                     img_orig = img.copy()
 
+                    # Set negative/masked values to zero
                     img[img < 0.] = 0
                     if img_mask is not None:
                         img[img_mask] = 0
@@ -2406,10 +2399,9 @@ class AnalyseSatObs(object):
                     #     plt.imshow(glint_mask*img, origin='lower', vmax=100)
                     #     plt.show()
                     #     _config['has_glint_mask'] = True
-                    #
-                    # input()
-                    _config['use_sat_mask'] = False
+
                     # This is a special case from the CTIO 90cm telescope
+                    _config['use_sat_mask'] = False
                     if file_name_clean == 'n2_028':
                         _config['use_sat_mask'] = True
 
@@ -2420,21 +2412,98 @@ class AnalyseSatObs(object):
                     if self._telescope == 'CTIO 4.0-m telescope':
                         _config['sky_noise'] = hdr['SKYNOISE']
 
-                    if not self._silent:
-                        if hdu_idx == 0:
-                            self._log.info(f"  > Running satellite trail detection")
+                    # Get faint trail data from file
+                    self._obsTable.get_faint_trail(file_name_clean, hdu_idx)
+                    faint_trail_data = self._obsTable.faint_trail_data
+                    if self._manual_trail_selection or not faint_trail_data.empty:
+                        manual_trail_data_dict = {}
+                        # If faint trail data is available, use it and skip the selection via GUI, else select via GUI
+                        if not faint_trail_data.empty:
+                            if not self._silent:
+                                if hdu_idx == 0:
+                                    self._log.info(f"  > Using faint trail data from file")
+                                else:
+                                    self._log.info(f"  > Using faint trail data from file for: "
+                                                   f"HDU #{hdu_idx:02d} [{i + 1}/{len(hdu_idx_list)}] ")
+
+                            # Use the faint trail data
+                            src_pos = (faint_trail_data['xc'].values[0], faint_trail_data['yc'].values[0])
+
+                            # Get the width, height and angle of the faint trail
+                            width, height, theta = self.get_corrected_dimensions(
+                                faint_trail_data['width'].values[0],
+                                faint_trail_data['height'].values[0],
+                                faint_trail_data['angle'].values[0]
+                            )
+                            manual_trail_data_dict = {
+                                'coords': src_pos,
+                                'coords_err': (0.5, 0.5),
+                                'width': width,
+                                'e_width': 0.5,
+                                'height': height,
+                                'e_height': 0.5,
+                                'theta': theta,
+                                'e_theta': 0.5,
+                                'param_fit_dict': {},
+                                'detection_imgs': {'roi_img': roi_img}
+                            }
+
+                            # Set the has_trail flag
+                            has_trail = True
                         else:
-                            self._log.info(f"  > Running satellite trail detection for: HDU #{hdu_idx:02d}"
-                                           f" [{i + 1}/{len(hdu_idx_list)}] ")
+                            if not self._silent:
+                                if hdu_idx == 0:
+                                    self._log.info(f"  > Manually select satellite trail via GUI")
+                                else:
+                                    self._log.info(f"  > Manually select satellite trail via GUI for: HDU #{hdu_idx:02d} "
+                                                   f"[{i + 1}/{len(hdu_idx_list)}] ")
 
-                    # Extract satellite trails from the image and create mask
-                    masks_dict, has_trail = sats.detect_sat_trails(image=roi_img,
-                                                                   config=_config,
-                                                                   image_orig=img_orig,
-                                                                   amount=_config['SHARPEN_AMOUNT'],
-                                                                   mask=detect_mask,
-                                                                   silent=self._silent)
+                            # Let user interactively select the aperture
+                            aperture_params, has_trail = confirm_trail_and_select_aperture_gui(roi_img)
+                            if aperture_params is not None:
+                                src_pos = aperture_params['position']
 
+                                # Extract width, height and angle from the aperture parameters
+                                width, height, theta = self.get_corrected_dimensions(aperture_params['width'],
+                                                                                     aperture_params['height'],
+                                                                                     aperture_params['theta'])
+                                manual_trail_data_dict = {
+                                    'coords': src_pos,
+                                    'coords_err': (0.5, 0.5),
+                                    'width': width,
+                                    'e_width': 0.5,
+                                    'height': height,
+                                    'e_height': 0.5,
+                                    'orient_deg': theta,
+                                    'e_orient_deg': 0.5,
+                                    'param_fit_dict': {},
+                                    'detection_imgs': {'roi_img': roi_img}
+                                }
+                        # Create a dictionary with the manual trail data
+                        result_dict = {
+                            'reg_info_lst': [manual_trail_data_dict],
+                            'N_trails': 1,
+                        } if has_trail else None
+
+                    else:
+
+                        if not self._silent:
+                            if hdu_idx == 0:
+                                self._log.info(f"  > Running automatic satellite trail detection")
+                            else:
+                                self._log.info(f"  > Running automatic satellite trail detection for: HDU #{hdu_idx:02d}"
+                                               f" [{i + 1}/{len(hdu_idx_list)}] ")
+
+                        # Extract satellite trails from the image and create mask
+                        result_dict, has_trail = sats.detect_sat_trails(image=roi_img,
+                                                                       config=_config,
+                                                                       image_orig=img_orig,
+                                                                       amount=_config['SHARPEN_AMOUNT'],
+                                                                       mask=detect_mask,
+                                                                       silent=self._silent)
+
+                        automated_selection = True
+                    # sys.exit()
                     del img, roi_img, _config
                 else:
                     if not self._silent:
@@ -2451,19 +2520,27 @@ class AnalyseSatObs(object):
                 kwargs['HDU_IDX'] = hdu_idx
                 kwargs['DetPosID'] = None if n_ext == 0 else hdr[obspar['detector']]
                 kwargs['HasTrail'] = 'T' if has_trail else 'F'
-                kwargs['NTrail'] = masks_dict['N_trails'] if has_trail else None
+                kwargs['NTrail'] = result_dict['N_trails'] if has_trail else None
+                kwargs['TrailDetMethod'] = 'Auto' if automated_selection else 'Manual'
                 if has_trail:
 
                     # Plot results
                     file_name_plot = file_name_clean if n_ext == 0 else f'{file_name_clean}_HDU{hdu_idx:02d}'
-                    self.plot_fit_results(masks_dict, file_name_plot)
+                    if automated_selection:
 
-                    # Cleanup images that are not needed any more
-                    for k in range(len(masks_dict['reg_info_lst'])):
-                        masks_dict['reg_info_lst'][k].pop('detection_imgs')
-                        [masks_dict['reg_info_lst'][k]['param_fit_dict'].pop(j)
-                         for j in ['Hij_sub', 'Hij_rho', 'Hij_theta']]
+                        # Plot the fit results
+                        self.plot_fit_results(result_dict, file_name_plot)
 
+                        # Cleanup images that are not needed any more
+                        for k in range(len(result_dict['reg_info_lst'])):
+                            result_dict['reg_info_lst'][k].pop('detection_imgs')
+                            [result_dict['reg_info_lst'][k]['param_fit_dict'].pop(j)
+                             for j in ['Hij_sub', 'Hij_rho', 'Hij_theta']]
+                    else:
+                        # Create a plot of the selected aperture
+                        self.plot_manual_trail_selection(result_dict, file_name_plot)
+
+                # Update the result table
                 if obspar['radec_separator'] == 'XXX':
                     kwargs[obspar['ra']] = round(hdr[obspar['ra']],
                                                  bc.ROUND_DECIMAL)
@@ -2475,9 +2552,9 @@ class AnalyseSatObs(object):
                 self._obj_info = self._obsTable.obj_info
 
                 has_trail_list[f].append(has_trail)
-                trail_data_list[f].append(masks_dict)
+                trail_data_list[f].append(result_dict)
 
-                del masks_dict
+                del result_dict
 
                 # Check the used filter band
                 filter_val = hdr['FILTER'] if self._telescope != 'CTIO 4.0-m telescope' else hdr['BAND']
@@ -2537,6 +2614,104 @@ class AnalyseSatObs(object):
             data_dict['ref_img_idx'] = other_rows_formatted
 
         return data_dict, None
+
+    @staticmethod
+    def get_corrected_dimensions(width, height, theta):
+        """
+        Get the corrected dimensions of a rectangle based on its width, height, and angle.
+
+        Parameters
+        ----------
+        width : float
+            Width of the rectangle.
+        height : float
+            Height of the rectangle.
+        theta : float
+            Angle in degrees.
+
+        Returns
+        -------
+        tuple
+            Corrected width and height.
+        """
+        if height > width:
+            width, height = height, width
+            theta = (theta + 90) % 360
+
+        return width, height, theta
+
+    @staticmethod
+    def verify_fut_header(img, hdr, obsparams, config, img_mask=None):
+        """
+        Verify and update essential keywords in the header for FUT telescope.
+
+        Parameters
+        ----------
+
+        img : numpy.ndarray, optional
+            Image data to calculate FWHM if FWHM is missing
+        hdr : astropy.io.fits.Header
+            The header to verify and update
+        obsparams : dict
+            Telescope configuration containing default values
+        config : dict
+            A dictionary with configuration parameters
+        img_mask : numpy.ndarray, optional
+            A boolean mask to apply to the image
+
+        Returns
+        -------
+        astropy.io.fits.Header
+            Updated header with required keywords
+        """
+        # Extract the WCS from the header
+        wcsprm = wcs.WCS(hdr).wcs
+
+        # Check for BINNING
+        hdr, bin_str = update_binning(hdr, obsparams, [])
+
+        # Update configuration
+        config_updated = obsparams.copy()
+        params_to_add = dict(image_mask=img_mask,
+                             bin_str=bin_str)
+
+        # Add the parameters to the configuration
+        config_updated.update(params_to_add)
+        for key, value in config.items():
+            config_updated[key] = value
+
+        # Get detector saturation limit
+        sat_lim = config_updated['saturation_limit']
+        if isinstance(config_updated['saturation_limit'], str) and config_updated['saturation_limit'] in hdr:
+            sat_lim = hdr[obsparams['saturation_limit']]
+        config_updated['sat_lim'] = sat_lim
+        config_updated['image_shape'] = img.shape
+
+        # Check for PIXSCALE
+        if 'PIXSCALE' not in hdr:
+            # Calculate pixel scale from WCS
+            wcs_pixscale = imtrans.get_wcs_pixelscale(wcsprm)
+            pix_scale = np.mean(abs(wcs_pixscale)) * 3600. if wcs_pixscale is not np.nan else np.nan
+            scale_x = abs(wcs_pixscale[0]) * 3600.
+            scale_y = abs(wcs_pixscale[1]) * 3600.
+            hdr['PIXSCALE'] = (pix_scale, 'Average pixel scale [arcsec/pixel]')
+            hdr['SCALEX'] = (f'{scale_x:.5f}', 'Pixel scale in X [arcsec/pixel]')
+            hdr['SCALEY'] = (f'{scale_y:.5f}', 'Pixel scale in Y [arcsec/pixel]')
+
+        # Check for FWHM
+        if 'FWHM' not in hdr:
+            # Calculate FWHM using source detection
+            kernel_fwhm, source_cat, state, fail_msg = sext.build_source_catalog(
+                img, img_mask, None, None, **config_updated)
+
+            fwhm = kernel_fwhm[0]
+            e_fwhm = kernel_fwhm[1]
+            hdr['FWHM'] = (f'{fwhm:.3f}', 'FWHM [pixel]')
+            hdr['FWHMERR'] = (f'{e_fwhm:.3f}', 'FWHM error [pixel]')
+
+        del img, img_mask, obsparams, config
+
+        return hdr
 
     def get_data_from_tle(self, hdr, sat_name: tuple, tle_location: str,
                           date_obs, obs_times,
@@ -2681,6 +2856,147 @@ class AnalyseSatObs(object):
             bc.clean_up(trail_imgs_dict, param_fit_dict, reg_data)
 
         del data
+
+    def plot_manual_trail_selection(self, data: dict, file_base: str,
+                                    img_norm: str = 'lin', cmap: str = None):
+        """
+
+        Parameters
+        ----------
+        data : dict
+            A dictionary containing trail detection data
+        file_base : str
+            The filename to save the plot
+        img_norm : str
+            Normalization type for the image, can be 'lin', 'log' or 'sqrt'
+        cmap : str
+            Colormap to use for the image, default is 'gray_r'
+
+        Returns
+        -------
+
+        """
+        n_trails_max = self._config['N_TRAILS_MAX']
+        for i in range(n_trails_max):
+            if not self._silent:
+                self._log.info(f"  > Save manual trail selection plot: Trail #{i + 1:02d}")
+
+            reg_data = data['reg_info_lst'][i]
+            fname = f"plot.satellite.detection_manual_{file_base}_T{i + 1:02d}"
+            img = reg_data['detection_imgs']['roi_img']
+            img[img < 0.] = 0.
+
+            # Define normalization and the colormap
+            vmin = np.percentile(img, 1.)
+            vmax = np.percentile(img, 99.5)
+
+            if img_norm == 'lin':
+                nm = ImageNormalize(vmin=vmin, vmax=vmax, stretch=LinearStretch())
+            elif img_norm == 'log':
+                nm = ImageNormalize(vmin=vmin, vmax=vmax, stretch=LogStretch())
+            else:
+                nm = ImageNormalize(vmin=vmin, vmax=vmax, stretch=SqrtStretch())
+
+            if cmap is None:
+                cmap = 'gray_r'
+
+            # Prepare the data for plotting
+            src_pos = reg_data['coords']
+            width = reg_data['width']
+            height = reg_data['height']
+            theta = Angle(reg_data['orient_deg'], unit='deg')
+
+            # Calculate zoom region (0.25 * min image size) centered on src_pos
+            ny, nx = img.shape
+            zoom_size = int(min(nx, ny) * 0.1)
+            x0, y0 = src_pos
+            x1 = int(max(0, x0 - zoom_size // 2))
+            x2 = int(min(nx, x0 + zoom_size // 2))
+            y1 = int(max(0, y0 - zoom_size // 2))
+            y2 = int(min(ny, y0 + zoom_size // 2))
+
+            zoom_img = img[y1:y2, x1:x2]
+
+            aperture = RectangularAperture(src_pos, w=width, h=height, theta=theta)
+            aperture_zoom = RectangularAperture(positions=(x0 - x1, y0 - y1), w=width, h=height, theta=theta)
+            rect = mpl_patches.Rectangle((x1, y1), x2 - x1, y2 - y1,
+                                         fill=False, color='blue', lw=1.5)
+
+            fig, ax1 = plt.subplots(figsize=self._figsize)
+
+            ax1.imshow(img, origin='lower',
+                  cmap=cmap,
+                  interpolation='nearest',
+                  norm=nm)
+
+            ap_patches = aperture.plot(ax=ax1, **{'color': 'lime', 'lw': 1.5,
+                                                  'label': 'Selected aperture'})
+
+            ax1.add_patch(rect)
+
+            # Create inset axes for zoom
+            ax2 = ax1.inset_axes([0.7, 0.7, 0.3, 0.3])
+            ax2.imshow(zoom_img,
+                       origin='lower',
+                       interpolation='nearest', norm=nm, cmap=cmap)
+
+            # Add white edge to inset
+            for spine in ax2.spines.values():
+                spine.set_edgecolor('blue')
+                spine.set_linewidth(1.5)
+
+            aperture_zoom.plot(ax=ax2, **{'color': 'lime', 'lw': 1.5})
+
+            ax2.set_xticks([])
+            ax2.set_yticks([])
+
+            # Add lines connecting the corners of the cyan box to the inset
+            ax1.annotate('', xy=(x1, y2), xycoords='data', xytext=(0.7, 1.0),
+                         textcoords='axes fraction', arrowprops=dict(arrowstyle='-', color='blue'))
+            ax1.annotate('', xy=(x2, y1), xycoords='data', xytext=(1.0, 0.7),
+                         textcoords='axes fraction', arrowprops=dict(arrowstyle='-', color='blue'))
+
+            # Add legend to main plot
+            handles = (ap_patches[0], )
+            ax1.legend(loc='best', facecolor='#458989', labelcolor='white',
+                       handles=handles, prop={'weight': 'normal', 'size': 11})
+
+            # Format axis
+            ax1.tick_params(
+                axis='both',  # changes apply to the x-axis
+                which='both',  # both major and minor ticks are affected
+                direction='in',  # inward or outward ticks
+                left=True,  # ticks along the left edge are off
+                right=True,  # ticks along the right edge are off
+                top=True,  # ticks along the top edge are off
+                bottom=True,  # ticks along the bottom edge are off
+                width=1.,
+                color='k'  # tick color
+            )
+
+            minorlocatorx = AutoMinorLocator(5)
+            minorlocatory = AutoMinorLocator(5)
+
+            ax1.xaxis.set_minor_locator(minorlocatorx)
+            ax1.yaxis.set_minor_locator(minorlocatory)
+
+            ax1.set_ylabel(r'Pixel y direction')
+            ax1.set_xlabel(r'Pixel x direction')
+
+            ax1.set_xlim(xmin=0, xmax=img.shape[1])
+            ax1.set_ylim(ymin=0, ymax=img.shape[0])
+
+            plt.tight_layout()
+
+            # Save the plot
+            self.save_plot(fname=fname)
+
+            if self.plot_images:
+                plt.show()
+
+            plt.close(fig=fig)
+
+        del img
 
     def plot_trail_detection_single(self, param_dict: dict, img_key: str,
                                     fname: str,
@@ -3315,7 +3631,12 @@ class AnalyseSatObs(object):
                 image = img
 
         image[image < 0.] = 0.
-        image[img_mask] = 0.
+        # plt.figure()
+        # plt.imshow(image, origin='lower')
+        if img_mask is not None:
+            image[img_mask] = 0.
+        # plt.figure()
+        # plt.imshow(image, origin='lower')
 
         matrix = wcsprm.pc * wcsprm.cdelt[:, np.newaxis]
 
@@ -3838,7 +4159,40 @@ class AnalyseSatObs(object):
     def compute_for_single_time(val, iteration, obs_lon, obs_lat, obs_ele, image_wcs,
                                 satellite, loc,
                                 total, use_lock=False):
-        """"""
+        """Calculate satellite position for a single time point.
+
+        Computes the position of a satellite at a specific time and converts it to
+        image pixel coordinates using the provided WCS information.
+
+        Parameters
+        ----------
+        val : datetime
+            The UTC time for the satellite position calculation.
+        iteration : int
+            Index or counter for the current iteration, used for progress tracking.
+        obs_lon : float
+            Observer's longitude in degrees.
+        obs_lat : float
+            Observer's latitude in degrees.
+        obs_ele : float
+            Observer's elevation in meters.
+        image_wcs : astropy.wcs.WCS
+            World Coordinate System object for the image.
+        satellite : pyorbital.orbital.Orbital
+            Satellite object with orbital parameters.
+        loc : astropy.coordinates.EarthLocation
+            Observer's location on Earth.
+        total : int
+            Total number of positions to calculate, used for progress reporting.
+        use_lock : bool, optional
+            Whether to use thread locking for console output, default is False.
+
+        Returns
+        -------
+        list
+            A List containing calculated satellite parameters:
+            [time, RA, DEC, x, y, altitude, longitude, latitude, azimuth, elevation]
+        """
 
         sat_az, sat_elev = satellite.get_observer_look(utc_time=val,
                                                        lon=obs_lon,
@@ -3871,15 +4225,23 @@ class AnalyseSatObs(object):
     def calculate_pos_times(start_time, exptime, dt):
         """Calculate the time intervals for the satellite position calculation.
 
+        Creates a set of evenly spaced time points for determining satellite positions
+        during an observation exposure.
+
         Parameters
         ----------
-        start_time
-        exptime
-        dt
+        start_time : datetime
+            The starting time of the observation (UTC).
+        exptime : float
+            Exposure time of the observation in seconds.
+        dt : float or None
+            Time step between points in seconds. If None, a default value will be used.
 
         Returns
         -------
-
+        list
+            A list of datetime objects representing the time points for satellite
+            position calculations.
         """
         # Calculate total number of intervals
         num_intervals = int(exptime / dt) if dt else 1
@@ -3892,7 +4254,24 @@ class AnalyseSatObs(object):
 
     @staticmethod
     def add_compass(ax: plt.Axes, image_shape, scale_arrow, theta_rad: float, color: str = 'black'):
-        """Make a Ds9 like compass for image"""
+        """Add a compass indicator to the given matplotlib axes.
+
+        Creates a directional compass (similar to DS9 style) on the image to indicate
+        North and East directions based on the image's rotation angle.
+
+        Parameters
+        ----------
+        ax : matplotlib.pyplot.Axes
+            The matplotlib axes object where the compass will be added.
+        image_shape : tuple
+            The shape of the image (height, width) in pixels.
+        scale_arrow : float
+            Scale factor for the compass arrow length, relative to the image size.
+        theta_rad : float
+            Rotation angle of the image in radians, used to determine compass orientation.
+        color : str, optional
+            Color of the compass elements (arrows and labels), default is 'black'.
+        """
 
         text_off = 0.1
 
@@ -4070,6 +4449,119 @@ class AnalyseSatObs(object):
 
         return ax
 
+
+def plot_rectangular_apertures(image, src_pos, src_mask, width, height, w_in, w_out, h_in, h_out, theta,
+                               img_norm: str = 'lin', cmap: str = 'gray_r'):
+    """Plot rectangular apertures for photometry with zoom inset.
+
+    Parameters are the same as before
+    """
+
+
+    # Create apertures
+    annulus = RectangularAnnulus(src_pos, w_in=w_in, w_out=w_out,
+                                 h_in=h_in, h_out=h_out, theta=theta)
+    aperture = RectangularAperture(src_pos, w=width, h=height, theta=theta)
+
+    # Create masked image
+    plt_img = image.copy()
+    plt_img[plt_img < 0] = 0.
+    if src_mask is not None:
+        plt_img[src_mask] = np.nan
+
+    # Define normalization and the colormap
+    vmin = np.nanpercentile(plt_img, 1.)
+    vmax = np.nanpercentile(plt_img, 99.5)
+    if img_norm == 'lin':
+        nm = ImageNormalize(vmin=vmin, vmax=vmax, stretch=LinearStretch())
+    elif img_norm == 'log':
+        nm = ImageNormalize(vmin=vmin, vmax=vmax, stretch=LogStretch())
+    else:
+        nm = ImageNormalize(vmin=vmin, vmax=vmax, stretch=SqrtStretch())
+    if cmap is None:
+        cmap = 'cividis'
+
+    # Create figure and main plot
+    fig, ax1 = plt.subplots(figsize=(8, 8))
+    ax1.imshow(plt_img, interpolation='nearest', norm=nm, cmap=cmap)
+    ap_patches = aperture.plot(ax=ax1, **{'color': 'lime', 'lw': 1,
+                                          'label': 'Photometry aperture'})
+    ann_patches = annulus.plot(ax=ax1, **{'color': 'red', 'lw': 1,
+                                          'label': 'Background aperture'})
+
+    # Calculate zoom region (0.25 * min image size) centered on src_pos
+    ny, nx = image.shape
+    zoom_size = int(min(nx, ny) * 0.1)
+    x0, y0 = src_pos
+    x1 = int(max(0, x0 - zoom_size // 2))
+    x2 = int(min(nx, x0 + zoom_size // 2))
+    y1 = int(max(0, y0 - zoom_size // 2))
+    y2 = int(min(ny, y0 + zoom_size // 2))
+
+    # Show zoom region in main plot
+    rect = mpl_patches.Rectangle((x1, y1), x2 - x1, y2 - y1,
+                                 fill=False, color='blue', lw=1)
+    ax1.add_patch(rect)
+
+    # Create inset axes for zoom
+    ax2 = ax1.inset_axes([0.7, 0.7, 0.3, 0.3])
+    ax2.imshow(plt_img[y1:y2, x1:x2], interpolation='nearest', norm=nm, cmap=cmap)
+
+    # Add white edge to inset
+    for spine in ax2.spines.values():
+        spine.set_edgecolor('blue')
+        spine.set_linewidth(1.5)
+
+    # Plot apertures in zoom panel with adjusted positions
+    aperture_zoom = RectangularAperture(
+        (x0 - x1, y0 - y1), w=width, h=height, theta=theta)
+    annulus_zoom = RectangularAnnulus(
+        (x0 - x1, y0 - y1), w_in=w_in, w_out=w_out,
+        h_in=h_in, h_out=h_out, theta=theta)
+
+    aperture_zoom.plot(ax=ax2, **{'color': 'lime', 'lw': 1.5})
+    annulus_zoom.plot(ax=ax2, **{'color': 'red', 'lw': 1.5})
+    ax2.set_xticks([])
+    ax2.set_yticks([])
+
+    # Add lines connecting the corners of the cyan box to the inset
+    ax1.annotate('', xy=(x1, y2), xycoords='data', xytext=(0.7, 1.0),
+                 textcoords='axes fraction', arrowprops=dict(arrowstyle='-', color='blue'))
+    ax1.annotate('', xy=(x2, y1), xycoords='data', xytext=(1.0, 0.7),
+                 textcoords='axes fraction', arrowprops=dict(arrowstyle='-', color='blue'))
+
+    # Add legend to main plot
+    handles = (ap_patches[0], ann_patches[0])
+    ax1.legend(loc='best', facecolor='#458989', labelcolor='white',
+               handles=handles, prop={'weight': 'normal', 'size': 11})
+
+    # Format axis
+    ax1.tick_params(
+        axis='both',  # changes apply to the x-axis
+        which='both',  # both major and minor ticks are affected
+        direction='in',  # inward or outward ticks
+        left=True,  # ticks along the left edge are off
+        right=True,  # ticks along the right edge are off
+        top=True,  # ticks along the top edge are off
+        bottom=True,  # ticks along the bottom edge are off
+        width=1.,
+        color='k'  # tick color
+    )
+
+    minorlocatorx = AutoMinorLocator(5)
+    minorlocatory = AutoMinorLocator(5)
+
+    ax1.xaxis.set_minor_locator(minorlocatorx)
+    ax1.yaxis.set_minor_locator(minorlocatory)
+
+    ax1.set_ylabel(r'Pixel y direction')
+    ax1.set_xlabel(r'Pixel x direction')
+
+    ax1.set_xlim(xmin=0, xmax=plt_img.shape[1])
+    ax1.set_ylim(ymin=0, ymax=plt_img.shape[0])
+
+    # plt.tight_layout()
+    return fig
 
 # -----------------------------------------------------------------------------
 
