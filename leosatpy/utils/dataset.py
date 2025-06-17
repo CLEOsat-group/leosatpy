@@ -412,15 +412,17 @@ class DataSet(object):
         instruments_list = sorted(instruments_list)
         inst_dict = collections.OrderedDict({k: {} for k in instruments_list})
 
-        dataset_list = []
         for i in range(len(instruments_list)):
-            inst = instruments_list[i]
-            tel_id = _tele_conf.INSTRUMENT_IDENTIFIERS[inst]
+            inst_val = instruments_list[i]
+
+            tel_id = _tele_conf.INSTRUMENT_IDENTIFIERS[inst_val]
             obsparams = _tele_conf.TELESCOPE_PARAMETERS[tel_id]
             telescope = obsparams['telescope_keyword']
 
-            inst_dict[inst]['telescope'] = telescope
-            inst_dict[inst]['obsparams'] = obsparams
+            inst_dict[inst_val]['telescope'] = telescope
+            inst_dict[inst_val]['obsparams'] = obsparams
+
+            inst_key = obsparams['instrume'].lower()
 
             # Filter fits files by science image type
             add_filters = {"telescop": telescope}
@@ -428,8 +430,10 @@ class DataSet(object):
                 add_filters = {'observat': telescope}
             if telescope in ['CTIO 0.9 meter telescope', 'CTIO 4.0-m telescope']:
                 add_filters = {'observat': 'CTIO'}
+            if telescope == 'FUT':
+                add_filters = {'observat': 'Mt. Kent'}
 
-            add_filters[obsparams['instrume'].lower()] = inst
+            add_filters[inst_key] = inst_val
 
             if mode == 'reduceCalibObs':
                 combos = bc.IMAGETYP_COMBOS
@@ -456,10 +460,15 @@ class DataSet(object):
             if mode == 'reduceSatObs' or mode == 'reduceCalibObs':
                 add_filters = {"combined": None, "ast_cal": None}
             elif mode == 'calibWCS':
-                add_filters = {"combined": True, "ast_cal": None}
+                if telescope == 'FUT':
+                    add_filters = {"combined": None, "wcs-stat": 'ok'}
+                else:
+                    add_filters = {"combined": True, "ast_cal": None}
             elif mode == 'satPhotometry':
                 if telescope == 'CTIO 4.0-m telescope':
                     add_filters = {"combined": None, "wcscal": 'successful'}
+                elif telescope == 'FUT':
+                    add_filters = {"combined": None, "wcs-stat": 'ok'}
                 else:
                     add_filters = {"combined": True, "ast_cal": True}
             else:
@@ -475,14 +484,13 @@ class DataSet(object):
                 sys.exit()
             if not self.silent:
                 log.info(f'  ==> Found a total of {len(_files.summary)} valid FITS-file(s) '
-                         f'for instrument: {inst} @ telescope: {telescope}')
+                         f'for instrument: {inst_val} @ telescope: {telescope}')
 
             if mode != 'satPhotometry':
-                dataset_list.append(_files.summary['file'].data)
-                inst_dict[inst]['dataset'] = _files.summary['file'].data
+                inst_dict[inst_val]['dataset'] = _files.summary['file'].data
             else:
-                dataset_list.append(self.grouped_by_pointing(_files, inst))
-                inst_dict[inst]['dataset'] = self.grouped_by_pointing(_files, inst)
+                grouped_by_pointing = self.grouped_by_pointing(_files, inst_val, inst_key)
+                inst_dict[inst_val]['dataset'] = grouped_by_pointing
 
         self._instruments = inst_dict
         self._instruments_list = instruments_list
@@ -534,26 +542,26 @@ class DataSet(object):
         raise ValueError
 
     @staticmethod
-    def grouped_by_pointing(data: ccdproc.ImageFileCollection, inst):
+    def grouped_by_pointing(data: ccdproc.ImageFileCollection, inst_val, inst_key):
         """Group files by telescope pointing"""
 
         # Convert to pandas dataframe
         df = data.summary.to_pandas()
 
         # use only the current instrument
-        df = df[df['instrume'] == inst]
+        df = df[df[inst_key] == inst_val]
 
         # sort filenames
         df.sort_values(by='file', inplace=True)
 
         def to_bin(x):
-            if inst == 'DECam':
+            if inst_val == 'DECam':
                 step = 8.333e-2  # 300 arcsecond
             else:
                 step = 3.333e-2  # 60 arcsecond
             return np.floor(x / step) * step
 
-        if inst == 'DECam':
+        if inst_val == 'DECam':
 
             df['RA_bin'] = df.centra.map(to_bin)
             df['DEC_bin'] = df.centdec.map(to_bin)
@@ -714,3 +722,104 @@ class DataSet(object):
             ans = 0
 
         return data[ans], ans
+
+
+def update_binning(hdr, obsparams, binnings: list):
+    """Update the FITS header with new binning information.
+
+    Parameters
+    ----------
+    hdr : FITS header
+        The header of the FITS image, where binning information may be updated.
+    obsparams : dict
+        Dictionary containing observational parameters, specifically requiring
+        the keys for binning in X and Y dimensions as defined in `obsparams['binning']`.
+    binnings : list of tuples
+        List of binning configurations encountered so far. If the current
+        binning is not in the list, it is appended.
+
+    Returns
+    -------
+    hdr : FITS header
+        Updated FITS header with binning information.
+
+    """
+    binning = get_binning(hdr, obsparams)
+    if binning not in binnings:
+        binnings.append(binning)
+    _bin_str = f'{binning[0]}x{binning[1]}'
+
+    if not (bc.BINNING_DKEYS[0] in hdr and bc.BINNING_DKEYS[1] in hdr):
+        hdr[bc.BINNING_DKEYS[0]] = binning[0]
+        hdr[bc.BINNING_DKEYS[1]] = binning[1]
+    if 'BINNING' not in hdr:
+        hdr['binning'] = _bin_str
+
+    return hdr, _bin_str
+
+
+def get_binning(header, obsparams):
+    """ Derive binning from image header.
+
+    Use obsparams['binning'] keywords, unless both keywords are set to 1.
+
+    Parameters
+    ----------
+    header : FITS header
+        The header of the FITS image, which contains metadata including
+        binning information.
+    obsparams : dict
+        Dictionary containing observational parameters. Specifically requires
+        `obsparams['binning']` to specify the header keywords for the binning
+        in X and Y dimensions.
+
+    Returns
+    -------
+    tuple of int
+        A tuple `(binning_x, binning_y)` representing the binning in the X
+        and Y directions as derived from the header.
+
+    """
+    binning_x = None
+    binning_y = None
+
+    param_bin_x = obsparams['binning'][0]
+    param_bin_y = obsparams['binning'][1]
+
+    if not (param_bin_x in header and param_bin_y in header):
+        if obsparams['telescope_keyword'] in ['CBNUO-JC', 'CTIO 0.9 meter telescope']:
+            binning_x = obsparams['image_size_1x1'][0] // header['NAXIS1']
+            binning_y = obsparams['image_size_1x1'][1] // header['NAXIS2']
+    else:
+        if (isinstance(param_bin_x, int) and
+                isinstance(param_bin_y, int)):
+            binning_x = param_bin_x
+            binning_y = param_bin_y
+        elif '#' in param_bin_x:
+            if '#blank' in param_bin_x:
+                binning_x = float(header[param_bin_x.
+                                  split('#')[0]].split()[0])
+                binning_y = float(header[param_bin_y.
+                                  split('#')[0]].split()[1])
+            elif '#x' in param_bin_x:
+                binning_x = float(header[param_bin_x.
+                                  split('#')[0]].split('x')[0])
+                binning_y = float(header[param_bin_y.
+                                  split('#')[0]].split('x')[1])
+            elif '#_' in param_bin_x:
+                binning_x = float(header[param_bin_x.
+                                  split('#')[0]].split('_')[0])
+                binning_y = float(header[param_bin_y.
+                                  split('#')[0]].split('_')[1])
+            elif '#CH#' in param_bin_x:
+                # Only for RATIR
+                channel = header['INSTRUME'].strip()[1]
+                binning_x = float(header[param_bin_x.
+                                  replace('#CH#', channel)])
+                binning_y = float(header[param_bin_y.
+                                  replace('#CH#', channel)])
+        else:
+            binning_x = header[param_bin_x]
+            binning_y = header[param_bin_y]
+
+    return binning_x, binning_y
