@@ -22,19 +22,18 @@
 # -----------------------------------------------------------------------------
 
 """ Modules """
+import csv
 import datetime
 import gc
-import os
 import logging
+import os
 import re
-import csv
-from pathlib import Path
-import pandas as pd
-import numpy as np
 from collections import OrderedDict
 from datetime import timedelta
-from astropy import units as u
-from astropy.coordinates import SkyCoord
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
 from packaging.version import Version
 
 # Project modules
@@ -79,6 +78,8 @@ class ObsTables(object):
         self._ext_oi_data = pd.DataFrame()
         self._glint_mask_info = pd.DataFrame()
         self._glint_mask_data = pd.DataFrame()
+        self._faint_trail_info = pd.DataFrame()
+        self._faint_trail_data = pd.DataFrame()
         self._vis_info = pd.DataFrame()
 
         self.def_path = Path(config['RESULT_TABLE_PATH']).expanduser().resolve()
@@ -86,11 +87,13 @@ class ObsTables(object):
         self.def_roi_name = config['ROI_TABLE_NAME']
         self.def_ext_oi_name = config['EXT_OI_TABLE_NAME']
         self.def_glint_mask_name = config['GLINT_MASK_TABLE_NAME']
+        self.def_faint_trail_name = config['FAINT_TRAIL_TABLE_NAME']
 
         self.res_table_fname = self.def_path / self.def_tbl_name
         self.roi_table_fname = self.def_path / self.def_roi_name
         self.ext_oi_table_fname = self.def_path / self.def_ext_oi_name
         self.glint_mask_table_fname = self.def_path / self.def_glint_mask_name
+        self.faint_trail_table_fname = self.def_path / self.def_faint_trail_name
 
         self.def_cols = bc.DEF_RES_TBL_COL_NAMES
         self.def_col_units = bc.DEF_RES_TBL_COL_UNITS
@@ -103,6 +106,10 @@ class ObsTables(object):
     @property
     def obs_info(self):
         return self._obs_info
+
+    @property
+    def faint_trail_data(self):
+        return self._faint_trail_data
 
     @property
     def glint_mask_data(self):
@@ -127,65 +134,6 @@ class ObsTables(object):
     @property
     def vis_data(self):
         return self._vis_info
-
-    def find_satellite_in_tle(self, tle_loc, sat_name):
-        """
-
-        Parameters
-        ----------
-        tle_loc
-        sat_name
-
-        Returns
-        -------
-
-        """
-        matches = []
-        with open(tle_loc, 'r') as file:
-            for line in file:
-                if sat_name in line:
-                    matches.append(line.strip())  # Add the matching line to the list
-
-        if matches:
-            match = matches[0]
-            self.log.info(f"    Found match for {sat_name}: {match}")
-            return match
-        else:
-            self.log.warning(f"{sat_name} not found in TLE file!!! "
-                             "TBW: Get TLE. "
-                             "Exiting for now!!!")
-            return None
-
-    @staticmethod
-    def get_sat_type(sat_name):
-        """
-        Determine the satellite type based on the satellite name.
-
-        Parameters
-        ----------
-        sat_name : str
-            The name of the satellite.
-
-        Returns
-        -------
-        str
-            The satellite type corresponding to the given satellite name.
-            Returns 'oneweb' if no specific match is found.
-        """
-        sat_type_mapping = {
-            'STARLINK': 'starlink',
-            'BLUEWALKER': 'bluewalker',
-            'KUIPER': 'kuiper',
-            'SPACEMOBILE': '[spacemobile|all]'
-        }
-
-        # Iterate over the mapping to find a matching satellite type
-        for key, value in sat_type_mapping.items():
-            if key in sat_name.upper():
-                return value
-
-        # Default to 'oneweb' if no match is found
-        return 'oneweb'
 
     def find_tle_file(self, sat_name: str,
                       img_filter: str,
@@ -267,44 +215,133 @@ class ObsTables(object):
                          "Check the naming/dates of any TLE if present. Exiting for now!!!")
         return None  # Return None if no suitable file is found
 
+    def find_satellite_in_tle(self, tle_loc, sat_name):
+        """
+
+        Parameters
+        ----------
+        tle_loc
+        sat_name
+
+        Returns
+        -------
+
+        """
+        matches = []
+        with open(tle_loc, 'r') as file:
+            for line in file:
+                if sat_name in line:
+                    matches.append(line.strip())  # Add the matching line to the list
+
+        if matches:
+            match = matches[0]
+            self.log.info(f"    Found match for {sat_name}: {match}")
+            return match
+        else:
+            self.log.warning(f"{sat_name} not found in TLE file!!! "
+                             "TBW: Get TLE. "
+                             "Exiting for now!!!")
+            return None
+
+    # def load_glint_mask_table(self):
+    #     """Load table with regions of glints that should be masked and excluded"""
+    #     glint_info = self._glint_mask_info
+    #
+    #     # Files info
+    #     fname = self.glint_mask_table_fname
+    #     if fname.exists():
+    #         if not self.silent:
+    #             self.log.info(f'> Read glint mask from: {self.def_glint_mask_name}')
+    #         glint_info = pd.read_csv(fname, header=0, delimiter=',')
+    #
+    #     self._glint_mask_info = glint_info
+    #
+    # def load_roi_table(self):
+    #     """Load the regions of interest info table"""
+    #     roi_info = self._roi_info
+    #
+    #     # Files info
+    #     fname = self.roi_table_fname
+    #     if fname.exists():
+    #         if not self.silent:
+    #             self.log.info(f'> Read Region-of-Interest from: {self.def_roi_name}')
+    #         roi_info = pd.read_csv(fname, header=0, delimiter=',')
+    #
+    #     self._roi_info = roi_info
+    #
+    # def load_ext_oi_table(self):
+    #     """Load the extensions of interest info table"""
+    #     ext_oi_info = self._ext_oi_info
+    #
+    #     # Files info
+    #     fname = self.ext_oi_table_fname
+    #     if fname.exists():
+    #         if not self.silent:
+    #             self.log.info(f'> Read Extensions-of-Interest from: {self.def_ext_oi_name}')
+    #         ext_oi_info = pd.read_csv(fname, header=0, delimiter=',')
+    #
+    #     self._ext_oi_info = ext_oi_info
+
+    def _load_csv_table(self, data_attribute, file_path, table_name, silent=None):
+        """Helper method to load CSV tables with common logic
+
+        Parameters
+        ----------
+        data_attribute : str
+            Name of the attribute to update
+        file_path : Path
+            The path to the CSV file
+        table_name : str
+            Display name of the table for logging
+        silent : bool, optional
+            Override the instance's silent flag
+
+        Returns
+        -------
+        pd.DataFrame
+            The loaded DataFrame
+        """
+        data = getattr(self, data_attribute)
+
+        if file_path.exists():
+            if not (self.silent if silent is None else silent):
+                self.log.info(f'> Read {table_name} from: {file_path.name}')
+            data = pd.read_csv(file_path, header=0, delimiter=',')
+
+        setattr(self, data_attribute, data)
+        return data
+
     def load_glint_mask_table(self):
         """Load table with regions of glints that should be masked and excluded"""
-        glint_info = self._glint_mask_info
-
-        # Files info
-        fname = self.glint_mask_table_fname
-        if fname.exists():
-            if not self.silent:
-                self.log.info(f'> Read glint mask from: {self.def_glint_mask_name}')
-            glint_info = pd.read_csv(fname, header=0, delimiter=',')
-
-        self._glint_mask_info = glint_info
+        return self._load_csv_table(
+            '_glint_mask_info',
+            self.glint_mask_table_fname,
+            'glint mask'
+        )
 
     def load_roi_table(self):
         """Load the regions of interest info table"""
-        roi_info = self._roi_info
-
-        # Files info
-        fname = self.roi_table_fname
-        if fname.exists():
-            if not self.silent:
-                self.log.info(f'> Read Region-of-Interest from: {self.def_roi_name}')
-            roi_info = pd.read_csv(fname, header=0, delimiter=',')
-
-        self._roi_info = roi_info
+        return self._load_csv_table(
+            '_roi_info',
+            self.roi_table_fname,
+            'Region-of-Interest'
+        )
 
     def load_ext_oi_table(self):
         """Load the extensions of interest info table"""
-        ext_oi_info = self._ext_oi_info
+        return self._load_csv_table(
+            '_ext_oi_info',
+            self.ext_oi_table_fname,
+            'Extensions-of-Interest'
+        )
 
-        # Files info
-        fname = self.ext_oi_table_fname
-        if fname.exists():
-            if not self.silent:
-                self.log.info(f'> Read Extensions-of-Interest from: {self.def_ext_oi_name}')
-            ext_oi_info = pd.read_csv(fname, header=0, delimiter=',')
-
-        self._ext_oi_info = ext_oi_info
+    def load_faint_trail_table(self):
+        """Load the faint trail table"""
+        return self._load_csv_table(
+            '_faint_trail_info',
+            self.faint_trail_table_fname,
+            'Faint-Trail'
+        )
 
     def load_obs_table(self):
         """Load the observation info table"""
@@ -335,71 +372,276 @@ class ObsTables(object):
         """Check if the row matches the defined units"""
         return any(cell in self.def_col_units or cell == '' for cell in unit_row)
 
+    # def get_roi(self, fname):
+    #     """Get the region of interest"""
+    #     roi_info = self._roi_info
+    #     if not roi_info.empty:
+    #         pos_df = roi_info.copy()
+    #
+    #         # Convert file name to uppercase
+    #         pos_df['File'] = roi_info['File'].str.upper()
+    #         fname_upper = fname.upper()
+    #         # Check position
+    #         pos_mask = pos_df['File'] == fname_upper
+    #         pos = np.flatnonzero(pos_mask)
+    #
+    #         if list(pos):
+    #             pos_df = roi_info[pos_mask]
+    #             self._roi_data = pos_df
+    #
+    # def get_ext_oi(self, fname):
+    #     """Get extension(s) of interest"""
+    #     ext_oi_info = self._ext_oi_info
+    #
+    #     if not ext_oi_info.empty:
+    #         pos_df = ext_oi_info.copy()
+    #
+    #         # Convert file name to uppercase
+    #         pos_df['File'] = ext_oi_info['File'].str.upper()
+    #         fname_upper = fname.upper()
+    #
+    #         # Check position
+    #         pos_mask = pos_df['File'] == fname_upper
+    #         pos = np.flatnonzero(pos_mask)
+    #
+    #         if list(pos):
+    #             pos_df = ext_oi_info[pos_mask]['Array_N'][pos[0]]
+    #             self._ext_oi_data = eval(pos_df)
+    #         else:
+    #             self._ext_oi_data = []
+
+    def _get_table_data(self, source_attribute, target_attribute, fname, process_func=None):
+        """Helper method for retrieving table data based on filename
+
+        Parameters
+        ----------
+        source_attribute : str
+            Name of the attribute containing source data
+        target_attribute : str
+            Name of the attribute to update with matching data
+        fname : str
+            Filename to search for
+        process_func : callable, optional
+            Function to process matched data before assignment
+
+        Returns
+        -------
+        Any
+            The matched and processed data
+        """
+        source_data = getattr(self, source_attribute)
+
+        # Default empty result
+        result = pd.DataFrame() if process_func is None else []
+
+        if not source_data.empty:
+            # Convert file name to uppercase for case-insensitive matching
+            fname_upper = fname.upper()
+
+            # Filter by filename
+            mask = source_data['File'].str.upper() == fname_upper
+            matches = source_data[mask]
+
+            if not matches.empty:
+                result = matches if process_func is None else process_func(matches)
+
+        # Store result in target attribute
+        setattr(self, target_attribute, result)
+        return result
+
     def get_roi(self, fname):
         """Get the region of interest"""
-        roi_info = self._roi_info
-        if not roi_info.empty:
-            pos_df = roi_info.copy()
-
-            # Convert file name to uppercase
-            pos_df['File'] = roi_info['File'].str.upper()
-            fname_upper = fname.upper()
-            # Check position
-            pos_mask = pos_df['File'] == fname_upper
-            pos = np.flatnonzero(pos_mask)
-
-            if list(pos):
-                pos_df = roi_info[pos_mask]
-                self._roi_data = pos_df
+        return self._get_table_data('_roi_info', '_roi_data', fname)
 
     def get_ext_oi(self, fname):
         """Get extension(s) of interest"""
-        ext_oi_info = self._ext_oi_info
 
-        if not ext_oi_info.empty:
-            pos_df = ext_oi_info.copy()
+        def process_ext_oi(matches):
+            try:
+                return eval(matches['Array_N'].iloc[0])
+            except (IndexError, KeyError):
+                return []
 
-            # Convert file name to uppercase
-            pos_df['File'] = ext_oi_info['File'].str.upper()
+        return self._get_table_data('_ext_oi_info', '_ext_oi_data', fname, process_ext_oi)
+
+    def _get_hdu_table_data(self, source_attribute, target_attribute, fname, hdu_idx):
+        """Helper method for retrieving table data based on filename and HDU index
+
+        Parameters
+        ----------
+        source_attribute : str
+            Name of the attribute containing source data
+        target_attribute : str
+            Name of the attribute to update with matching data
+        fname : str
+            Filename to search for
+        hdu_idx : int
+            HDU index to match
+
+        Returns
+        -------
+        pd.DataFrame
+            The matched data
+        """
+        source_data = getattr(self, source_attribute)
+
+        # Default empty result
+        result = pd.DataFrame()
+
+        if not source_data.empty:
+            # Convert file name to uppercase for case-insensitive matching
             fname_upper = fname.upper()
 
-            # Check position
-            pos_mask = pos_df['File'] == fname_upper
-            pos = np.flatnonzero(pos_mask)
+            # Filter by filename and HDU index
+            mask = (source_data['File'].str.upper() == fname_upper) & (source_data['HDU'] == hdu_idx)
+            matches = source_data[mask]
 
-            if list(pos):
-                pos_df = ext_oi_info[pos_mask]['Array_N'][pos[0]]
-                self._ext_oi_data = eval(pos_df)
-            else:
-                self._ext_oi_data = []
+            if not matches.empty:
+                result = matches
+
+        # Store result in target attribute
+        setattr(self, target_attribute, result)
+        return result
 
     def get_glint_mask(self, fname, hdu_idx):
-        """Get Glint masks"""
+        """Get Glint masks
 
-        glint_info = self._glint_mask_info
+        Parameters
+        ----------
+        fname : str
+            Filename to search for in the glint mask table
+        hdu_idx : int
+            HDU index to match
 
-        if not glint_info.empty:
-            pos_df = glint_info.copy()
+        Returns
+        -------
+        pd.DataFrame
+            The matched glint mask data
+        """
+        return self._get_hdu_table_data(
+            '_glint_mask_info',
+            '_glint_mask_data',
+            fname,
+            hdu_idx
+        )
 
-            # Convert file name to uppercase
-            pos_df['File'] = glint_info['File'].str.upper()
-            fname_upper = fname.upper()
+    def get_faint_trail(self, fname, hdu_idx):
+        """Get faint trail data
 
-            # Check position
-            pos_mask = (pos_df['File'] == fname_upper)
-            pos = np.flatnonzero(pos_mask)
+        Parameters
+        ----------
+        fname : str
+            Filename to search for in the faint trail table
+        hdu_idx : int
+            HDU index to match
 
-            if list(pos):
-                df = glint_info[pos_mask]
-                hdu_match = (df['HDU'] == hdu_idx)
-                if np.any(hdu_match):
+        Returns
+        -------
+        pd.DataFrame
+            The matched faint trail data
+        """
+        return self._get_hdu_table_data(
+            '_faint_trail_info',
+            '_faint_trail_data',
+            fname,
+            hdu_idx
+        )
 
-                    if len(np.array(hdu_match)) == 1:
-                        idx = pos[hdu_match]
-                        self._glint_mask_data = glint_info.iloc[idx]
-                    else:
-                        idx = pos[np.where(hdu_match)[0]]
-                        self._glint_mask_data = glint_info.iloc[idx]
+    # def get_glint_mask(self, fname, hdu_idx):
+    #     """Get Glint masks
+    #
+    #     Parameters
+    #     ----------
+    #     fname : str
+    #         Filename to search for in the glint mask table
+    #     hdu_idx : int
+    #         HDU index to match
+    #
+    #     Returns
+    #     -------
+    #     pd.DataFrame
+    #         The matched glint mask data
+    #     """
+    #     glint_info = self._glint_mask_info
+    #
+    #     if glint_info.empty:
+    #         self._glint_mask_data = pd.DataFrame()
+    #         return
+    #
+    #     # Convert file name to uppercase for case-insensitive matching
+    #     fname_upper = fname.upper()
+    #
+    #     # Filter by filename then by HDU index (more efficient than making a copy)
+    #     mask = (glint_info['File'].str.upper() == fname_upper) & (glint_info['HDU'] == hdu_idx)
+    #     matches = glint_info[mask]
+    #
+    #     # Store matched data
+    #     if not matches.empty:
+    #         self._glint_mask_data = matches
+    #     else:
+    #         self._glint_mask_data = pd.DataFrame()
+    #
+    # def get_faint_trail(self, fname, hdu_idx):
+    #     """Get faint trail data
+    #
+    #     Parameters
+    #     ----------
+    #     fname : str
+    #         Filename to search for in the faint trail table
+    #     hdu_idx : int
+    #         HDU index to match
+    #
+    #     Returns
+    #     -------
+    #     pd.DataFrame
+    #         The matched faint trail data
+    #     """
+    #     faint_info = self._faint_trail_info
+    #
+    #     if faint_info.empty:
+    #         self._faint_trail_data = pd.DataFrame()
+    #         return
+    #
+    #     # Convert file name to uppercase for case-insensitive matching
+    #     fname_upper = fname.upper()
+    #
+    #     # Filter by filename then by HDU index (more efficient than making a copy)
+    #     mask = (faint_info['File'].str.upper() == fname_upper) & (faint_info['HDU'] == hdu_idx)
+    #     matches = faint_info[mask]
+    #
+    #     # Store matched data
+    #     if not matches.empty:
+    #         self._faint_trail_data = matches
+    #     else:
+    #         self._faint_trail_data = pd.DataFrame()
+
+    # def get_glint_mask(self, fname, hdu_idx):
+    #     """Get Glint masks"""
+    #
+    #     glint_info = self._glint_mask_info
+    #
+    #     if not glint_info.empty:
+    #         pos_df = glint_info.copy()
+    #
+    #         # Convert file name to uppercase
+    #         pos_df['File'] = glint_info['File'].str.upper()
+    #         fname_upper = fname.upper()
+    #
+    #         # Check position
+    #         pos_mask = (pos_df['File'] == fname_upper)
+    #         pos = np.flatnonzero(pos_mask)
+    #
+    #         if list(pos):
+    #             df = glint_info[pos_mask]
+    #             hdu_match = (df['HDU'] == hdu_idx)
+    #             if np.any(hdu_match):
+    #
+    #                 if len(np.array(hdu_match)) == 1:
+    #                     idx = pos[hdu_match]
+    #                     self._glint_mask_data = glint_info.iloc[idx]
+    #                 else:
+    #                     idx = pos[np.where(hdu_match)[0]]
+    #                     self._glint_mask_data = glint_info.iloc[idx]
 
     def get_object_data(self, fname, kwargs, obsparams, hdu_idx):
         """
@@ -731,8 +973,7 @@ class ObsTables(object):
 
         return obs_info
 
-    def read_vis_file(self,
-                      vis_file_list: list):
+    def read_vis_file(self, vis_file_list: list):
         """Read the visibility file"""
 
         col_names = bc.DEF_VIS_TBL_COL_NAMES
@@ -844,3 +1085,34 @@ class ObsTables(object):
             test_str = test_str.replace(f'-({alt_id})', '')
 
         return test_str, alt_id, unique_id
+
+    @staticmethod
+    def get_sat_type(sat_name):
+        """
+        Determine the satellite type based on the satellite name.
+
+        Parameters
+        ----------
+        sat_name : str
+            The name of the satellite.
+
+        Returns
+        -------
+        str
+            The satellite type corresponding to the given satellite name.
+            Returns 'oneweb' if no specific match is found.
+        """
+        sat_type_mapping = {
+            'STARLINK': 'starlink',
+            'BLUEWALKER': 'bluewalker',
+            'KUIPER': 'kuiper',
+            'SPACEMOBILE': '[spacemobile|all]'
+        }
+
+        # Iterate over the mapping to find a matching satellite type
+        for key, value in sat_type_mapping.items():
+            if key in sat_name.upper():
+                return value
+
+        # Default to 'oneweb' if no match is found
+        return 'oneweb'

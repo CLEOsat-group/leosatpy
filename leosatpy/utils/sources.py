@@ -1406,7 +1406,10 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
             hdr['telescop'.upper()] != 'CTIO 4.0-m telescope'):
         time_string = f"{hdr['date-obs'.upper()]}T{hdr['time-obs'.upper()]}"
     else:
-        time_string = hdr['date-obs'.upper()]
+        if hdr['TELESCOP'] == 'FUT':
+            time_string = hdr['date-beg'.upper()]
+        else:
+            time_string = hdr['date-obs'.upper()]
 
     # frmt = bc.has_fractional_seconds(time_string)
     t = pd.to_datetime(time_string,
