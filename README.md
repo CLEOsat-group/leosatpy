@@ -49,7 +49,7 @@ at the Oukaïmeden Observatory, Morocco.
 [Chungbuk National University Observatory](https://www.chungbuk.ac.kr/site/english/main.do) in Jincheon, South Korea.
 - [1.23-metre telescope](https://www.caha.es/CAHA/Telescopes/1.2m.html) 
 at the Calar Alto Observatory, Spain.
-- 0.6-metre [Fjernstyrede Undervisnings Teleskop](https://phys.au.dk/en/news/item/artikel/fut-det-fjernstyrede-undervisningsteleskop-er-klar-til-de-foerste-gymnasieklasser-1) 
+- **(Work in Progress)** 0.6-metre [Fjernstyrede Undervisnings Teleskop](https://phys.au.dk/en/news/item/artikel/fut-det-fjernstyrede-undervisningsteleskop-er-klar-til-de-foerste-gymnasieklasser-1) 
 (FUT) from Aarhus University at the [Mt. Kent Observatory](https://science.desi.qld.gov.au/research/capability-directory/mount-kent-observatory), Australia.
 
 > [!NOTE]  
