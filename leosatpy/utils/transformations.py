@@ -130,8 +130,8 @@ class FindWCS(object):
             bin_x = int(hdr[config['binning'][0]])
             bin_y = int(hdr[config['binning'][1]])
         else:
-            bin_x = int(hdr['binning'][0])
-            bin_y = int(hdr['binning'][1])
+            bin_x = int(config['binning'][0])
+            bin_y = int(config['binning'][1])
 
         self.bin_x = bin_x
         self.bin_y = bin_y

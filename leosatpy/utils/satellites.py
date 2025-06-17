@@ -780,8 +780,6 @@ def detect_sat_trails(image: np.ndarray,
         log.info("    Create segmentation map from image")
 
     if mask is not None:
-        # m = np.where(mask, 0, 1)
-        # sharpened *= m
 
         sigcl_mean, sigcl_median, sigcl_std = sigma_clipped_stats(image,
                                                                   sigma=3.0,
@@ -814,7 +812,7 @@ def detect_sat_trails(image: np.ndarray,
                                                                   maxiters=10)
         sharpened = np.where(mask, sigcl_mean, sharpened)
 
-    del blurred_f, filter_blurred_f  # zero out the borders with width given by borderLen
+    del blurred_f, filter_blurred_f
 
     # determine the detection threshold
     threshold = detect_threshold(sharpened, background=None, nsigma=1.5, mask=mask)

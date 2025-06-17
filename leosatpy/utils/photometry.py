@@ -229,16 +229,16 @@ def get_opt_aper_trail(image,
     # Initialize logging for this user-callable function
     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
 
-    dstep = config['APER_STEP_SIZE']
-    start = config['APER_START']
-    stop = config['APER_STOP'] + 2.5
+    dstep = config['TRAIL_APER_STEP_SIZE']
+    start = config['TRAIL_APER_START']
+    stop = config['TRAIL_APER_STOP']
     rapers = np.linspace(start, stop, int((stop - start) / dstep + 1))
 
     output = np.zeros((len(rapers), len(src_pos), 4))
     output[output == 0] = np.nan
 
-    r_in = config['RSKYIN'] * 1.10
-    r_out = config['RSKYOUT'] * 1.10
+    r_in = config['TRAIL_RSKYIN']
+    r_out = config['TRAIL_RSKYOUT']
 
     total_rapers = len(rapers)
     try:
@@ -269,7 +269,7 @@ def get_opt_aper_trail(image,
 
     max_snr_idx = np.nanargmax(output[:, :, 2], axis=0)
     max_snr_aprad = float(rapers[max_snr_idx])
-    optimum_aprad = max_snr_aprad * 1.25
+    optimum_aprad = max_snr_aprad * 1.25  # increased by 25%
     qlf_aptrail = True
 
     if not silent:

@@ -649,6 +649,7 @@ spm_params = {
 }
 
 ouka_params = {
+
     "name": "Oukaimeden observatory",
     "longitude": -7.866,
     "latitude": 31.206389,
@@ -728,9 +729,92 @@ ouka_params = {
 
 }
 
+# Fjernstyrede Undervisnings Teleskop FUT, Mt. Kent Observatory, Australia
+fut_params = {
+
+    # -27.7977, 151.8554, 682 m
+    "name": "Mt. Kent Observatory",
+    "longitude": 151.8554,
+    "latitude": -27.7977,
+    "altitude": 682.0,
+    "tz": 10,
+
+    # telescope keywords
+    'telescope_instrument': 'FLI Kepler4040 cmos KL2441220',  # telescope/instrument name
+    # 'telescope_instrument': 'FUT',  # telescope/instrument name
+    'telescope_keyword': 'FUT',  # telescope/instrument keyword
+    'observatory_code': '',  # MPC observatory code
+
+    # instrument-specific FITS header keywords
+    'telescop': 'TELESCOP',  # telescope keyword
+    'instrume': 'INSTRUM',  # instrument keyword
+
+    'extent': ('NAXIS1', 'NAXIS2'),  # N_pixels in x/y
+    'n_ext': 0,  # Number of Extensions in the calibrated image
+    'n_amps': 1,  # number of chips/amplifier on detector
+    'multiple_amps': False,
+    'namps_yx': None,
+    'amplist': None,  # amplifier list keyword
+    'secpix': (0.465, 0.465),  # pixel size (arcsec)
+    'binning': (1, 1),  # binning
+    'image_size_1x1': (4096, 4096),
+    'pc_matrix': None,  # Preferred CCD PC matrix
+
+    'gain': 'GAIN',  # CD gain in el/DN
+    'readnoise': 'READNOIS',  # CCD Read Out Noise (e-)
+
+    # telescope pointing keywords
+    'ra': 'OBJ-RA',  # telescope pointing, RA
+    'dec': 'OBJ-DEC',  # telescope pointing, Dec
+    'radec_separator': 'XXX',  # RA/Dec hms separator, use 'XXX' if already in degrees
+    'equinox': 'EQUINOX',
+
+    # keyword; use 'date|time' if separate
+    'date_keyword': 'DATE-BEG',  # obs date/time
+
+    'object': 'OBJECT',  # object name keyword
+    'filter': 'FILTER',  # Filter keyword
+    'imagetyp': 'IMAGETYP',
+
+    # filtername translation dictionary
+    'filter_translations': {'V': 'V'},
+
+    'exptime': 'EXPTIME',  # exposure time keyword (s)
+    'airmass': None,  # airmass keyword
+
+    'ampsec': None,
+    'oscansec': None,
+    'trimsec': None,
+    'cropsec': None,
+
+    # ccd mask for regions to exclude from all processes
+    'ccd_mask': {'1x1': None,
+                 '2x2': None,
+                 '4x4': None},
+
+    # telescope specific image types
+    'imagetyp_light': 'sky',
+    'imagetyp_bias': 'bias',
+    'imagetyp_dark': 'dark',
+    'imagetyp_flat': 'flat',
+    'add_imagetyp_keys': False,
+    # 'add_imagetyp': {'flat': {'imagetyp': 'sflat'}},
+
+    # keywords to exclude from the header update while preparing the file
+    'keys_to_exclude': None,
+
+    # keywords for info_dict
+    'obs_keywords': ['telescop', 'instrum', 'object', 'date-beg', 'filter', 'exptime',
+                     'obj-ra', 'obj-dec', 'airmass', 'binning'],
+
+    # source extractor settings
+    'saturation_limit': 'SATLEVEL',
+    'apply_mask': False
+}
+
 # currently available telescopes
 IMPLEMENTED_TELESCOPES = ['CA123DLRMKIII', 'CBNUO-JC', 'CKOIR', 'DK154_DFOSC', 'CTIO90', 'CTIO400',
-                          'OUKA', 'SPM']
+                          'OUKA', 'SPM', 'FUT']
 
 # translate INSTRUME header keyword
 INSTRUMENT_IDENTIFIERS = OrderedDict({'DFOSC_FASU': 'DK154_DFOSC',
@@ -739,7 +823,8 @@ INSTRUMENT_IDENTIFIERS = OrderedDict({'DFOSC_FASU': 'DK154_DFOSC',
                                       'SBIG STX-16803 CCD Camera': 'CBNUO-JC',
                                       'cfccd': 'CTIO90', 'DECam': 'CTIO400',
                                       'ZWO ASI2600MM Pro': 'OUKA',
-                                      'C1': 'SPM', 'C2': 'SPM', 'C3': 'SPM', 'C4': 'SPM'
+                                      'C1': 'SPM', 'C2': 'SPM', 'C3': 'SPM', 'C4': 'SPM',
+                                      'FLI Kepler4040 cmos KL2441220': 'FUT'
                                       })
 
 # translate telescope keyword into parameter set defined here
@@ -750,5 +835,6 @@ TELESCOPE_PARAMETERS = OrderedDict({'CA123DLRMKIII': ca123dlrmkiii_param,
                                     'CTIO90': ctio_90cm_params,
                                     'CTIO400': ctio_400cm_params,
                                     'OUKA': ouka_params,
-                                    'SPM': spm_params
+                                    'SPM': spm_params,
+                                    'FUT': fut_params
                                     })
