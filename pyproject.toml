@@ -1,3 +1,45 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "leosatpy"
+dynamic = ["version", "dependencies"]
+description = "LEOSatpy is a highly-automated end-to-end pipeline for the reduction, calibration, and analysis of Low Earth Orbit Satellite observations from various telescopes."
+authors = [
+    {name = "Christian Adam", email = "christian.adam84@gmail.com"}
+]
+readme = {file = "README.md", content-type = "text/markdown"}
+requires-python = ">=3.9"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Astronomy",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12"
+]
+keywords = ["astronomy", "satellite", "data-analysis", "pipeline"]
+
+[project.urls]
+Homepage = "http://leosatpy.readthedocs.io/"
+Download = "https://github.com/CLEOsat-group/leosatpy/archive/master.zip"
+Repository = "https://github.com/CLEOsat-group/leosatpy"
+
+[project.scripts]
+reduceSatObs = "leosatpy.reduceSatObs:main"
+calibrateSatObs = "leosatpy.calibrateSatObs:main"
+analyseSatObs = "leosatpy.analyseSatObs:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "leosatpy.utils.version.__version__"}
+dependencies = {file = ["requirements.txt"]}
+
+[tool.setuptools.packages.find]
+include = ["leosatpy*"]
+
+[tool.setuptools.package-data]
+leosatpy = ["*.ini"]
+

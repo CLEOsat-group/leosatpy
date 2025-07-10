@@ -21,6 +21,7 @@ setup(
     author='Christian Adam',
     author_email='christian.adam84@gmail.com',
     license='GNU General Public License v3.0',
+    license_files=[],
     description='LEOSatpy is a highly-automated end-to-end pipeline for the reduction, calibration, '
                 'and analysis of Low Earth Orbit Satellite observations from various telescopes.',
     long_description=long_description,
