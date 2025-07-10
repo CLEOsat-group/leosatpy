@@ -96,11 +96,7 @@ fail_str = BCOLORS.FAIL + "FAILED" + BCOLORS.ENDC
 INSTRUMENT_KEYS = ['PPINSTRU', 'LCAMMOD', 'INSTRUME', 'INSTRUM',
                    'TELESCOP', 'FLI', 'FPA', 'CAM_NAME']
 
-# Default timeout in seconds for reference image selection
-DEF_TIMEOUT = 3  # in seconds
 
-# Time delta in days for folder search in reduction of calibration files
-TIMEDELTA_DAYS = 7  # +-days
 FRMT_FS = "%Y-%m-%dT%H:%M:%S.%f"
 FRMT = "%Y-%m-%dT%H:%M:%S"
 
