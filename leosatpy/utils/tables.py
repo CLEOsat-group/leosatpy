@@ -82,7 +82,7 @@ class ObsTables(object):
         self._faint_trail_data = pd.DataFrame()
         self._vis_info = pd.DataFrame()
 
-        self.def_path = Path(config['RESULT_TABLE_PATH']).expanduser().resolve()
+        self.def_path = Path(config['WORKING_DIR_PATH']).expanduser().resolve()
         self.def_tbl_name = config['RESULT_TABLE_NAME']
         self.def_roi_name = config['ROI_TABLE_NAME']
         self.def_ext_oi_name = config['EXT_OI_TABLE_NAME']
@@ -405,7 +405,7 @@ class ObsTables(object):
     #         pos = np.flatnonzero(pos_mask)
     #
     #         if list(pos):
-    #             pos_df = ext_oi_info[pos_mask]['Array_N'][pos[0]]
+    #             pos_df = ext_oi_info[pos_mask]['HDUs'][pos[0]]
     #             self._ext_oi_data = eval(pos_df)
     #         else:
     #             self._ext_oi_data = []
@@ -458,7 +458,7 @@ class ObsTables(object):
 
         def process_ext_oi(matches):
             try:
-                return eval(matches['Array_N'].iloc[0])
+                return eval(matches['HDUs'].iloc[0])
             except (IndexError, KeyError):
                 return []
 
