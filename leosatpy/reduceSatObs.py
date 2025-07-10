@@ -1754,7 +1754,7 @@ class ReduceSatObs(object):
             inst = self._instrument
 
         # Create a range of days before and after the observation night to search for calibrations
-        dt_list = list(range(-1 * bc.TIMEDELTA_DAYS, bc.TIMEDELTA_DAYS))
+        dt_list = list(range(-1 * self._config['TIMEDELTA_DAYS'], self._config['TIMEDELTA_DAYS']))
         date_range = np.array([str(date + timedelta(days=i)) for i in dt_list])
 
         # Get base folder for search for calib files

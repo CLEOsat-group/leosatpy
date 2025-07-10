@@ -327,17 +327,17 @@ class AnalyseSatObs(object):
 
                 # In case of an error, comment the following line to see where the error occurs;
                 # This needs some fixing and automation
-                exec_state = self.analyse_sat_trails(files=files, sat_name=sat_name)
-                # try:
-                #     exec_state = self.analyse_sat_trails(files=files, sat_name=sat_name)
-                # except Exception as e:
-                #     exc_type, exc_obj, exc_tb = sys.exc_info()
-                #     fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-                #     self._log.critical(f"Unexpected behaviour: {e} in file {fname}, "
-                #                        f"line {exc_tb.tb_lineno}")
-                #     exec_state = 0
-                #     self.update_failed_processes([str(e), 'Unexpected behaviour',
-                #                                   'Please create a ticket url'])
+                # exec_state = self.analyse_sat_trails(files=files, sat_name=sat_name)
+                try:
+                    exec_state = self.analyse_sat_trails(files=files, sat_name=sat_name)
+                except Exception as e:
+                    exc_type, exc_obj, exc_tb = sys.exc_info()
+                    fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                    self._log.critical(f"Unexpected behaviour: {e} in file {fname}, "
+                                       f"line {exc_tb.tb_lineno}")
+                    exec_state = 0
+                    self.update_failed_processes([str(e), 'Unexpected behaviour',
+                                                  'Please create a ticket url'])
 
                 if exec_state == 1:
                     self._log.info(f">> Report: Satellite detection and analysis was {pass_str}")
@@ -1352,12 +1352,6 @@ class AnalyseSatObs(object):
         # Mask saturated objects
         image_mask_saturation = (trail_img > 0.95 * config['sat_lim'])
         image_mask_combined |= image_mask_saturation
-        min_image_mask = image_mask_combined.copy()
-
-        # Mask borders
-        # borderLen = int(config['ISOLATE_SOURCES_INIT_SEP'])
-        # image_mask_combined = self._make_border_mask(image_mask_combined,
-        #                                              borderLen=borderLen)
 
         # Subtract background if necessary
         trail_img_processed = self.process_image(trail_img,
@@ -1750,7 +1744,7 @@ class AnalyseSatObs(object):
         """
         # Save failed processes
         if self.fails:
-            fail_path = Path(self._config['RESULT_TABLE_PATH']).expanduser().resolve()
+            fail_path = Path(self._config['WORKING_DIR_PATH']).expanduser().resolve()
             fail_fname = fail_path / f'fails_analyseSatObs_{time_stamp}.log'
             self._log.info(f">> FAILED analyses are stored here: {fail_fname}")
             with open(fail_fname, "w", encoding="utf8") as file:

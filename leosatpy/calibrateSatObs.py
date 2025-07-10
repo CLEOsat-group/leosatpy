@@ -215,7 +215,7 @@ class CalibrateObsWCS(object):
         inst_data = ds.instruments
 
         time_stamp = self.get_time_stamp()
-        fail_path = Path(self._config['RESULT_TABLE_PATH']).expanduser().resolve()
+        fail_path = Path(self._config['WORKING_DIR_PATH']).expanduser().resolve()
         fail_fname = fail_path / f'fails_calibrateSatObs_{time_stamp}.log'
 
         N_inst = len(inst_list)

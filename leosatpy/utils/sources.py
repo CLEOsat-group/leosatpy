@@ -451,8 +451,6 @@ def fit_source_cat(data, df, cutout_size, known_fwhm=None, update_position=False
     fitting_method = config['FITTING_METHOD']
     total_sources = len(df.index)
 
-    # sigmaclip_fwhm_sigma = config['SIGMACLIP_FWHM_SIGMA']
-
     col_names = ['fit_fwhm', 'fit_fwhm_err', 's2n']
     result_arr = np.empty((total_sources, len(col_names)))
     nan_arr = np.array([[np.nan] * len(col_names)])
@@ -511,7 +509,7 @@ def fit_source_cat(data, df, cutout_size, known_fwhm=None, update_position=False
                     to_add = nan_arr
 
         result_arr[i] = to_add
-        bc.print_progress_bar(i+1, total_sources, length=80,
+        bc.print_progress_bar(i + 1, total_sources, length=80,
                               color=bc.BCOLORS.OKGREEN, use_lock=False)
         del cutout_obj, cutout
 
@@ -643,6 +641,7 @@ def fit_single_source(data, box_size, fwhm_guess=None,
         return result
     except (Exception,):
         return None
+
 
 def clean_catalog_trail(imgarr, mask, catalog, fwhm, r=5.):
     """Remove objects from the source catalog.
@@ -966,6 +965,7 @@ def convert_astrometric_table(table: Table, catalog_name: str) -> Table:
 
     return table
 
+
 def make_border_mask(mask, borderLen=10):
     """
     Make a border mask for an image.
@@ -982,6 +982,7 @@ def make_border_mask(mask, borderLen=10):
     mask[:, -borderLen:] = True
 
     return mask
+
 
 def extract_source_catalog(imgarr,
                            source_catalog=None,
@@ -1057,14 +1058,13 @@ def extract_source_catalog(imgarr,
     if not state or len(source_cat) == 0:
         return None, None, False, fail_msg
 
-    
     return source_cat, fwhm, True, None
 
 
-def get_reference_catalog_astro(ra, dec, sr=0.5,
-                                epoch=None, catalog='GAIADR3',
-                                mag_lim= -1, silent=False):
-    """ Extract reference catalog from VO web service.
+def download_astro_ref_cat(ra, dec, sr=0.5,
+                           epoch=None, catalog='GAIADR3',
+                           mag_lim=-1, silent=False):
+    """ Download reference catalog via VO web service.
 
     Fetch astrometric source catalog entries from the specified ``SERVICELOCATION``
     using a cone-search around the given sky position.
@@ -1473,11 +1473,11 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
     else:
         # Get reference catalog for precise positions from the web
         ref_tbl_astro, ref_catalog_astro = \
-            get_reference_catalog_astro(ra=ra, dec=dec, sr=fov_radius,
-                                        epoch=epoch,
-                                        catalog='GAIAdr3',
-                                        mag_lim=config['ref_cat_mag_lim'],
-                                        silent=silent)
+            download_astro_ref_cat(ra=ra, dec=dec, sr=fov_radius,
+                                   epoch=epoch,
+                                   catalog='GAIAdr3',
+                                   mag_lim=config['ref_cat_mag_lim'],
+                                   silent=silent)
 
         if not silent:
             log.info("> Save astrometric references catalog.")
@@ -1833,7 +1833,6 @@ def url_checker(url: str) -> tuple[bool, str]:
             return True, "URL is reachable"
         else:
             return False, f"URL: is Not reachable, status_code: {get.status_code}"
-
 
 # def find_worst_residual_near_center(resid: np.ndarray):
 #     """Find the pixel location of the worst residual, avoiding the edges"""

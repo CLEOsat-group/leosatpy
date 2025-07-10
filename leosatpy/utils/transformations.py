@@ -179,8 +179,8 @@ class FindWCS(object):
         self.match_radius_px = match_radius_px
         match_radius_limit_px = self.config['MATCH_RADIUS_LIM'] * match_radius_px
         num_ref_samples = self.config['NUM_REF_SAMPLES']  # Number of samples to draw from the reference catalog
-        num_ref_max = self.config['MAX_REF_NUM']
-        max_src_num = self.config['MAX_SOURCE_NUM']
+        max_ref_num = self.config['MAX_REF_NUM']
+        init_src_num = self.config['INITIAL_SOURCE_LIM']
         max_num_top_solution = self.config['MAX_NUM_TOP_SOLUTION']
 
         Nobs_total = len(self.source_cat_full)  # Total number of detected sources
@@ -193,7 +193,7 @@ class FindWCS(object):
         max_no_solution_count = self.config['MAX_NO_SOLUTION_COUNT']
 
         use_initial_wcs_estimate = True  # Flag to indicate the use of the initial WCS
-        has_large_src_cat = False if Nobs_total <= max_src_num else True
+        has_large_src_cat = False if Nobs_total <= init_src_num else True
 
         possible_solutions = []
 
@@ -202,7 +202,7 @@ class FindWCS(object):
         # Prepare source catalog
         if has_large_src_cat:
             self.log.info("  Using a subset of the source catalog for initial matching.")
-            self.source_cat = self.source_cat_full.head(max_src_num)
+            self.source_cat = self.source_cat_full.head(init_src_num)
         else:
             self.source_cat = self.source_cat_full.copy()
         self.get_source_cat_variables()
@@ -242,7 +242,7 @@ class FindWCS(object):
                 ref_cat_filtered = self.get_filtered_ref_cat(current_wcsprm=self.current_wcsprm, origin=0)
 
                 # Select only the n brightest sources
-                ref_cat_filtered = ref_cat_filtered.head(num_ref_max)
+                ref_cat_filtered = ref_cat_filtered.head(max_ref_num)
 
                 # Determine the number of reference sources to consider
                 Nobs_current = len(self.source_cat)

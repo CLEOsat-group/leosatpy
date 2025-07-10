@@ -141,7 +141,7 @@ of this file can be changed by modifying the following lines in the
 [leosatpy_config.ini](/leosatpy/leosatpy_config.ini):
 
 ``` 
-RESULT_TABLE_PATH = '~'
+WORKING_DIR_PATH = '~'
 RESULT_TABLE_NAME = 'results_leosatpy.csv'
 ```
 
