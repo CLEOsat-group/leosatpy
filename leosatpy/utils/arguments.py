@@ -122,15 +122,14 @@ class ParseArguments(object):
         imageArgs = parser.add_argument_group('image control')
 
         imageArgs.add_argument("-hdu_idx", "--hdu_idx", type=int, default=0,
-                               help="Index of the image data in the fits file. Default 0")
+                               help="Index of the image data in the fits file. Default is 0")
 
         photoArgs = parser.add_argument_group('photometry control')
 
         photoArgs.add_argument("-b", "--band", type=str, default=None,
                                help="Photometric band to use. Options are B,V,R,...")
         photoArgs.add_argument("-c", "--catalog", type=str, default="auto",
-                               help="Catalog to use for photometric reference ('GSC242'), "
-                                    "this can be left to the standard 'auto'."
+                               help="Catalog to use for photometric reference ('GSC243'). This can be left to the standard 'auto' "
                                     "to let the program choose automatically.")
         photoArgs.add_argument("-f", "--force-detection", dest='force_detection', action='store_true', default=False,
                                help="Set True to force the source and reference catalog extraction. "
@@ -180,17 +179,17 @@ class ParseArguments(object):
         imageArgs = parser.add_argument_group('image control')
 
         imageArgs.add_argument("-hdu_idx", "--hdu_idx", type=int, default=0,
-                               help="Index of the image data in the fits file. Default 0.")
+                               help="Index of the image data in the fits file. Default is 0.")
 
         imageArgs.add_argument("-r", "--radius", type=float, default=-1,
                                help="Set download radius in arcmin for catalog objects download. "
                                     "Otherwise automatically determine the FoV from image footprint. "
                                     "Default is 'auto'.")
-        imageArgs.add_argument("-vignette", "--vignette", type=float, default=-1,
-                               help="Do not use corner of the image. "
-                                    "Only use the data in a circle around the center with certain radius. "
-                                    "Default: not used. Set to 1 for circle that touches the sides. "
-                                    "Less to cut off more.")
+        # imageArgs.add_argument("-vignette", "--vignette", type=float, default=-1,
+        #                        help="Do not use corner of the image. "
+        #                             "Only use the data in a circle around the center with certain radius. "
+        #                             "Default: not used. Set to 1 for circle that touches the sides. "
+        #                             "Less to cut off more.")
 
         # Calibration related arguments
         calibArgs = parser.add_argument_group('calibration control')
@@ -245,22 +244,10 @@ class ParseArguments(object):
         # Reduction related args
         reduceArgs = parser.add_argument_group('reduction control')
 
-        reduceArgs.add_argument("-f", "--force-reduction", dest='force_reduction', action='store_true', default=False,
-                               help="Set True to force the creation of master calibration images, even if present. "
-                                    "Default is False.")
-
-        # reduceArgs.add_argument("-b", "--bias", type=bool, default=False,
-        #                         help="If set only bias frames are reduced and a master_bias.fits is created. "
-        #                              "Defaults to False.")
-        # reduceArgs.add_argument("-d", "--dark", type=bool, default=False,
-        #                         help="If set only dark frames are reduced and a master_dark_exptime.fits "
-        #                              "for each exposure time is created. "
-        #                              "Defaults to False.")
-        # reduceArgs.add_argument("-f", "--flat", type=bool, default=False,
-        #                         help="If set only flat frames are reduced and a master_flat_filter.fits for each "
-        #                              "filter are created. "
-        #                              "Defaults to False.")
-
+        reduceArgs.add_argument("-f", "--force-reduction", dest='force_reduction', action='store_true',
+                                default=False,
+                                help="Set True to force the creation of master calibration images, even if present. "
+                                     "Default is False.")
 
         self._parser = parser
 
