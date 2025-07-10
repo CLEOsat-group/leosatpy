@@ -162,3 +162,8 @@ cython_debug/
 !/leosatpy/utils/reduction.py
 !/scripts/
 !/.gitignore
+!/scripts/analyse_glint_helper_func.py
+
+!/scripts/analyse_glint_standalone.py
+
+!/qodana.yaml

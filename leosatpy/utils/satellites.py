@@ -37,14 +37,13 @@ from datetime import datetime
 from dateutil import parser
 from geopy import distance
 from lmfit import Model
-from lmfit.models import (ConstantModel, GaussianModel, Gaussian2dModel,
+from lmfit.models import (ConstantModel, GaussianModel,
                           ExponentialGaussianModel, LognormalModel)
 
 from pyorbital import astronomy
 
 from scipy import ndimage as nd
 from scipy.sparse import csr_matrix
-from scipy.special import erf
 from scipy.integrate import quad
 from scipy.optimize import brentq
 from scipy.stats import norm
@@ -90,7 +89,7 @@ else:
     matplotlib.rc('ps', fonttype=42)
 
 # pipeline-specific modules
-from . import base_conf as _base_conf
+from . import base_conf as bc
 
 # -----------------------------------------------------------------------------
 
@@ -147,7 +146,7 @@ def get_average_magnitude(flux, flux_err, std_fluxes, std_mags, mag_corr, mag_co
     diff_mag = -2.5 * np.log10(flux / std_fluxes[:, 0])
     diff_mag_err = 2.5 / np.log(10) * flux_ratio_err / flux_ratio
 
-    # observed satellite magnitude relative to std stars
+    # Observed satellite magnitude relative to std stars
     mag = diff_mag + std_mags[:, 0] + mag_corr[0] + mag_corr_sat
     mag = mag + mag_scale if mag_scale is not None else mag
     mag = mag + 2.5 * np.log10(area) if area is not None else mag
@@ -166,7 +165,7 @@ def get_average_magnitude(flux, flux_err, std_fluxes, std_mags, mag_corr, mag_co
     mag_avg_w = np.nanmean(mag_cleaned)
     mag_avg_err = np.nanmean(mag_err_cleaned)
 
-    _base_conf.clean_up(flux, flux_err, std_fluxes, std_mags, mag_corr)
+    bc.clean_up(flux, flux_err, std_fluxes, std_mags, mag_corr)
 
     return mag_avg_w, mag_avg_err
 
@@ -189,24 +188,24 @@ def get_magnitude_zpmag(flux, flux_err, zp_mag, mag_corr_sat=0., mag_scale=None,
 def sun_inc_elv_angle(obsDate: str | datetime, geo_loc: tuple):
     """Calculate solar azimuth, elevation, and incidence angle for a given location on Earth"""
 
-    # get satellite latitude and longitude
+    # Get satellite latitude and longitude
     (geo_lat, geo_lon) = geo_loc
 
     dtobj = obsDate
     if isinstance(obsDate, str):
-        # convert the time of observation
+        # Convert the time of observation
         d = parser.parse(obsDate)
         dtobj = datetime(d.year, d.month, d.day,
                          d.hour, d.minute, d.second)
 
-    # get sun elevation and azimuth angle from
+    # Get sun elevation and azimuth angle from
     sun_el, sun_az = astronomy.get_alt_az(dtobj, geo_lon, geo_lat)
     sunEL = sun_el * 180. / math.pi  # from radians to degrees
 
     # solar incidence angle theta
     theta = 90. + sunEL
 
-    # return results
+    # Return results
     return theta
 
 
@@ -230,8 +229,8 @@ def get_radius_earth(B):
     """Get the radius of Earth for a given observation site latitude"""
     B = math.radians(B)  # converting into radians
 
-    a = _base_conf.REARTH_EQU  # Radius at sea level at the equator
-    b = _base_conf.REARTH_POL  # Radius at poles
+    a = bc.REARTH_EQU  # Radius at sea level at the equator
+    b = bc.REARTH_POL  # Radius at poles
 
     c = (a ** 2 * math.cos(B)) ** 2
     d = (b ** 2 * math.sin(B)) ** 2
@@ -243,6 +242,19 @@ def get_radius_earth(B):
 
 
 def ang_distance(lat1, lat2, lon1, lon2):
+    """
+
+    Parameters
+    ----------
+    lat1
+    lat2
+    lon1
+    lon2
+
+    Returns
+    -------
+
+    """
     # Haversine formula
     if lon2 > lon1:
         delta_lambda = math.radians(lon2 - lon1)
@@ -264,24 +276,24 @@ def ang_distance(lat1, lat2, lon1, lon2):
 def get_solar_phase_angle(sat_az, sat_alt, geo_loc, obs_range, obsDate):
     """Get the solar phase angle via the Sun-Sat angle"""
 
-    au = _base_conf.AU_TO_KM
+    au = bc.AU_TO_KM
     sun = ephem.Sun()
     sun.compute(obsDate)
 
     a = sun.earth_distance * au
     b = obs_range
 
-    # get satellite latitude and longitude
+    # Get satellite latitude and longitude
     (geo_lat, geo_lon) = geo_loc
 
     dtobj = obsDate
     if isinstance(obsDate, str):
-        # convert the time of observation
+        # Convert the time of observation
         d = parser.parse(obsDate)
         dtobj = datetime(d.year, d.month, d.day,
                          d.hour, d.minute, d.second)
 
-    # get sun elevation and azimuth angle from
+    # Get sun elevation and azimuth angle from
     sun_el, sun_az = astronomy.get_alt_az(dtobj, geo_lon, geo_lat)
 
     sun_az = np.rad2deg(sun_az)
@@ -302,15 +314,28 @@ def get_solar_phase_angle(sat_az, sat_alt, geo_loc, obs_range, obsDate):
 
 
 def get_observer_angle(sat_lat, geo_lat, sat_h_orb_km, h_obs_km, sat_range_km):
-    """"""
+    """
+
+    Parameters
+    ----------
+    sat_lat
+    geo_lat
+    sat_h_orb_km
+    h_obs_km
+    sat_range_km
+
+    Returns
+    -------
+
+    """
     # Initialize logging for this user-callable function
     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
 
-    # get the radius of Earth for a given observation site latitude
+    # Get the radius of Earth for a given observation site latitude
     Rearth_obs = get_radius_earth(geo_lat)
     Rearth_h_obs = Rearth_obs + h_obs_km
 
-    # get the radius of Earth for a given satellite latitude
+    # Get the radius of Earth for a given satellite latitude
     Rearth_sat = get_radius_earth(sat_lat)
     Rearth_h_sat = Rearth_sat + sat_h_orb_km
 
@@ -331,7 +356,7 @@ def get_obs_range(sat_elev, h_orb, h_obs_km, lat):
     # Initialize logging for this user-callable function
     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
 
-    # get the radius of Earth for a given observation site latitude
+    # Get the radius of Earth for a given observation site latitude
     Rearth_obs = get_radius_earth(lat)
     Rearth = Rearth_obs + h_obs_km
 
@@ -367,6 +392,18 @@ def poly_func(x, a0, a1, a2):
 
 
 def compute_indices(c, ws, length):
+    """
+
+    Parameters
+    ----------
+    c
+    ws
+    length
+
+    Returns
+    -------
+
+    """
     # default setting: % operations to accommodate odd/even window sizes
     low, high = c - (ws // 2), c + (ws // 2) + ws % 2
 
@@ -380,11 +417,23 @@ def compute_indices(c, ws, length):
 
 
 def extract_peak_window(arr, coords, window_size=(3, 3)):
-    # extract array shapes and window sizes into single variables
+    """
+
+    Parameters
+    ----------
+    arr
+    coords
+    window_size
+
+    Returns
+    -------
+
+    """
+    # Extract array shapes and window sizes into single variables
     len_r, len_c = arr.shape
     wsr, wsc = window_size
 
-    # extract coords and correct for 0-indexing
+    # Extract coords and correct for 0-indexing
     r, c = coords
     r0, c0 = r, c
 
@@ -401,8 +450,7 @@ def calculate_trail_parameter(fit_result):
                Xu, Zezhong; Shin, Bok-Suk; Klette, Reinhard
     Bibcode: 2015PatRe..48.4012X
     """
-
-    # get parameter
+    # Get parameter
     a0 = fit_result.params['a0'].value
     a1 = fit_result.params['a1'].value
     a2 = fit_result.params['a2'].value
@@ -447,13 +495,13 @@ def fit_trail_params(Hij, rhos, thetas, theta_0, image_size, cent_ind, win_size,
 
     fit_results = {}
 
-    # extract sub-window from input
+    # Extract sub-window from input
     h_peak_win, row_ind, col_ind = extract_peak_window(Hij,
                                                        (cent_ind[0], cent_ind[1]),
                                                        (win_size[0], win_size[1]))
     fit_results['Hij_sub'] = h_peak_win
 
-    # set-up axis values, x=rho, y=theta
+    # Set-up axis values, x=rho, y=theta
     rho_j = rhos[row_ind[0]:row_ind[1]]
     theta_i = thetas[col_ind[0]:col_ind[1]]
     theta_i_rad = np.deg2rad(theta_i)
@@ -462,7 +510,7 @@ def fit_trail_params(Hij, rhos, thetas, theta_0, image_size, cent_ind, win_size,
     fit_results['Hij_rho'] = rho_j
     fit_results['Hij_theta'] = theta_i
 
-    # calculate mean and variance for each column in the peak region
+    # Calculate mean and variance for each column in the peak region
     mu = np.dot(h_peak_win.T, rho_j) / np.sum(h_peak_win, axis=0)
     var = np.empty(h_peak_win.shape[1])
     for col in range(h_peak_win.shape[1]):
@@ -470,7 +518,7 @@ def fit_trail_params(Hij, rhos, thetas, theta_0, image_size, cent_ind, win_size,
         var[col] = (np.dot(h_peak_win.T, diff[:, None]) /
                     np.sum(h_peak_win[:, col])).flatten()[col]
 
-    # fit quadratic model
+    # Fit quadratic model
     pmodel = Model(poly_func, independent_vars='x')
     params = pmodel.make_params(a0=1., a1=1., a2=1.)
 
@@ -489,7 +537,7 @@ def fit_trail_params(Hij, rhos, thetas, theta_0, image_size, cent_ind, win_size,
     fit_results['quad_x'] = theta_i_rad
     fit_results['quad_y'] = var
 
-    # get result parameter
+    # Get result parameter
     (L, err_L, T, err_T,
      theta_p_rad, e_theta_p_rad,
      theta_p_deg, e_theta_p_deg, e) = calculate_trail_parameter(quad_fit_result)
@@ -497,7 +545,7 @@ def fit_trail_params(Hij, rhos, thetas, theta_0, image_size, cent_ind, win_size,
     #       theta_p_rad, e_theta_p_rad,
     #       theta_p_deg, e_theta_p_deg, e)
 
-    # set-up axis for fit; apply alternate transformation if 45deg < theta < 135deg
+    # Set-up axis for fit; apply alternate transformation if 45deg < theta < 135deg
     x = np.tan(theta_i_rad)
     y = mu / np.cos(theta_i_rad)
     y_label = r'$\mu / \cos(\theta)$'
@@ -511,7 +559,7 @@ def fit_trail_params(Hij, rhos, thetas, theta_0, image_size, cent_ind, win_size,
     xnew = np.linspace(start=x[0], stop=x[-1],
                        num=int(len(x) * 100), endpoint=True)
 
-    # fit linear model
+    # Fit linear model
     pmodel = Model(poly_func, independent_vars='x')
     params = pmodel.make_params(a0=1., a1=1., a2=0.)
 
@@ -529,7 +577,7 @@ def fit_trail_params(Hij, rhos, thetas, theta_0, image_size, cent_ind, win_size,
     fit_results['lin_y'] = y
     fit_results['lin_y_label'] = y_label
 
-    # transform to image coordinates
+    # Transform to image coordinates
     xc = lin_fit_result.params['a0'].value + image_size[1] / 2.
     yc = lin_fit_result.params['a1'].value + image_size[0] / 2.
     xc_err = lin_fit_result.params['a0'].stderr
@@ -552,35 +600,30 @@ def fit_trail_params(Hij, rhos, thetas, theta_0, image_size, cent_ind, win_size,
 # noinspection PyAugmentAssignment
 def create_hough_space_vectorized(image: np.ndarray,
                                   dtheta: float = 0.05,
-                                  drho: float = 1,
-                                  silent: bool = False):
+                                  drho: float = 1):
     """ Create Hough transform parameter space H(theta, rho).
 
     Vectorized implementation.
 
     Parameters
     ----------
-        image:
-            Input image
-        drho:
-            Number of rho values.
-            Defaults to None.
-        dtheta:
-            Number of angle values.
-            Defaults to 720=0.5deg
-        silent:
-            If True, minimal output.
-            Defaults to False.
+    image:
+        Input image
+    drho:
+        Number of rho values.
+        Defaults to None.
+    dtheta:
+        Number of angle values.
+        Defaults to 720=0.5deg
     """
-
     # Initialize logging for this user-callable function
     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
 
-    # image properties
+    # Image properties
     edge_height, edge_width = image.shape[:2]
     edge_height_half, edge_width_half = edge_height // 2, edge_width // 2
 
-    # get step-size for rho and theta
+    # Get step-size for rho and theta
     d = np.sqrt(np.square(edge_height) + np.square(edge_width))
 
     N_rho = math.ceil(2 * d / drho)
@@ -593,23 +636,23 @@ def create_hough_space_vectorized(image: np.ndarray,
     thetas, binwidth_theta = np.linspace(-90, 90, N_theta,
                                          retstep=True, dtype='float32')
 
-    # get cosine and sinus
+    # Get cosine and sinus
     cos_thetas = np.cos(np.deg2rad(thetas)).astype('float32')
     sin_thetas = np.sin(np.deg2rad(thetas)).astype('float32')
 
-    # extract edge points
+    # Extract edge points
     edge_sparse = csr_matrix(image.astype(np.int8))
     edge_points = np.vstack(edge_sparse.nonzero()).T
     edge_points -= np.array([[edge_height_half, edge_width_half]])
 
-    # calculate matrix product
+    # Calculate matrix product
     rho_values = np.matmul(edge_points.astype(np.int16),
                            np.array([sin_thetas, cos_thetas],
                                     dtype='float32')).astype('float32')
 
     del image, cos_thetas, sin_thetas, edge_points
 
-    # get the hough space using fast histogram
+    # Get the hough space using fast histogram
     bins = [len(thetas), len(rhos)]
     vals = [np.tile(thetas, rho_values.shape[0]), rho_values.ravel()]
     ranges = [[np.min(thetas), np.max(thetas)], [np.min(rhos), np.max(rhos)]]
@@ -619,12 +662,24 @@ def create_hough_space_vectorized(image: np.ndarray,
     # rhos in rows and thetas in columns (rho, theta)
     accumulator = np.transpose(accumulator)
 
-    _base_conf.clean_up(rho_values, ranges, bins)
+    bc.clean_up(rho_values, ranges, bins)
 
     return accumulator, rhos, thetas, drho, dtheta
 
 
 def quantize(df, colname='orientation', tolerance=0.005):
+    """
+
+    Parameters
+    ----------
+    df
+    colname
+    tolerance
+
+    Returns
+    -------
+
+    """
     model = AgglomerativeClustering(distance_threshold=tolerance,
                                     linkage='complete',
                                     n_clusters=None).fit(df[[colname]].values)
@@ -641,16 +696,31 @@ def quantize(df, colname='orientation', tolerance=0.005):
 
 
 def get_min_trail_length(config: dict):
-    """"""
+    """
+
+    Parameters
+    ----------
+    config
+
+    Returns
+    -------
+
+    """
     sat_id = config['sat_id']
     pixscale = config['pixscale']
 
-    # get nominal orbit altitude
-    sat_h_orb_ref = _base_conf.SAT_HORB_REF['ONEWEB']
-    if 'STARLINK' in sat_id:
-        sat_h_orb_ref = _base_conf.SAT_HORB_REF['STARLINK']
-    if 'BLUEWALKER' in sat_id:
-        sat_h_orb_ref = _base_conf.SAT_HORB_REF['BLUEWALKER']
+    if isinstance(pixscale, str):
+        pixscale = float(pixscale)
+
+    # Get nominal orbit altitude
+    sat_h_orb_ref = bc.get_nominal_orbit_altitude(sat_id)
+
+    # # Get nominal orbit altitude
+    # sat_h_orb_ref = bc.SAT_HORB_REF['ONEWEB']
+    # if 'STARLINK' in sat_id:
+    #     sat_h_orb_ref = bc.SAT_HORB_REF['STARLINK']
+    # if 'BLUEWALKER' in sat_id:
+    #     sat_h_orb_ref = bc.SAT_HORB_REF['BLUEWALKER']
 
     H_sat = sat_h_orb_ref * 1000.
     R = const.R_earth.value + H_sat
@@ -661,9 +731,9 @@ def get_min_trail_length(config: dict):
 
 def detect_sat_trails(image: np.ndarray,
                       config: dict,
-                      alpha: float = 10.,
+                      image_orig: np.ndarray,
+                      amount: float = 10.,
                       sigma_blurr: float = 4.,
-                      borderLen: int = 1,
                       mask: np.ndarray = None,
                       silent: bool = False):
     """ Find satellite trails in image and extract region properties.
@@ -677,7 +747,6 @@ def detect_sat_trails(image: np.ndarray,
     Pattern Recognition 48, 4012–4023, doi:10.1016/j.patcog.2015.06.008
 
     """
-
     # Initialize logging for this user-callable function
     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
 
@@ -692,16 +761,17 @@ def detect_sat_trails(image: np.ndarray,
                   ]
 
     trail_data = {'reg_info_lst': []}
+    orig_data = {'image': image_orig}
 
-    # get minimum expected trail length for satellite
+    # Get minimum expected trail length for satellite
     min_trail_length = get_min_trail_length(config)
 
-    # mask saturated pixel
+    # Mask saturated pixel
     saturation_limit = config['sat_lim']
     saturation_mask = (image >= 0.90 * saturation_limit)
     image[saturation_mask] = 0.
 
-    # combine masks
+    # Combine masks
     if mask is not None:
         mask |= saturation_mask
     else:
@@ -710,8 +780,6 @@ def detect_sat_trails(image: np.ndarray,
         log.info("    Create segmentation map from image")
 
     if mask is not None:
-        # m = np.where(mask, 0, 1)
-        # sharpened *= m
 
         sigcl_mean, sigcl_median, sigcl_std = sigma_clipped_stats(image,
                                                                   sigma=3.0,
@@ -719,25 +787,24 @@ def detect_sat_trails(image: np.ndarray,
                                                                   maxiters=10)
         image = np.where(mask, sigcl_mean, image)
 
-    # apply un-sharpen mask
+    # Apply un-sharpen mask
     blurred_f = nd.gaussian_filter(image, 3.)
     filter_blurred_f = nd.gaussian_filter(blurred_f, sigma_blurr)
-    sharpened = blurred_f + alpha * (blurred_f - filter_blurred_f)
+    sharpened = blurred_f + amount * (blurred_f - filter_blurred_f)
 
-    # apply gaussian to get rid of unwanted edges
+    # Apply gaussian to get rid of unwanted edges
     sharpened = nd.gaussian_filter(sharpened, 3.)
 
     # zero out the borders with width given by borderLen
-    if borderLen > 0:
-        len_x, len_y = sharpened.shape
-        sharpened[0:borderLen, 0:len_y] = 0.
-        sharpened[len_x - borderLen:len_x, 0:len_y] = 0.
-        sharpened[0:len_x, 0:borderLen] = 0.
-        sharpened[0:len_x, len_y - borderLen:len_y] = 0.
+    len_y, len_x = sharpened.shape
+    borderWidth_x = int(np.ceil(len_x * 0.015625))
+    borderWidth_y = int(np.ceil(len_y * 0.015625))
+    sharpened[0:borderWidth_y, 0:len_x] = 0.
+    sharpened[len_y - borderWidth_y:len_y, 0:len_x] = 0.
+    sharpened[0:len_y, 0:borderWidth_x] = 0.
+    sharpened[0:len_y, len_x - borderWidth_x:len_x] = 0.
 
     if mask is not None:
-        # m = np.where(mask, 0, 1)
-        # sharpened *= m
 
         sigcl_mean, sigcl_median, sigcl_std = sigma_clipped_stats(sharpened,
                                                                   sigma=3.0,
@@ -745,17 +812,17 @@ def detect_sat_trails(image: np.ndarray,
                                                                   maxiters=10)
         sharpened = np.where(mask, sigcl_mean, sharpened)
 
-    del blurred_f, filter_blurred_f  # zero out the borders with width given by borderLen
+    del blurred_f, filter_blurred_f
 
     # determine the detection threshold
     threshold = detect_threshold(sharpened, background=None, nsigma=1.5, mask=mask)
 
-    # get sources and create a segmentation map
+    # Get sources and create a segmentation map
     sources = detect_sources(sharpened, threshold=threshold,
                              npixels=9, connectivity=8, mask=mask)
     segm = SegmentationImage(sources.data)
 
-    # only for CTIO BW3 2022-11-10
+    # Only for CTIO BW3 2022-11-10
     if config['use_sat_mask']:
         raper = RectangularAperture([[959.63, 1027.3], [903.93, 1073.75]],
                                     w=2755, h=10,
@@ -768,50 +835,61 @@ def detect_sat_trails(image: np.ndarray,
 
         segm = SegmentationImage(m0.astype(int))
 
-    # make a copy
+    # Make a copy
     segm_init = segm.copy()
 
-    # first filter roundish objects
+    # First filter roundish objects
     cat = SourceCatalog(sharpened, segm)
+    orig_data['segm'] = segm_init
+    orig_data['cat'] = SourceCatalog(image, segm)
 
-    # mask almost horizontal segments close to x-axis
-    border_mask_ang_x = np.abs(cat.orientation.data) > 5.
-    border_mask_x1 = cat.centroid[:, 0] > 50.
-    border_mask_x2 = cat.centroid[:, 0] < sharpened.shape[1] - 50.
+    regs = regionprops_table(segm.data, properties=properties)
+    df_orig = pd.DataFrame(regs)
+    df_orig['orientation_deg'] = df_orig['orientation'] * 180. / np.pi
+    orig_data['df'] = df_orig
+    del regs, df_orig
+
+    # Mask almost horizontal segments close to x-axis
+    lim_ang = 2.
+    border_mask_ang_x = np.abs(cat.orientation.data) > lim_ang
+    border_mask_x1 = cat.centroid[:, 0] > sharpened.shape[1] * 0.05
+    border_mask_x2 = cat.centroid[:, 0] < sharpened.shape[1] - sharpened.shape[1] * 0.05
     border_mask_x = border_mask_ang_x & border_mask_x1 & border_mask_x2
-    # mask almost vertical segments close to y-axis
-    border_mask_ang_y = 90. - np.abs(cat.orientation.data) > 5.
-    border_mask_y1 = cat.centroid[:, 1] > 50.
-    border_mask_y2 = cat.centroid[:, 1] < sharpened.shape[0] - 50.
+
+    # Mask almost vertical segments close to y-axis
+    border_mask_ang_y = 90. - np.abs(cat.orientation.data) > lim_ang
+    border_mask_y1 = cat.centroid[:, 1] > sharpened.shape[1] * 0.05
+    border_mask_y2 = cat.centroid[:, 1] < sharpened.shape[0] - sharpened.shape[0] * 0.05
     border_mask_y = border_mask_ang_y & border_mask_y1 & border_mask_y2
 
-    # combine the border masks
+    # Combine the border masks
     border_mask_combined = border_mask_x | border_mask_y
 
     # eccentricity mask
     e_lim = np.percentile(cat.eccentricity, 99.9)
+    orig_data['e_lim'] = e_lim
     if not silent:
         log.info(f"    Initial filter. Keep segments with ecc >= {e_lim:.4f}")
     ecc_mask = cat.eccentricity.data >= e_lim
 
     combined_mask = ecc_mask & border_mask_combined
 
-    # create labels
+    # Create labels
     labels = cat.labels[combined_mask]
 
-    _base_conf.clean_up(cat, ecc_mask, combined_mask)
+    bc.clean_up(cat, ecc_mask, combined_mask)
 
-    # first check if there are any labels
+    # First check if there are any labels
     if labels.size == 0:
         if not silent:
             log.info("  ==> NO satellite trail(s) detected.")
-        _base_conf.clean_up(sharpened, labels, segm, segm_init)
+        bc.clean_up(sharpened, labels, segm, segm_init)
         return None, False
 
     # keep only the good label
     segm.keep_labels(labels=labels, relabel=False)
 
-    # create an initial regions dataframe
+    # Create an initial regions dataframe
     regs = regionprops_table(segm.data, properties=properties)
     df_init = pd.DataFrame(regs)
     df_init['orientation_deg'] = df_init['orientation'] * 180. / np.pi
@@ -821,7 +899,7 @@ def detect_sat_trails(image: np.ndarray,
         if df_init['eccentricity'].values[0] < 0.999:
             if not silent:
                 log.info("  ==> NO satellite trail(s) detected.")
-            _base_conf.clean_up(sharpened, segm, segm_init, labels, df_init)
+            bc.clean_up(sharpened, segm, segm_init, labels, df_init)
             return None, False
         else:
             df_search = df_init.copy()
@@ -836,7 +914,7 @@ def detect_sat_trails(image: np.ndarray,
         if df_quantize.empty:
             if not silent:
                 log.info("  ==> NO satellite trails detected.")
-            _base_conf.clean_up(sharpened, segm, segm_init,
+            bc.clean_up(sharpened, segm, segm_init,
                                 labels, df_init, df_quantize, grouped)
             return None, False
         else:
@@ -849,22 +927,28 @@ def detect_sat_trails(image: np.ndarray,
             ind = idx_sorted[0]
             df_search = grouped.get_group(ind)
 
-            _base_conf.clean_up(df_quantize, s, res, ind, grouped)
+            bc.clean_up(df_quantize, s, res, ind, grouped)
 
-    reg_dict, n_trail_total = get_trail_properties(segm, df_search, config, silent=silent)
+    reg_dict, n_trail_total = get_trail_properties(segm, df_search, config, orig_data, silent=silent)
 
-    # check results of fit for non-finite results
+    if reg_dict is None:
+        if not silent:
+            log.info("  ==> NO satellite trail(s) detected.")
+        bc.clean_up(sharpened, segm, segm_init, labels, df_init, df_search, orig_data)
+        return None, False
+
+    # Check results of fit for non-finite results
     check_props = np.array([reg_dict['width'], reg_dict['e_width'],
                             reg_dict['height'], reg_dict['e_height']])
 
     if not np.isfinite(check_props).all():
         if not silent:
-            log.warning(f"    => Trail parameter fit {_base_conf.fail_str} ")
+            log.warning(f"    => Trail parameter fit {bc.fail_str} ")
         has_trail = False
         n_trail_total -= 1
     else:
         if not silent:
-            log.info(f"    => Trail parameter fit was {_base_conf.pass_str}")
+            log.info(f"    => Trail parameter fit was {bc.pass_str}")
         has_trail = True
 
     if config['roi_offset'] is not None:
@@ -886,7 +970,7 @@ def detect_sat_trails(image: np.ndarray,
         log.info(f"  ==> Total number of satellite trail(s) detected: {n_trail_total}")
 
     # del image, sharpened, segm, segm_init, df, labels
-    _base_conf.clean_up(sharpened, segm, segm_init, df_init, labels)
+    bc.clean_up(sharpened, segm, segm_init, df_init, labels)
 
     return trail_data, has_trail
 
@@ -895,83 +979,96 @@ def get_distance(loc1, loc2):
     """Distance between observer and satellite on the surface of earth"""
     return distance.distance(loc1, loc2, ellipsoid='WGS-84').km
 
+def get_labels_along_trail(segm_data, angle, dist, img_shape):
+    """"""
 
-def get_trail_properties(segm_map, df, config,
+    height, width = img_shape
+    height_half, width_half = height // 2, width // 2
+
+    # Calculate the image diagonal
+    image_diagonal = np.sqrt(height ** 2 + width ** 2)
+
+    a = np.cos(np.deg2rad(angle))
+    b = np.sin(np.deg2rad(angle))
+    x0 = (a * dist) + width_half
+    y0 = (b * dist) + height_half
+
+    x1 = int(x0 + image_diagonal * b)
+    y1 = int(y0 - image_diagonal * a)
+    x2 = int(x0 - image_diagonal * b)
+    y2 = int(y0 + image_diagonal * a)
+
+    rr, cc = line(y1, x1, y2, x2)
+
+    # Clip the line to the image dimensions
+    rr, cc = rr.clip(0, height - 1), cc.clip(0, width - 1)
+
+    # Find the unique labels that make up the particular trail
+    label_list = np.unique(segm_data[rr, cc])
+    label_list = np.setdiff1d(label_list, np.array([0]), assume_unique=True)
+
+    del segm_data, rr, cc
+
+    return label_list
+
+def get_trail_properties(segm_map, df, config, orig_data,
                          silent: bool = False):
     """
     Perform Hough transform and determine trail parameter, i.e. length, width, and
     orientation
 
     """
-
     theta_bin_size = config['THETA_BIN_SIZE']
     rho_bin_size = config['RHO_BIN_SIZE']
 
-    # create a binary image
+    # Create a binary image
     binary_img = np.zeros(segm_map.shape)
     for row in df.itertuples(name='label'):
         binary_img[segm_map.data == row.label] = 1
 
-    # apply dilation
+    # Apply dilation
     struct1 = nd.generate_binary_structure(2, 1)
     dilated = nd.binary_dilation(binary_img, structure=struct1, iterations=1)
 
     del binary_img
 
     if not silent:
-        log.info(f"    Create Hough space accumulator array")
-    # create hough space and get peaks
+        log.info(f"    Create Hough space accumulator array (This may take a second!)")
+    # Create hough space and get peaks
     hspace_smooth, peaks, dist, theta = get_hough_transform(dilated,
                                                             theta_bin_size=theta_bin_size,
-                                                            rho_bin_size=rho_bin_size,
-                                                            silent=silent)
+                                                            rho_bin_size=rho_bin_size)
 
     n_trail = 0
     if len(peaks) > 1:
-        df_tmp = df.copy()
 
-        edge_height, edge_width = dilated.shape[:2]
-        edge_height_half, edge_width_half = edge_height // 2, edge_width // 2
+        # Delete old result
         del hspace_smooth
 
-        # Calculate the image diagonal
-        image_diagonal = np.sqrt(edge_height ** 2 + edge_width ** 2)
+        # Make a copy of the original
+        df_tmp = df.copy()
 
         sel_dict = {}
         for i in range(len(peaks)):
             angle = peaks[i][1]
             dist = peaks[i][2]
 
-            a = np.cos(np.deg2rad(angle))
-            b = np.sin(np.deg2rad(angle))
-            x0 = (a * dist) + edge_width_half
-            y0 = (b * dist) + edge_height_half
+            # Find segments along the trail
+            label_list = get_labels_along_trail(segm_map.data, angle, dist, dilated.shape[:2])
 
-            x1 = int(x0 + image_diagonal * b)
-            y1 = int(y0 - image_diagonal * a)
-            x2 = int(x0 - image_diagonal * b)
-            y2 = int(y0 + image_diagonal * a)
-
-            rr, cc = line(y1, x1, y2, x2)
-
-            # Clip the line to the image dimensions
-            rr, cc = rr.clip(0, edge_height - 1), cc.clip(0, edge_width - 1)
-
-            # find the unique labels that make up the particular trail
-            label_list = np.unique(segm_map.data[rr, cc])
             index_list = []
             if not df_tmp.empty:
+                # Select only the segment labels that belong to this peak
                 [index_list.append(row.Index) for row in df_tmp.itertuples(name='label') if row.label in label_list]
                 df_tmp.drop(index_list, inplace=True)
             else:
                 break
             sel_dict[i] = index_list
             n_trail += 1
-            del rr, cc
 
-        # select only the label that belong to the first peak
+        # Select only the label that belong to the first peak
         # this can be extended later to let the user choose which to pick
-        # set 0 for first entry
+        # Set 0 for first entry
         sel_idx = config['PARALLEL_TRAIL_SELECT']
         _df = df.loc[sel_dict[sel_idx]]
         binary_img = np.zeros(segm_map.shape)
@@ -979,28 +1076,31 @@ def get_trail_properties(segm_map, df, config,
             binary_img[segm_map.data == row.label] = 1
         del _df
 
-        # apply dilation
+        # Apply dilation
         struct1 = nd.generate_binary_structure(2, 1)
         dilated = nd.binary_dilation(binary_img, structure=struct1, iterations=1)
 
-        # create hough space and get peaks
+        # Create hough space and get peaks
         hspace_smooth, peaks, dist, theta = get_hough_transform(dilated,
                                                                 theta_bin_size=theta_bin_size,
-                                                                rho_bin_size=rho_bin_size,
-                                                                silent=silent)
+                                                                rho_bin_size=rho_bin_size)
         del binary_img
     else:
+        if check_for_bad_column(peaks[0], orig_data, config):
+            bc.clean_up(segm_map, dilated, df, hspace_smooth,
+                        dist, theta)
+            return None, 0
         n_trail = 1
 
     indices = np.where(hspace_smooth == peaks[0][0])
     row_ind, col_ind = indices[0][0], indices[1][0]
     center_idx = (row_ind, col_ind)
 
-    # set sub-window size
+    # Set sub-window size
     theta_sub_win_size = math.ceil(config['THETA_SUB_WIN_SIZE'] / theta_bin_size)
     rho_sub_win_size = math.ceil(4. * np.sqrt(2.)
                                  * config['RHO_SUB_WIN_RES_FWHM']
-                                 * config['fwhm'] / rho_bin_size)
+                                 * float(config['fwhm']) / rho_bin_size)
     sub_win_size = (rho_sub_win_size, theta_sub_win_size)
 
     theta_init = np.deg2rad(theta[col_ind])
@@ -1011,7 +1111,7 @@ def get_trail_properties(segm_map, df, config,
                                config['TRAIL_PARAMS_FITTING_METHOD'])
 
     segm_map.relabel_consecutive(start_label=1)
-    reg_dict = {'coords': fit_res[0],  # 'coords':  reg.centroid[::-1],
+    reg_dict = {'coords': fit_res[0],  # 'coords': reg.centroid[::-1],
                 'coords_err': fit_res[1],
                 'width': fit_res[2], 'e_width': fit_res[3],
                 'height': fit_res[4], 'e_height': fit_res[5],
@@ -1028,30 +1128,71 @@ def get_trail_properties(segm_map, df, config,
                     'trail_mask': dilated
                 }}
 
-    _base_conf.clean_up(segm_map, fit_res, dilated, df, hspace_smooth,
+    bc.clean_up(segm_map, fit_res, dilated, df, hspace_smooth,
                         indices, row_ind, col_ind, dist, theta)
     return reg_dict, n_trail
 
+def check_for_bad_column(peak, data, config):
+    """
+
+    Parameters
+    ----------
+    peak
+    data
+    config
+
+    Returns
+    -------
+
+    """
+    is_bad_column = False
+
+    # Check if the trail is the result of a saturated star
+    angle = peak[1]
+    dist = peak[2]
+
+    angel_lim = 0.5
+    angle_test = abs(angle) < angel_lim
+
+    # Get segment labels along the trail from the original data
+    label_list = get_labels_along_trail(data['segm'].data, angle, dist, data['segm'].shape[:2])
+
+    # For each entry in the label_list get the corresponding row in the original data and check for saturation,
+    # orientation, and eccentricity
+    for label in label_list:
+        label_idx = data['segm'].get_index(label)
+        segm_df = data['df'][data['df']['label'] == label]
+        segment_cutout = data['segm'].segments[label_idx].make_cutout(data['image'])
+
+        saturation_limit = config['sat_lim']
+        saturation_mask = (segment_cutout >= 0.95 * saturation_limit)
+
+        saturation_test = saturation_mask.sum() > 3
+        ecc_test = segm_df['eccentricity'].values[0] < data['e_lim']
+
+        if angle_test and saturation_test and ecc_test:
+            is_bad_column = True
+            break
+
+    return is_bad_column
 
 def get_hough_transform(image: np.ndarray, sigma: float = 2.,
                         theta_bin_size=0.02,
-                        rho_bin_size=1,
-                        silent: bool = False):
+                        rho_bin_size=1):
     """ Perform a Hough transform on the selected region and fit parameter """
 
-    # generate Hough space H(theta, rho)
+    # Generate Hough space H(theta, rho)
     res = create_hough_space_vectorized(image=image,
                                         dtheta=theta_bin_size,
-                                        drho=rho_bin_size,
-                                        silent=silent)
+                                        drho=rho_bin_size)
     hspace, dist, theta, _, _ = res
 
-    # apply gaussian filter to smooth the image
+    # Apply gaussian filter to smooth the image
     hspace_smooth = nd.gaussian_filter(hspace, sigma)
 
     del image, res, hspace, _
 
-    # find peaks in H-space and determine length, width, orientation, and
+    # Find peaks in H-space and determine length, width, orientation, and
     # centroid coordinates of each satellite trail
     peaks = list(zip(*hough_line_peaks(hspace_smooth, theta, dist)))
 
@@ -1082,7 +1223,6 @@ def perpendicular_line_profile(center, L, theta, perp_length, num_samples=10, us
     point of the main line, with one line passing through the center if the number
     of samples is odd, or evenly spaced on either side if the number is even.
     """
-
     # Convert theta to radians
     theta_rad = np.radians(theta)
 
@@ -1150,7 +1290,6 @@ def get_pixel_values(img_array, line_profiles, length):
     :return: A list of 1D arrays, each containing the pixel values along the
              corresponding line profile.
     """
-
     profiles_pixel_values = []
     for start, end in line_profiles:
         # Calculate the coordinates of the line using skimage's line function
@@ -1187,7 +1326,6 @@ def fit_single_model(x, y, fwhm, yerr=None, model_type='gaussian'):
 
     :return: The result of the fit (lmfit.model.ModelResult).
     """
-
     sky_mod = ConstantModel(prefix='const_', independent_vars=['x'], nan_policy='omit')
     sky_mod.set_param_hint(name='c', value=0.)
     pars = sky_mod.make_params()
@@ -1244,6 +1382,18 @@ def fit_single_model(x, y, fwhm, yerr=None, model_type='gaussian'):
 
 
 def adjust_center_init(x, center_init, shift_percentage=10.):
+    """
+
+    Parameters
+    ----------
+    x
+    center_init
+    shift_percentage
+
+    Returns
+    -------
+
+    """
     x_min, x_max = np.min(x), np.max(x)
     x_range = x_max - x_min
     max_shift = x_range * shift_percentage
@@ -1257,7 +1407,21 @@ def adjust_center_init(x, center_init, shift_percentage=10.):
 def fit_line_profile_two_comps(x, y, fwhm, model_type='gaussian',
                                yerr=None,
                                shift_percentage=10.):
+    """
 
+    Parameters
+    ----------
+    x
+    y
+    fwhm
+    model_type
+    yerr
+    shift_percentage
+
+    Returns
+    -------
+
+    """
     sky_mod = ConstantModel(prefix='const_', independent_vars=['x'], nan_policy='omit')
     sky_mod.set_param_hint(name='c', value=0.)
     pars = sky_mod.make_params()
@@ -1322,11 +1486,35 @@ def fit_line_profile_two_comps(x, y, fwhm, model_type='gaussian',
 
 
 def composite_gaussian(x, params):
+    """
+
+    Parameters
+    ----------
+    x
+    params
+
+    Returns
+    -------
+
+    """
     return sum(p['A'] * np.exp(-0.5 * ((x - p['mu']) / p['sigma'])**2) for p in params.values())
 
 
 def find_gaussian_bounds(params, sigma, xtol=1e-5, rtol=1e-5, maxiter=500):
+    """
 
+    Parameters
+    ----------
+    params
+    sigma
+    xtol
+    rtol
+    maxiter
+
+    Returns
+    -------
+
+    """
     total_area, _ = quad(composite_gaussian, -np.inf, np.inf, args=(params,))
 
     lower_percentile = norm.cdf(-sigma)
@@ -1361,7 +1549,7 @@ def find_gaussian_bounds(params, sigma, xtol=1e-5, rtol=1e-5, maxiter=500):
 # clahe = cv2.createCLAHE(clipLimit=0, tileGridSize=(3, 3))
 # clahe_image = clahe.apply(uint8_image)
 #
-# # get segments
+# # Get segments
 # threshold = detect_threshold(clahe_image, background=None,
 #                              nsigma=1., mask=mask)
 #

@@ -9,7 +9,7 @@ Citing LEOSatpy
           author = {{Adam}, C., },
           title = "{Estimating the impact to astronomy from the Oneweb satellite constellation using multicolour observations}",
           journal = {Nature Astronomy},
-          year = {2023},
+          year = {2025},
           note = {In preparation}
         }
 

@@ -16,6 +16,7 @@
 """ Modules """
 import gc
 import os
+import sys
 import logging
 import warnings
 from dateutil.parser import parse
@@ -26,6 +27,8 @@ from colorlog import ColoredFormatter
 from astropy import wcs
 from astropy.io import fits
 from astropy.utils.exceptions import (AstropyUserWarning, AstropyWarning)
+
+from threading import Lock
 
 # from .telescope_conf import *
 from .version import __version__
@@ -64,9 +67,13 @@ def load_warnings():
     np.errstate(invalid='ignore')
 
 
+# Lock for thread-safe printing
+print_lock = Lock()
+
 ROOT_DIR = os.path.realpath(os.path.join(os.path.dirname(__file__), '../..'))
 
 
+# Color definitions for console output
 class BCOLORS:
     HEADER = '\033[95m'
     OKBLUE = '\033[94m'
@@ -80,19 +87,16 @@ class BCOLORS:
     UNDERLINE = '\033[4m'
 
 
+# Color strings for console output
 pass_str = BCOLORS.PASS + "SUCCESSFUL" + BCOLORS.ENDC
 fail_str = BCOLORS.FAIL + "FAILED" + BCOLORS.ENDC
 
-# potential FITS header keywords for looking up the instrument
-# any unique header keyword works as a potential identifier
-INSTRUMENT_KEYS = ['PPINSTRU', 'LCAMMOD', 'INSTRUME',
+# List of potential FITS header keywords that can be used to identify the instrument
+# Any unique header keyword serves as an identifier
+INSTRUMENT_KEYS = ['PPINSTRU', 'LCAMMOD', 'INSTRUME', 'INSTRUM',
                    'TELESCOP', 'FLI', 'FPA', 'CAM_NAME']
 
-# default timeout for selection
-DEF_TIMEOUT = 3  # in seconds
 
-# time delta in days for folder search in reduction of calibration files
-TIMEDELTA_DAYS = 7  # +-days
 FRMT_FS = "%Y-%m-%dT%H:%M:%S.%f"
 FRMT = "%Y-%m-%dT%H:%M:%S"
 
@@ -108,12 +112,17 @@ def has_fractional_seconds(time_string):
         return FRMT
 
 
+# Clean up function to delete variables and free memory
 def clean_up(*args):
-    for arg in args:
-        del arg
+    """Delete variables and free memory."""
+
+    for _ in args:
+        del _
+
     gc.collect()
 
 
+# Default number of decimal places used in rounding
 ROUND_DECIMAL = 5
 
 IMAGETYP_LIGHT = 'science'
@@ -121,16 +130,13 @@ IMAGETYP_BIAS = 'bias'
 IMAGETYP_DARK = 'dark'
 IMAGETYP_FLAT = 'flat'
 
-BINNING_DKEYS = ('BINX', 'BINY')
-
 IMAGETYP_REDUCE_ORDER = np.array(['bias', 'darks', 'flats'])
 IMAGETYP_COMBOS = {'bias': "zero|bias|bias frame",
                    'darks': "dark|dark frame",
                    'flats': "flat|flat frame|dflat|sflat",
-                   'light': "science|light|object|light frame"}
+                   'light': "science|light|object|sky|light frame"}
 
-# Memory limit for ccdproc.combine in byte
-MEM_LIMIT_COMBINE = 6e9
+BINNING_DKEYS = ('BINX', 'BINY')
 
 # Default result table column names.
 DEF_RES_TBL_COL_NAMES = ['File', 'Object', 'Sat-Name', 'AltID', 'UniqueID',
@@ -159,31 +165,39 @@ DEF_RES_TBL_COL_NAMES = ['File', 'Object', 'Sat-Name', 'AltID', 'UniqueID',
                          'TrailCX', 'e_TrailCX', 'TrailCY', 'e_TrailCY',
                          'TrailCRA', 'e_TrailCRA', 'TrailCDEC', 'e_TrailCDEC',
                          'TrailANG', 'e_TrailANG', 'OptAperHeight',
-                         'CalRA', 'CalDEC', 'CentX', 'CentY', 'PixScale', 'DetRotAng', 'FWHM', 'e_FWHM',
-                         'bias_cor', 'dark_cor', 'flat_cor', 'WCS_cal', 'mag_conv', 'QlfAperRad']
+                         'CalRA', 'CalDEC', 'CentX', 'e_CentX', 'CentY', 'e_CentY', 'PixScale', 'DetRotAng', 'FWHM', 'e_FWHM',
+                         'bias_cor', 'dark_cor', 'flat_cor', 'WCS_cal', 'mag_conv', 'QlfAperRad', 'TrailDetMethod']
 
-# To be implemented
-DEF_RES_TBL_COL_UNITS = ['', '', '', '',
-                         '', '', '', '(J2000)', '', '(s)',
+# To be implemented. Default result table column units.
+DEF_RES_TBL_COL_UNITS = ['', '', '', '', '',
+                         '', '', '',
+                         '', 'hh:mm:ss.sss', 'deg:mm:ss.sss', '', '', 's',
                          '', '',
-                         '(hh:mm:ss.sss)', '(hh:mm:ss.sss)', '(hh:mm:ss.sss)',
-                         '',
+                         'hh:mm:ss.sss', 'hh:mm:ss.sss', 'hh:mm:ss.sss',
+                         '', '', '', '',
+                         'YYYY-MM-DD', 'hh:mm:ss.sss',
+                         'deg', 'deg', 'km',
+                         'deg', 'deg', 'hh:mm:ss.sss', 'deg',
+                         'hr', 'deg', 'deg', 'arcsec/s', 'arcsec/s',
+                         'km',
+                         's', 's',
+                         'arcsec', 'arcsec', 'arcsec', 'arcsec',
+                         'deg', 'deg', 'deg', 'deg',
+                         'mag', 'mag', 'mag', 'mag',
+                         'mag', 'mag',
                          '', '',
-                         '(deg)', '(deg)', '(km)',
-                         '(deg)', '(deg)', '(hr)', '(deg)',
-                         '(hr)', '(deg)', '(deg)', '(arcsec/px)',
-                         '(s)', '(s)',
-                         '(arcsec)', '(arcsec)', '(arcsec)', '(arcsec)',
-                         '(deg)', '(deg)', '(deg)', '(deg)',
-                         '(mag)', '(mag)', '(mag)', '(mag)',
-                         '(mag)', '(mag)', '(deg)',
-                         '', '(mag)', '(s)',
-                         '(deg)', '(deg)', '(px)', '(px)', '(arcsec/px)', '(deg)',
-                         '(px)', '(px)', '(px)', '(px)',
-                         '(deg)', '(arcsec)', '(deg)', '(arcsec)',
-                         '(deg)', '(px)',
-                         '', '', '', '']
+                         'mag', 'mag',
+                         'mag', 'mag',
+                         'mag', 'mag',
+                         'deg', 'deg',
+                         '', '', 'mag', 'mag', 'mag', 's',
+                         'px', 'px', 'px', 'px',
+                         'deg', 'arcsec', 'deg', 'arcsec',
+                         'deg', 'arcsec', 'px',
+                         'deg', 'deg', 'px', 'px', 'px', 'px', 'arcsec/px', 'deg', 'px', 'px',
+                         '', '', '', '', '', '', '']
 
+# Default visibility file table column names.
 DEF_VIS_TBL_COL_NAMES = ['ID', 'AltID', 'UniqueID', 'UT Date', 'UT time',
                          'SatLon', 'SatLat', 'SatAlt',
                          'SatAz', 'SatElev', 'SatRA', 'SatDEC',
@@ -193,38 +207,41 @@ DEF_VIS_TBL_COL_NAMES = ['ID', 'AltID', 'UniqueID', 'UT Date', 'UT time',
 # Translations between table and fits header keywords
 DEF_KEY_TRANSLATIONS = {
     'Object': ['OBJECT', 'BLKNM'],
-    'Instrument': ['INSTRUME'],
+    'Instrument': ['INSTRUME', 'INSTRUM'],
     'Telescope': ['TELESCOP', 'OBSERVAT'],
     'HDU_idx': ['HDU_IDX'],
     'DetPosID': ['DETPOS'],
     'Filter': ['FILTER', 'BAND'],
     'ExpTime': ['EXPTIME'],
-    'RA': ['RA', 'OBSRA', 'OBJRA', 'OBJCTRA', 'STRRQRA'],
-    'DEC': ['DEC', 'OBSDEC', 'OBJDEC', 'OBJCTDEC', 'STRRQDE'],
+    'RA': ['RA', 'OBSRA', 'OBJRA', 'OBJCTRA', 'STRRQRA', 'OBJ-RA'],
+    'DEC': ['DEC', 'OBSDEC', 'OBJDEC', 'OBJCTDEC', 'STRRQDE', 'OBJ-DEC'],
     'CalRA': ['CRVAL1'],
     'CalDEC': ['CRVAL2'],
     'CentX': ['CRPIX1'],
+    'e_CentX': ['POSERRX'],
     'CentY': ['CRPIX2'],
+    'e_CentY': ['POSERRY'],
     'PixScale': ['PIXSCALE'],
     'DetRotAng': ['DETROTANG'],
     'FWHM': ['FWHM'],
     'e_FWHM': ['FWHMERR'],
     'Airmass': ['AIRMASS', 'STROBAM'],
-    'Date-Obs': ['DATE-OBS'],
+    'Date-Obs': ['DATE-OBS', 'DATE-BEG'],
     'Binning': ['BINNING'],
     'bias_cor': ['BIAS_COR'],
     'dark_cor': ['DARK_COR'],
     'flat_cor': ['FLAT_COR'],
-    'WCS_cal': ['AST_CAL', 'WCSCAL'],
+    'WCS_cal': ['AST_CAL', 'WCSCAL', 'WCS-STAT'],
     'HasTrail': ['HASTRAIL'],
     'NTrail': ['NTRAIL']
 }
 
-# list of available catalogs for photometry
+# List of available catalogs for photometry
 ALLCATALOGS = ['GAIADR1', 'GAIADR2', 'GAIADR3', 'GAIAEDR3',
                '2MASS', 'PS1DR1', 'PS1DR2',
                'GSC241', 'GSC242', 'GSC243']
 
+# Astroquery catalogs
 DEF_ASTROQUERY_CATALOGS = {
     # 'GAIADR3': 'gaiadr3.gaia_source',
     'GAIADR3': 'gaiadr3.gaia_source_lite',
@@ -319,7 +336,10 @@ CATALOG_FILTER_EXT = {
                "z": {'Prim': [['SDSSzMag', 'SDSSzMagErr']], 'Alt': None},
                "y": {'Prim': [['PS1yMag', 'PS1ymagErr']], 'Alt': None}},
     'PS1DR1': None,
-    'GSC243': {"U": {'Prim': [['Umag', 'UmagErr']], 'Alt': None},
+    'GSC243': {"U": {'Prim': [['Umag', 'UmagErr']],
+                     'Alt': [['SDSSuMag', 'SDSSuMagErr'],
+                             ['SDSSgMag', 'SDSSgMagErr'],
+                             ['SDSSrMag', 'SDSSrMagErr']]},
                "B": {'Prim': [['Bmag', 'BmagErr']],
                      'Alt': [['SDSSuMag', 'SDSSuMagErr'],
                              ['SDSSgMag', 'SDSSgMagErr'],
@@ -343,7 +363,10 @@ CATALOG_FILTER_EXT = {
                "w": {'Prim': [['SDSSgMag', 'SDSSgMagErr'],
                               ['SDSSrMag', 'SDSSrMagErr']], 'Alt': None},
                "z": {'Prim': [['SDSSzMag', 'SDSSzMagErr']], 'Alt': None}},
-    'GSC242': {"U": {'Prim': [['Umag', 'UmagErr']], 'Alt': None},
+    'GSC242': {"U": {'Prim': [['Umag', 'UmagErr']],
+                     'Alt': [['SDSSuMag', 'SDSSuMagErr'],
+                             ['SDSSgMag', 'SDSSgMagErr'],
+                             ['SDSSrMag', 'SDSSrMagErr']]},
                "B": {'Prim': [['Bmag', 'BmagErr']],
                      'Alt': [['SDSSuMag', 'SDSSuMagErr'],
                              ['SDSSgMag', 'SDSSgMagErr'],
@@ -379,8 +402,57 @@ CONV_SSDS_BVRI = {'Bmag': [[-0.8116, 0.1313, 0.0095],
                   'Imag': [[-1.2444, -0.3820, 0.0078],
                            [-0.3780, -0.3974, 0.0063]]}
 
-# source detection
-USE_N_SOURCES = 100  # number of sources to be used in fast mode
+# Dictionary of satellite properties
+SATELLITE_PROPERTIES = {
+    'ONEWEB': {
+        'identifiers': ['ONEWEB', 'OW'],
+        'format_number': lambda x: f"ONEWEB-{int(x):04d}",
+        'orbit_height': 1200.0
+    },
+    'STARLINK': {
+        'identifiers': ['STARLINK'],
+        'format_number': lambda x: f"STARLINK-{int(x):04d}" if len(x) == 4 else f"STARLINK-{int(x):05d}",
+        'orbit_height': 550.0
+    },
+    'BLUEWALKER': {
+        'identifiers': ['BLUEWALKER', 'BW'],
+        'format_number': lambda x: f"BLUEWALKER-{int(x)}",
+        'orbit_height': 500.0
+    },
+    'KUIPER': {
+        'identifiers': ['KUIPER'],
+        'format_number': lambda x: f"KUIPER-P{int(x)}",
+        'orbit_height': 630.0
+    },
+    'SPACEMOBILE': {
+        'identifiers': ['SPACEMOBILE'],
+        'format_number': lambda x: f"SPACEMOBILE-{int(x):03d}",
+        'orbit_height': 550.0
+    }
+}
+
+
+def get_nominal_orbit_altitude(sat_id: str) -> float:
+    """
+    Get the nominal orbit altitude for a given satellite ID.
+
+    Args:
+        sat_id (str): The satellite ID.
+
+    Returns:
+        float: The nominal orbit altitude in kilometers.
+    """
+    for key, props in SATELLITE_PROPERTIES.items():
+        if key in sat_id:
+            return props['orbit_height']
+    # Default to ONEWEB orbit height if no match is found
+    return SATELLITE_PROPERTIES['ONEWEB']['orbit_height']
+
+
+REARTH_EQU = 6378.137  # Radius at sea level at the equator in km
+REARTH_POL = 6356.752  # Radius at poles in km
+
+AU_TO_KM = 149597892.  # km/au
 
 # URL configuration for the photometry pipeline
 ASTROMETRIC_CAT_ENVVAR = "ASTROMETRIC_CATALOG_URL"
@@ -390,13 +462,6 @@ if ASTROMETRIC_CAT_ENVVAR in os.environ:
     SERVICELOCATION = os.environ[ASTROMETRIC_CAT_ENVVAR]
 else:
     SERVICELOCATION = DEF_CAT_URL
-
-SAT_HORB_REF = {'STARLINK': 550., 'ONEWEB': 1200., 'BLUEWALKER': 500.}
-
-REARTH_EQU = 6378.137  # Radius at sea level at the equator in km
-REARTH_POL = 6356.752  # Radius at poles in km
-
-AU_TO_KM = 149597892.  # km/au
 
 
 def check_version(log):
@@ -408,7 +473,7 @@ def check_version(log):
     try:
         version_string = str(request.urlopen(url_github_version).readlines()[0], 'utf-8').strip()
         version_github = version_string[version_string.rfind('=') + 1:].replace(' ', '').replace('\'', '')
-    except:
+    except (Exception, ValueError):
         version_github = ''
 
     if version_github and version.parse(__version__) < version.parse(version_github):
@@ -422,3 +487,50 @@ def check_version(log):
     else:
         all_good = BCOLORS.PASS + "ALL GOOD" + BCOLORS.OKGREEN
         log.info(f"  ==> {all_good}: You are using the latest official release of LEOSatpy." + BCOLORS.ENDC)
+
+
+def print_progress_bar(iteration, total, prefix='', length=50, fill='\u2588', color=None, use_lock=False):
+    """
+    Print a progress bar in the terminal with ANSI color formatting.
+
+    Parameters
+    ----------
+    iteration : int
+        Current iteration step.
+    total : int
+        Total number of iterations.
+    prefix : str, optional
+        Prefix to display before the progress bar.
+    length : int, optional
+        Length of the progress bar in characters.
+    fill : str, optional
+        Character used to fill the progress bar.
+    color : str, optional
+        ANSI color code to colorize the progress bar.
+    use_lock : bool, optional
+        Whether to use a lock for printing (useful in multithreaded contexts).
+    """
+
+    # Ensure the percentage reaches 100% at the final iteration
+    if iteration >= total:
+        percent = "100.0"
+        filled_length = length
+    else:
+        percent = "{0:.1f}".format(100 * (iteration / float(total)))
+        filled_length = int(length * iteration // total)
+
+    bar = fill * filled_length + '-' * (length - filled_length)
+
+    color_prefix = color if color else ''
+    reset_color = BCOLORS.ENDC if color else ''
+    output = (f'\r[{color_prefix}PROGRESS{reset_color}]'
+              f'{color_prefix}{prefix}{reset_color} |{bar}| '
+              f'{color_prefix}{percent}%{reset_color}')
+
+    if use_lock:
+        with print_lock:
+            sys.stdout.write(output)
+            sys.stdout.flush()
+    else:
+        sys.stdout.write(output)
+        sys.stdout.flush()

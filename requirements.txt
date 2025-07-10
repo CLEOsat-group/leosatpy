@@ -16,7 +16,6 @@ pandas
 photutils
 pyorbital
 PyQt5
-PySide2
 python-dateutil
 requests
 scikit-image

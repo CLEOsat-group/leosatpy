@@ -5,7 +5,7 @@ version = {}
 with open('leosatpy/utils/version.py') as fp:
     exec(fp.read(), version)
 
-with open("README.rst", "r") as fh:
+with open("README.md", "r") as fh:
     long_description = fh.read()
 
 # Install requires from requirements.txt
