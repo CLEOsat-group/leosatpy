@@ -23,7 +23,7 @@ Calibration
 
     $ (leosatpy_env) calibrateSatObs PATH/TO/DATA
 
-Detection
+Analysis
 ---------
 
 

@@ -44,6 +44,15 @@
 
 .. |ca123| replace:: 1.23-metre telescope
 
+.. _fut: https://phys.au.dk/en/news/item/artikel/fut-det-fjernstyrede-undervisningsteleskop-er-klar-til-de-foerste-gymnasieklasser-1
+
+.. |fut| replace:: Fjernstyrede Undervisnings Teleskop
+
+.. _mt-kent: https://science.desi.qld.gov.au/research/capability-directory/mount-kent-observatory
+
+.. |mt-kent| replace:: Mt. Kent Observatory
+
+
 ========
 LEOSatpy
 ========
@@ -77,7 +86,6 @@ Contents
    configfile
    contributing
    citing
-   todo
    acknowledgements
    GitHub <https://github.com/CLEOsat-group/leosatpy>
 
@@ -115,6 +123,7 @@ LEOSatpy currently supports the following telescopes:
 * 0.5-metre |ouka|_ at the Oukaïmeden Observatory, Morocco.
 * 0.6-metre telescope of the |cbnuo|_ in Jincheon, South Korea.
 * |ca123|_ at the Calar Alto Observatory, Spain.
+* **(Work in Progress)** 0.6-metre |fut|_ (FUT) from Aarhus University at the |mt-kent|_ Observatory, Australia.
 
 
 .. note::
