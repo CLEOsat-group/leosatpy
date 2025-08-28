@@ -456,7 +456,7 @@ AU_TO_KM = 149597892.  # km/au
 
 # URL configuration for the photometry pipeline
 ASTROMETRIC_CAT_ENVVAR = "ASTROMETRIC_CATALOG_URL"
-DEF_CAT_URL = 'http://gsss.stsci.edu/webservices'
+DEF_CAT_URL = 'https://gsss.stsci.edu/webservices'
 
 if ASTROMETRIC_CAT_ENVVAR in os.environ:
     SERVICELOCATION = os.environ[ASTROMETRIC_CAT_ENVVAR]
