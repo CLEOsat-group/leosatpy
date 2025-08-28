@@ -934,11 +934,15 @@ def convert_astrometric_table(table: Table, catalog_name: str) -> Table:
         log.debug(f'NOT converting catalog: {catalog_name}')
         return table
 
-    # translate the old column name into the new standardized name
+    # Translate the old column name into the new standardized name
     # for each column specified in this dict
     for new, old in cat_dict.items():
         if new != 'epoch':
-            # print(old)
+            # Check if the object id is lower or upper case
+            if new == 'objID' and ("source_id" in table.colnames or "SOURCE_ID" in table.colnames):
+                match_upper = [col for col in table.colnames if old.upper() == col]
+                if not match_upper:
+                    old = old.lower()
             rename_colname(table, old, new)
         elif old != '':
             # Add decimal year epoch column as new column for existing 'epoch'-like column
@@ -952,12 +956,11 @@ def convert_astrometric_table(table: Table, catalog_name: str) -> Table:
                 dfmt = None
 
             if dfmt:
-                # Insure 'epoch' is decimal year and add it as a new column
+                # Make sure 'epoch' is decimal year and add it as a new column
                 new_times = Time(table[old], format=dfmt).decimalyear
                 time_col = Column(data=new_times, name=new)
                 table.add_column(time_col)
             else:
-
                 table.rename_column(old, new)
         else:
             # Insure at least an empty column is provided for 'epoch'
@@ -1207,19 +1210,19 @@ def download_phot_ref_cat(ra, dec, sr=0.1, epoch=None,
         log.info(f"  {url_chk[1]}. Downloading data... This may take a while!!! Don't panic")
 
     serviceUrl = f'{bc.SERVICELOCATION}/{serviceType}?{spec}'
-    log.debug("Getting catalog using: \n    {}".format(serviceUrl))
+    log.info("Getting catalog using: \n    {}".format(serviceUrl))
     rawcat = requests.get(serviceUrl, headers=headers)
-
+    print(rawcat)
     # Convert from bytes to a String
     r_contents = rawcat.content.decode()
     rstr = r_contents.split('\r\n')
-
+    print(rstr)
     # Remove initial line describing the number of sources returned
     # CRITICAL to proper interpretation of CSV data
     if rstr[0].startswith('Error'):
         # Try again without EPOCH
         serviceUrl = f'{bc.SERVICELOCATION}/{serviceType}?{base_spec}'
-        log.debug(f"Getting catalog using: \n    {serviceUrl}")
+        log.info(f"Getting catalog using: \n    {serviceUrl}")
         rawcat = requests.get(serviceUrl, headers=headers)
         r_contents = rawcat.content.decode()  # Convert from bytes to a String
         rstr = r_contents.split('\r\n')
@@ -1230,9 +1233,9 @@ def download_phot_ref_cat(ra, dec, sr=0.1, epoch=None,
 
     del rstr[0], rawcat, r_contents
     gc.collect()
-
+    print(rstr)
     ref_table = Table.read(rstr, format='ascii.csv')
-
+    print(ref_table)
     if not ref_table:
         return ref_table
 
@@ -1252,7 +1255,7 @@ def download_phot_ref_cat(ra, dec, sr=0.1, epoch=None,
     if num_sources is not None:
         idx = -1 * num_sources
         ref_table = ref_table[:idx] if num_sources < 0 else ref_table[idx:]
-
+    print(ref_table, catalog)
     return ref_table.to_pandas(), catalog
 
 
