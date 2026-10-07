@@ -84,6 +84,7 @@ Contents
    example
    usage
    configfile
+   tablefile
    contributing
    citing
    acknowledgements
