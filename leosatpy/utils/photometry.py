@@ -86,11 +86,26 @@ MODULE_PATH = os.path.dirname(inspect.getfile(inspect.currentframe()))
 # -----------------------------------------------------------------------------
 
 def convert_sdss_to_BVRI_lupton(f, x1, x2, x3):
-    """
-    Convert to BVRI magnitudes using SDSS magnitudes.
+    """ Convert to BVRI magnitudes using SDSS magnitudes.
 
+    Reference:
     Lupton et al.(2005) BibCode: 2005AAS...20713308L
 
+    Parameters
+    ----------
+    f : str
+        Filter to convert to. Options: 'B', 'V', 'R', 'I'.
+    x1 : np.ndarray
+        SDSS magnitude array for the first filter.
+    x2 : np.ndarray
+        SDSS magnitude array for the second filter.
+    x3 : np.ndarray
+        SDSS magnitude array for the third filter.
+
+    Returns
+    -------
+    tuple
+        Converted magnitudes and their errors.
     """
     coeff_dict = bc.CONV_SSDS_BVRI
 
@@ -117,11 +132,24 @@ def convert_sdss_to_BVRI_lupton(f, x1, x2, x3):
     return _mags, e_mags
 
 def convert_sdss_to_U_jester(u, g, r):
-    """
-    Convert to U magnitude using SDSS magnitudes.
+    """ Convert to U magnitude using SDSS magnitudes.
 
-    Jester et al.(2005)
+    Reference:
+        Jester et al.(2005)
 
+    Parameters
+    ----------
+    u : np.ndarray
+        SDSS u magnitude array.
+    g : np.ndarray
+        SDSS g magnitude array.
+    r : np.ndarray
+        SDSS r magnitude array.
+
+    Returns
+    -------
+    tuple
+        Converted U magnitudes and their errors.
     """
     B = g[:, 0] + 0.33 * (g[:, 0] - r[:, 0]) + 0.20
     U = 0.77 * (u[:, 0] - g[:, 0]) - 0.88 + B
@@ -135,33 +163,55 @@ def convert_sdss_to_U_jester(u, g, r):
 def process_aper_photometry(r_aper, iteration, image, src_pos, mask, aper_mode, fwhm, exp_time,
                             r_in=1.9, r_out=2.2, width=500, theta=0., gain=1., rdnoise=0,
                             total=1, use_lock=False):
-    """
+    """ Run aperture photometry for a given aperture radius.
 
     Parameters
     ----------
-    r_aper
-    iteration
-    image
-    src_pos
-    mask
-    aper_mode
-    fwhm
-    exp_time
-    r_in
-    r_out
-    width
-    theta
-    gain
-    rdnoise
-    total
-    use_lock
+    r_aper : float
+        Aperture radius in units of FWHM.
+    iteration : int
+        Current iteration number for progress tracking.
+    image : np.ndarray
+        The input image data.
+    src_pos : np.ndarray
+        Array of source positions (x, y).
+    mask : np.ndarray
+        Mask for the image (True for masked pixels).
+    aper_mode : str
+        Aperture mode ('circ' for circular, 'rect' for rectangular).
+    fwhm : float
+        Full Width at Half Maximum of the point spread function.
+    exp_time : float
+        Exposure time of the image.
+    r_in : float, optional
+        Inner radius of the sky annulus in units of FWHM. Default is 1.9.
+    r_out : float, optional
+        Outer radius of the sky annulus in units of FWHM. Default is 2.2.
+    width : float, optional
+        Width of the rectangular aperture in pixels. Default is 500.
+    theta : float, optional
+        Angle of the rectangular aperture in degrees. Default is 0.
+    gain : float, optional
+        Gain of the detector. Default is 1.
+    rdnoise : float, optional
+        Read noise of the detector. Default is 0.
+    total : int, optional
+        Total number of iterations for progress tracking. Default is 1.
+    use_lock : bool, optional
+        Whether to use a lock for thread-safe progress bar updates. Default is False.
 
     Returns
     -------
-
+    aper_flux : np.ndarray
+        Aperture flux in physical units.
+    aper_bkg : np.ndarray
+        Aperture background flux in physical units.
+    snr : np.ndarray
+        Signal-to-Noise ratio.
+    snr_err : np.ndarray
+        Error in Signal-to-Noise ratio.
     """
     if aper_mode == 'circ':
-
         phot_res = get_aper_photometry(image, src_pos, mask=mask,
                                        aper_mode=aper_mode,
                                        r_aper=r_aper * fwhm,
@@ -180,8 +230,8 @@ def process_aper_photometry(r_aper, iteration, image, src_pos, mask, aper_mode, 
 
     aper_flux_counts, _, _, aper_bkg_counts, _, area = phot_res
 
-    aper_flux = aper_flux_counts / exp_time
-    aper_bkg = aper_bkg_counts / exp_time
+    aper_flux = aper_flux_counts / exp_time #* gain
+    aper_bkg = aper_bkg_counts / exp_time #* gain
 
     # Calculate the Signal-to-Noise ratio
     snr, snr_err = get_snr(flux_star=aper_flux, flux_bkg=aper_bkg,
@@ -203,28 +253,48 @@ def get_opt_aper_trail(image,
                        img_mask=None,
                        width: float = 500.,
                        theta: float = 0.,
-                       gain: float = 1,
-                       rdnoise: float = 0,
+                       gain: float = 1.,
+                       rdnoise: float = 0.,
                        silent: bool = False):
-    """
+    """ Get the optimum aperture height for trail photometry.
 
     Parameters
     ----------
-    image
-    src_pos
-    fwhm
-    exp_time
-    config
-    img_mask
-    width
-    theta
-    gain
-    rdnoise
-    silent
+    image : np.ndarray
+        The input image data.
+    src_pos : np.ndarray
+        Array of source positions (x, y).
+    fwhm : float
+        Full Width at Half Maximum of the point spread function.
+    exp_time : float
+        Exposure time of the image.
+    config : dict
+        Configuration dictionary with parameters for aperture photometry.
+    img_mask : np.ndarray, optional
+        Mask for the image (True for masked pixels). Default is None.
+    width : float, optional
+        Width of the rectangular aperture in pixels. Default is 500.
+    theta : float, optional
+        Angle of the rectangular aperture in degrees. Default is 0.
+    gain : float, optional
+        Gain of the detector. Default is 1.
+    rdnoise : float, optional
+        Read noise of the detector. Default is 0.
+    silent : bool, optional
+        If True, suppresses logging output. Default is False.
 
     Returns
     -------
-
+    output : np.ndarray
+        Array containing photometry results for different aperture heights.
+    rapers : np.ndarray
+        Array of aperture heights tested.
+    max_snr_aprad : float
+        Aperture height that gives the maximum SNR.
+    optimum_aprad : float
+        Optimum aperture height (1.25 times max SNR height).
+    qlf_aptrail : bool
+        Quality flag indicating if the optimum aperture height is acceptable.
     """
     # Initialize logging for this user-callable function
     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
@@ -288,37 +358,54 @@ def get_optimum_aper_rad(image: np.ndarray,
                          aper_rad: float = 1.7,
                          r_in: float = 1.9,
                          r_out: float = 2.2,
-                         gain: float = 1,
-                         rdnoise: float = 0,
+                         gain: float = 1.,
+                         rdnoise: float = 0.,
                          silent: bool = False):
-    """
+    """ Get the optimum aperture radius for photometry.
 
     Parameters
     ----------
-    image
-    std_cat
-    fwhm
-    exp_time
-    config
-    aper_rad
-    r_in
-    r_out
-    gain
-    rdnoise
-    silent
+    image : np.ndarray
+        The input image data.
+    std_cat : pd.DataFrame
+        A DataFrame containing standard star catalog with 'xcentroid' and 'ycentroid' columns.
+    fwhm : float
+        Full Width at Half Maximum of the point spread function.
+    exp_time : float
+        Exposure time of the image.
+    config : dict
+        Configuration dictionary with parameters for aperture photometry.
+    aper_rad : float, optional
+        Initial aperture radius in units of FWHM. Default is 1.7.
+    r_in : float, optional
+        Inner radius of the sky annulus in units of FWHM. Default is 1.9.
+    r_out : float, optional
+        Outer radius of the sky annulus in units of FWHM. Default is 2.2.
+    gain : float, optional
+        Gain of the detector. Default is 1.
+    rdnoise : float, optional
+        Read noise of the detector. Default is 0.
+    silent : bool, optional
+        If True, suppresses logging output. Default is False.
 
     Returns
     -------
-
+    output : np.ndarray
+        Array containing photometry results for different aperture radii.
+    rapers : np.ndarray
+        Array of aperture radii tested.
+    max_snr_aprad : float
+        Aperture radius that gives the maximum SNR.
+    optimum_aprad : float
+        Optimum aperture radius (1.25 times max SNR radius).
+    qlf_aprad : bool
+        Quality flag indicating if the optimum aperture radius is acceptable.
     """
     # Initialize logging for this user-callable function
     log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
 
     # Mask unwanted pixel
-    mask = (image < 0)
     img_mask = config['img_mask']
-    # if img_mask is not None:
-    #     mask |= img_mask
 
     dstep = config['APER_STEP_SIZE']
     start = config['APER_START']
@@ -384,28 +471,38 @@ def get_optimum_aper_rad(image: np.ndarray,
 
     del image, std_cat
     gc.collect()
-    # quit()
+
     return output, rapers, max_snr_aprad, optimum_aprad, qlf_aprad
 
 
-def get_snr(flux_star: np.array, flux_bkg: np.array,
+def get_snr(flux_star: np.ndarray, flux_bkg: np.ndarray,
             t_exp: float, area: float,
             gain: float = 1., rdnoise: float = 0., dc: float = 0.):
-    """
+    """ Calculate the Signal-to-Noise ratio.
 
     Parameters
     ----------
-    flux_star
-    flux_bkg
-    t_exp
-    area
-    gain
-    rdnoise
-    dc
+    flux_star : np.ndarray
+        Flux from the star in physical units (e.g., electrons/sec).
+    flux_bkg : np.ndarray
+        Flux from the background in physical units (e.g., electrons/sec).
+    t_exp : float
+        Exposure time in seconds.
+    area : float
+        Area of the aperture in pixels.
+    gain : float, optional
+        Gain of the detector. Default is 1.
+    rdnoise : float, optional
+        Read noise of the detector. Default is 0.
+    dc : float, optional
+        Dark current of the detector in electrons/sec. Default is 0.
 
     Returns
     -------
-
+    SNR_cleaned : np.array
+        Cleaned Signal-to-Noise ratio (non-negative values).
+    SNR_err : np.array
+        Error in Signal-to-Noise ratio in magnitudes.
     """
     counts_source = flux_star * t_exp
     sky_shot = flux_bkg * t_exp * area
@@ -427,7 +524,7 @@ def get_snr(flux_star: np.array, flux_bkg: np.array,
 
 def get_aper_photometry(image: np.ndarray,
                         src_pos: np.ndarray,
-                        mask: np.array = None,
+                        mask: np.ndarray = None,
                         aper_mode: str = 'circ',
                         r_aper: float = 1.7,
                         r_in: float = 1.9,
@@ -438,7 +535,47 @@ def get_aper_photometry(image: np.ndarray,
                         h_in: float = 4., h_out: float = 6.,
                         theta: float = 0.,
                         gain: float = 1.):
-    """Measure aperture photometry"""
+    """Measure aperture photometry.
+
+    Parameters
+    ----------
+    image : np.ndarray
+        The input image data.
+    src_pos : np.ndarray
+        Array of source positions (x, y).
+    mask : np.ndarray, optional
+        Mask for the image (True for masked pixels). Default is None.
+    aper_mode : str, optional
+        Aperture mode ('circ' for circular, 'rect' for rectangular). Default is 'circ'.
+    r_aper : float, optional
+        Aperture radius in fwhm for circular aperture. Default is 1.7.
+    r_in : float, optional
+        Inner radius of the sky annulus in fwhm for circular aperture. Default is 1.9.
+    r_out : float, optional
+        Outer radius of the sky annulus in fwhm for circular aperture. Default is 2.2.
+    width : float, optional
+        Width of the rectangular aperture in pixels. Default is 500.
+    height : float, optional
+        Height of the rectangular aperture in pixels. Default is 3.4.
+    w_in : float, optional
+        Inner width of the sky annulus in pixels for rectangular aperture. Default is 520.
+    w_out : float, optional
+        Outer width of the sky annulus in pixels for rectangular aperture. Default is 530.
+    h_in : float, optional
+        Inner height of the sky annulus in pixels for rectangular aperture. Default is 4.
+    h_out : float, optional
+        Outer height of the sky annulus in pixels for rectangular aperture. Default is 6.
+    theta : float, optional
+        Angle of the rectangular aperture in degrees. Default is 0.
+    gain : float, optional
+        Gain of the detector. Default is 1.
+
+    Returns
+    -------
+    tuple
+        Aperture flux, aperture flux error, photometry table,
+        background median, background std, aperture area.
+    """
 
     if aper_mode == 'circ':
         sum_method = 'exact'
@@ -520,7 +657,7 @@ def get_aper_photometry(image: np.ndarray,
     # print(phot_bkgsub, total_bkg)
 
     phot_table['aperture_sum_bkgsub'] = phot_bkgsub
-    phot_table.loc[phot_table['aperture_sum_bkgsub'] <= 0] = 0
+    # phot_table.loc[phot_table['aperture_sum_bkgsub'] <= 0] = 0
 
     # Compute the flux error using DAOPHOT style
     flux_variance = phot_table['aperture_sum_bkgsub'].values
@@ -539,21 +676,34 @@ def get_aper_photometry(image: np.ndarray,
 
 
 def get_std_photometry(image, std_cat, src_pos, fwhm, config):
-    """Perform aperture photometry on standard stars"""
+    """Perform aperture photometry on standard stars.
 
+    Parameters
+    ----------
+    image : np.ndarray
+        The input image data.
+    std_cat : pd.DataFrame
+        A DataFrame containing standard star catalog.
+    src_pos : np.ndarray
+        Array of source positions (x, y).
+    fwhm : float
+        Full Width at Half Maximum of the point spread function.
+    config : dict
+        Configuration dictionary with parameters for aperture photometry.
+
+    Returns
+    -------
+    pd.DataFrame
+        Aperture photometry results for standard stars.
+    """
     res_cat = std_cat.copy()
     aper_dict = dict(aper=config['APER_RAD_OPT'] * fwhm,
                      inf_aper=config['INF_APER_RAD_OPT'] * fwhm)
-    # print(aper_dict)
-    # Mask unwanted pixel
-    mask = (image < 0)
-    img_mask = config['img_mask']
-    if img_mask is not None:
-        mask |= img_mask
+
 
     for key, val in aper_dict.items():
         phot_res = get_aper_photometry(image, src_pos,
-                                       mask=img_mask,
+                                       mask=config['img_mask'],
                                        r_aper=val,
                                        r_in=val + config['RSKYIN_OPT'] * fwhm,
                                        r_out=val + config['RSKYOUT_OPT'] * fwhm
@@ -571,16 +721,33 @@ def get_std_photometry(image, std_cat, src_pos, fwhm, config):
 
 
 def get_sat_photometry(image, img_mask, src_pos, fwhm, width, theta, config):
-    """Perform aperture photometry on satellite"""
+    """Perform aperture photometry on satellite.
 
+    Parameters
+    ----------
+    image : np.ndarray
+        The input image data.
+    img_mask : np.ndarray
+        Mask for the image (True for masked pixels).
+    src_pos : np.ndarray
+        Array of source positions (x, y).
+    fwhm : float
+        Full Width at Half Maximum of the point spread function.
+    width : float
+        Width of the rectangular aperture in pixels.
+    theta : float
+        Angle of the rectangular aperture in degrees.
+    config : dict
+        Configuration dictionary with parameters for aperture photometry.
+
+    Returns
+    -------
+    pd.DataFrame
+        Aperture photometry results for satellite.
+    """
     res_cat = {}
     aper_dict = dict(aper=config['APER_RAD_RECT'],
                      inf_aper=config['INF_APER_RAD_RECT'])
-
-    # Mask unwanted pixel
-    mask = (image < 0)
-    if img_mask is not None:
-        mask |= img_mask
 
     w_in = width + config['RSKYIN_OPT_RECT'] * fwhm
     w_out = width + config['RSKYOUT_OPT_RECT'] * fwhm
@@ -612,33 +779,44 @@ def get_sat_photometry(image, img_mask, src_pos, fwhm, width, theta, config):
 
 def get_glint_photometry(image, valid_mask, src_pos, width, height, theta, config,
                          sum_method='exact'):
-    """
+    """ Perform aperture photometry on glint event in the trail.
 
     Parameters
     ----------
-    image
-    valid_mask
-    src_pos
-    width
-    height
-    theta
-    config
-    sum_method
+    image : np.ndarray
+        The input image data.
+    valid_mask : np.ndarray
+        Mask for invalid pixels (True for masked pixels).
+    src_pos : np.ndarray
+        Array of source positions (x, y).
+    width : float
+        Width of the rectangular aperture in pixels.
+    height : float
+        Height of the rectangular aperture in pixels.
+    theta : float
+        Angle of the rectangular aperture in degrees.
+    config : dict
+        Configuration dictionary with parameters for aperture photometry.
+    sum_method : str, optional
+        Method for summing pixel values ('exact' or 'center'). Default is 'exact'.
 
     Returns
     -------
-
+    dict
+        Aperture photometry results for glint event.
     """
-    gain = 1.
+    # todo: implement gain from config and update everything accordingly
+    #  remove negative masking.
+    gain = 1. # config['GAIN']
     res_cat = {}
-    negative_mask = (image < 0)
-    sat_lim_mask = (image > config['sat_lim'])
+    negative_mask = (image < 0)  #
+    sat_lim_mask = (image >= config['sat_lim'])
 
     # Mask only invalid and negative values
     negative_mask |= valid_mask
 
     # Mask negative and saturated pixel
-    sat_lim_mask |= negative_mask
+    # sat_lim_mask |= negative_mask
     sat_lim_mask |= valid_mask
 
     mask_dict = dict(with_sat_src=negative_mask, no_sat_src=sat_lim_mask)
@@ -709,7 +887,7 @@ def order_shift(x):
        order_of_mag (x) = 10^{MAX(FLOOR(Log_{10}(x)))}
 
     :param x: Array of values
-    :type x: float
+    :type x: array-like
     :return: Order of magnitude
     :rtype: float
 

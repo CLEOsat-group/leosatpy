@@ -138,6 +138,8 @@ IMAGETYP_COMBOS = {'bias': "zero|bias|bias frame",
 
 BINNING_DKEYS = ('BINX', 'BINY')
 
+SAT_LIM_FAC = 0.95  # Factor to calculate the saturation limit from the maximum ADU value
+
 # Default result table column names.
 DEF_RES_TBL_COL_NAMES = ['File', 'Object', 'Sat-Name', 'AltID', 'UniqueID',
                          'Instrument', 'HDU_idx', 'DetPosID',
@@ -166,7 +168,7 @@ DEF_RES_TBL_COL_NAMES = ['File', 'Object', 'Sat-Name', 'AltID', 'UniqueID',
                          'TrailCRA', 'e_TrailCRA', 'TrailCDEC', 'e_TrailCDEC',
                          'TrailANG', 'e_TrailANG', 'OptAperHeight',
                          'CalRA', 'CalDEC', 'CentX', 'e_CentX', 'CentY', 'e_CentY', 'PixScale', 'DetRotAng', 'FWHM', 'e_FWHM',
-                         'bias_cor', 'dark_cor', 'flat_cor', 'WCS_cal', 'mag_conv', 'QlfAperRad', 'TrailDetMethod']
+                         'bias_cor', 'dark_cor', 'flat_cor', 'gain_cor', 'WCS_cal', 'mag_conv', 'QlfAperRad', 'TrailDetMethod']
 
 # To be implemented. Default result table column units.
 DEF_RES_TBL_COL_UNITS = ['', '', '', '', '',
@@ -195,7 +197,7 @@ DEF_RES_TBL_COL_UNITS = ['', '', '', '', '',
                          'deg', 'arcsec', 'deg', 'arcsec',
                          'deg', 'arcsec', 'px',
                          'deg', 'deg', 'px', 'px', 'px', 'px', 'arcsec/px', 'deg', 'px', 'px',
-                         '', '', '', '', '', '', '']
+                         '', '', '', '', '', '', '', '']
 
 # Default visibility file table column names.
 DEF_VIS_TBL_COL_NAMES = ['ID', 'AltID', 'UniqueID', 'UT Date', 'UT time',
@@ -231,6 +233,7 @@ DEF_KEY_TRANSLATIONS = {
     'bias_cor': ['BIAS_COR'],
     'dark_cor': ['DARK_COR'],
     'flat_cor': ['FLAT_COR'],
+    'gain_cor': ['GAIN_COR'],
     'WCS_cal': ['AST_CAL', 'WCSCAL', 'WCS-STAT'],
     'HasTrail': ['HASTRAIL'],
     'NTrail': ['NTRAIL']
@@ -255,13 +258,10 @@ DEF_ASTROQUERY_CATALOGS = {
 # and will set to None in the output table.
 SUPPORTED_CATALOGS = {
     'GAIADR3': {'RA': 'ra',
-                # 'RA_error': 'ra_error',
                 'DEC': 'dec',
-                # 'DEC_error': 'dec_error',
                 'pmra': 'pmra', 'pmra_error': 'pmra_error',
                 'pmdec': 'pmdec', 'pmdec_error': 'pmdec_error',
                 'mag': 'phot_g_mean_mag', 'objID': 'SOURCE_ID',
-                # 'epoch': 'ref_epoch'
                 },
     'GAIAEDR3': {'RA': 'ra', 'RA_error': 'ra_error',
                  'DEC': 'dec', 'DEC_error': 'dec_error',
@@ -486,7 +486,7 @@ def check_version(log):
         log.info("  ==> You are using a newer version of LEOSatpy than the official release.")
     else:
         all_good = BCOLORS.PASS + "ALL GOOD" + BCOLORS.OKGREEN
-        log.info(f"  ==> {all_good}: You are using the latest official release of LEOSatpy." + BCOLORS.ENDC)
+        log.info(f"  ==> {all_good}: You are using the latest release of LEOSatpy." + BCOLORS.ENDC)
 
 
 def print_progress_bar(iteration, total, prefix='', length=50, fill='\u2588', color=None, use_lock=False):

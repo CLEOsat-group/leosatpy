@@ -164,8 +164,8 @@ class ObsTables(object):
 
         path = os.walk(search_path)
         all_files = []
-
         for root, dirs, files in path:
+            # print(f"Searching for TLE files in: {root}")
             matched_files = [s for s in files if re.search(regex, s)]
             for s in matched_files:
                 tle_filenames.append((root, s, Path(os.path.join(root, s))))
@@ -216,16 +216,19 @@ class ObsTables(object):
         return None  # Return None if no suitable file is found
 
     def find_satellite_in_tle(self, tle_loc, sat_name):
-        """
+        """ Extract satellite TLE from TLE file.
 
         Parameters
         ----------
-        tle_loc
-        sat_name
+        tle_loc : str
+            Location of the TLE file
+        sat_name : str
+            Name of the satellite to search for
 
         Returns
         -------
-
+        str
+            The matching TLE line or None if not found
         """
         matches = []
         with open(tle_loc, 'r') as file:
@@ -243,47 +246,9 @@ class ObsTables(object):
                              "Exiting for now!!!")
             return None
 
-    # def load_glint_mask_table(self):
-    #     """Load table with regions of glints that should be masked and excluded"""
-    #     glint_info = self._glint_mask_info
-    #
-    #     # Files info
-    #     fname = self.glint_mask_table_fname
-    #     if fname.exists():
-    #         if not self.silent:
-    #             self.log.info(f'> Read glint mask from: {self.def_glint_mask_name}')
-    #         glint_info = pd.read_csv(fname, header=0, delimiter=',')
-    #
-    #     self._glint_mask_info = glint_info
-    #
-    # def load_roi_table(self):
-    #     """Load the regions of interest info table"""
-    #     roi_info = self._roi_info
-    #
-    #     # Files info
-    #     fname = self.roi_table_fname
-    #     if fname.exists():
-    #         if not self.silent:
-    #             self.log.info(f'> Read Region-of-Interest from: {self.def_roi_name}')
-    #         roi_info = pd.read_csv(fname, header=0, delimiter=',')
-    #
-    #     self._roi_info = roi_info
-    #
-    # def load_ext_oi_table(self):
-    #     """Load the extensions of interest info table"""
-    #     ext_oi_info = self._ext_oi_info
-    #
-    #     # Files info
-    #     fname = self.ext_oi_table_fname
-    #     if fname.exists():
-    #         if not self.silent:
-    #             self.log.info(f'> Read Extensions-of-Interest from: {self.def_ext_oi_name}')
-    #         ext_oi_info = pd.read_csv(fname, header=0, delimiter=',')
-    #
-    #     self._ext_oi_info = ext_oi_info
 
     def _load_csv_table(self, data_attribute, file_path, table_name, silent=None):
-        """Helper method to load CSV tables with common logic
+        """Helper method to load CSV tables with common logic.
 
         Parameters
         ----------
@@ -372,44 +337,6 @@ class ObsTables(object):
         """Check if the row matches the defined units"""
         return any(cell in self.def_col_units or cell == '' for cell in unit_row)
 
-    # def get_roi(self, fname):
-    #     """Get the region of interest"""
-    #     roi_info = self._roi_info
-    #     if not roi_info.empty:
-    #         pos_df = roi_info.copy()
-    #
-    #         # Convert file name to uppercase
-    #         pos_df['File'] = roi_info['File'].str.upper()
-    #         fname_upper = fname.upper()
-    #         # Check position
-    #         pos_mask = pos_df['File'] == fname_upper
-    #         pos = np.flatnonzero(pos_mask)
-    #
-    #         if list(pos):
-    #             pos_df = roi_info[pos_mask]
-    #             self._roi_data = pos_df
-    #
-    # def get_ext_oi(self, fname):
-    #     """Get extension(s) of interest"""
-    #     ext_oi_info = self._ext_oi_info
-    #
-    #     if not ext_oi_info.empty:
-    #         pos_df = ext_oi_info.copy()
-    #
-    #         # Convert file name to uppercase
-    #         pos_df['File'] = ext_oi_info['File'].str.upper()
-    #         fname_upper = fname.upper()
-    #
-    #         # Check position
-    #         pos_mask = pos_df['File'] == fname_upper
-    #         pos = np.flatnonzero(pos_mask)
-    #
-    #         if list(pos):
-    #             pos_df = ext_oi_info[pos_mask]['HDUs'][pos[0]]
-    #             self._ext_oi_data = eval(pos_df)
-    #         else:
-    #             self._ext_oi_data = []
-
     def _get_table_data(self, source_attribute, target_attribute, fname, process_func=None):
         """Helper method for retrieving table data based on filename
 
@@ -426,7 +353,7 @@ class ObsTables(object):
 
         Returns
         -------
-        Any
+        pd.DataFrame
             The matched and processed data
         """
         source_data = getattr(self, source_attribute)
@@ -813,12 +740,12 @@ class ObsTables(object):
         fname = self.res_table_fname
         n_ext = obsparams['n_ext']
 
-        # exposure time
+        # Exposure time
         expt = kwargs['EXPTIME']
 
         # Update the columns in case the table was changed
         for col in self.def_cols:
-            if col not in obs_info:
+            if col not in obs_info.columns:
                 # insert column at the end
                 obs_info.insert(len(obs_info.columns), col, '')
 
@@ -895,8 +822,31 @@ class ObsTables(object):
 
         This function updates a specific row in the result table with the provided
         observation information and parameters.
-        """
 
+        Parameters
+        ----------
+        obs_info : pd.DataFrame
+            The observation information DataFrame.
+        idx : int
+            The index of the row to update.
+        kwargs : dict
+            Additional keyword arguments containing observation parameters.
+        def_cols : list
+            List of defined column names.
+        expt : float
+            Exposure time.
+        obj_key : str
+            Key for the object name in kwargs.
+        ra : str
+            Right Ascension value.
+        dec : str
+            Declination value.
+
+        Returns
+        -------
+        pd.DataFrame
+            The updated observation information DataFrame.
+        """
         for i in range(1, len(def_cols)):
             dcol_name = def_cols[i]
             for key, value in kwargs.items():
@@ -929,7 +879,32 @@ class ObsTables(object):
         return obs_info
 
     def add_row(self, obs_info, file, kwargs, def_cols, expt, obj_key, ra, dec):
-        """ Add new row to result table"""
+        """ Add new row to result table.
+
+        Parameters
+        ----------
+        obs_info : pd.DataFrame
+            The observation information DataFrame.
+        file : str
+            The filename associated with the observation.
+        kwargs : dict
+            Additional keyword arguments containing observation parameters.
+        def_cols : list
+            List of defined column names.
+        expt : float
+            Exposure time.
+        obj_key : str
+            Key for the object name in kwargs.
+        ra : str
+            Right Ascension value.
+        dec : str
+            Declination value.
+
+        Returns
+        -------
+        pd.DataFrame
+            The updated observation information DataFrame with the new row added.
+        """
         new_dict = {def_cols[0]: [file]}
         for i in range(len(def_cols)):
             dcol_name = def_cols[i]
@@ -973,69 +948,6 @@ class ObsTables(object):
 
         return obs_info
 
-    def read_vis_file(self, vis_file_list: list):
-        """Read the visibility file"""
-
-        col_names = bc.DEF_VIS_TBL_COL_NAMES
-        df_list = []
-        for i in range(len(vis_file_list)):
-            vis_loc = vis_file_list[i]
-            file = vis_loc[1]
-
-            # Create 3 empty lists to hold row data
-            data, data2, data3 = ([] for _ in range(3))
-
-            # Load the .csv into a list
-            with open(file, 'r') as f:
-                reader = csv.reader(f)
-                lines = list(reader)
-
-            # Check if the first line has multiple words
-            has_multiple_words = self.contains_multiple_words(lines[1][0])
-            two_lines = False if has_multiple_words else True
-
-            for line in lines[1:]:
-
-                # Split line using regex
-                row = re.split(pattern=r'\s\s|\s|\t', string=line[0])
-                l_row = len(row)
-
-                if two_lines:
-
-                    if l_row in [1, 2]:
-                        test_str = row[0] if l_row == 1 else '-'.join(row)
-                        sat_id, alt_id, unique_id = self.identify_satellite(test_str)
-                        data2.append([sat_id, alt_id, unique_id])
-                    if l_row == 13:
-                        data3.append(row)
-                else:
-                    test_str, rest = (row[0], row[1:]) if l_row == 14 else ('-'.join(row[:2]), row[2:])
-                    sat_id, alt_id, unique_id = self.identify_satellite(test_str)
-                    tmp = [sat_id, alt_id, unique_id]
-                    tmp += rest
-                    data.append(tmp)
-            if two_lines:
-                for j in range(len(data2)):
-                    tmp = data2[j]
-                    tmp += data3[j]
-                    data.append(tmp)
-
-            df = pd.DataFrame(data=data, columns=col_names)
-            df.replace(to_replace=[None], value=np.nan, inplace=True)
-            df.reset_index()
-            df_list.append(df)
-
-            del data, df
-            gc.collect()
-
-        df = pd.concat(df_list)
-        df.reset_index()
-
-        self._vis_info = df
-
-        del df, df_list
-        gc.collect()
-
     def save_table(self, fname, obs_info):
         """Method to save the result table to a csv file."""
         df_units = self.res_tbl_unit_df
@@ -1057,7 +969,10 @@ class ObsTables(object):
             t = pd.to_datetime(f"{kwargs['DATE-OBS']}T{kwargs['TIME-OBS']}",
                                format=frmt, utc=False)
         else:
-            t = pd.to_datetime(value, format=frmt, utc=False)
+            try:
+                t = pd.to_datetime(value, format=frmt, utc=False)
+            except Exception as e:
+                t = pd.to_datetime(value, format='ISO8601', utc=False)
 
         t_short = t.strftime('%Y-%m-%d')
         t_start = t.strftime('%H:%M:%S.%f')[:-3]
@@ -1066,25 +981,6 @@ class ObsTables(object):
 
         return t_short, t_start, t_mid, t_stop
 
-    @staticmethod
-    def contains_multiple_words(s):
-        return len(re.compile(r' ').split(s)) > 1
-
-    @staticmethod
-    def identify_satellite(test_str):
-
-        unique_id = re.findall(r'(ID-\d+)', test_str)
-        unique_id = unique_id[0] if unique_id else None
-
-        if unique_id is not None:
-            test_str = test_str.replace(f'-{unique_id}', '')
-        alt_id = re.findall(r'-\((\w+)\)', test_str)
-        alt_id = alt_id[0] if alt_id else None
-
-        if alt_id is not None:
-            test_str = test_str.replace(f'-({alt_id})', '')
-
-        return test_str, alt_id, unique_id
 
     @staticmethod
     def get_sat_type(sat_name):
