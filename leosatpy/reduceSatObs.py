@@ -524,12 +524,8 @@ class ReduceSatObs(object):
             self._effective_state = result.effective_state
             self._runtime_dark = result.runtime_dark
 
-            # TODO(calibration-phase-refactor): Phase-2 science reduction is intentionally
-            # DISABLED during the calibration-phase refactor. Phase 1 builds/validates the
-            # master calibrations and hands off effective_state + runtime_dark, but no reduced
-            # science frames are written yet. Re-enable by wiring in run_ccdproc once Phase 2 is
-            # ready (and verify end-to-end against real science data before relying on output).
-            # self.run_ccdproc(self._obsparams, filters, binxy)
+            # Run the CCD processing on the science images
+            self.run_ccdproc(self._obsparams, filters, binxy)
 
         # Clean temporary folder
         if not self.silent:
