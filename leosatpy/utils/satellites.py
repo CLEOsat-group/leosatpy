@@ -81,7 +81,10 @@ else:
     from matplotlib.collections import PolyCollection
 
     # matplotlib parameter
-    matplotlib.use('Qt5Agg')
+    try:
+        matplotlib.use('Qt5Agg')
+    except ImportError:
+        pass
     matplotlib.rc("lines", linewidth=1.2)
     matplotlib.rc('figure', dpi=150, facecolor='w', edgecolor='k')
     matplotlib.rc('text.latex', preamble=r'\usepackage{sfmath}')

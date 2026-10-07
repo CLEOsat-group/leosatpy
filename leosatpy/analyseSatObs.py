@@ -93,7 +93,10 @@ else:
     import matplotlib.ticker as ticker
 
     # matplotlib parameter
-    mpl.use('Qt5Agg')
+    try:
+        mpl.use('Qt5Agg')
+    except ImportError:
+        pass
     mpl.rc("lines", linewidth=1.2)
     mpl.rcParams['pdf.fonttype'] = 42
     mpl.rcParams['ps.fonttype'] = 42

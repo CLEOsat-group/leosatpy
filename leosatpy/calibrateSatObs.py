@@ -65,7 +65,10 @@ else:
     from mpl_toolkits.axes_grid1 import make_axes_locatable
 
     # matplotlib parameter
-    mpl.use('Qt5Agg')
+    try:
+        mpl.use('Qt5Agg')
+    except ImportError:
+        pass
     mpl.rc("lines", linewidth=1.2)
     mpl.rc('figure', dpi=150, facecolor='w', edgecolor='k')
     mpl.rc('text.latex', preamble=r'\usepackage{sfmath}')
