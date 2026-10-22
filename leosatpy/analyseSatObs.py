@@ -22,6 +22,8 @@
 # version 0.4.2 bug fixes in reversed search for sat trails
 # version 0.4.3 added observer satellite range to results
 # version 0.5.0 remake of standard stars selection and photometry
+# version 0.5.1 fixed flux uncertainties; satellite magnitude error from a weighted
+#               zero point with shared error terms added once (MAG_ERR_MODE)
 # -----------------------------------------------------------------------------
 
 """ Modules """
@@ -1254,7 +1256,8 @@ class AnalyseSatObs(object):
                                                  flux_err=p[2],
                                                  std_fluxes=std_fluxes,
                                                  mag_corr=mag_corr,
-                                                 std_mags=std_mags, mag_scale=p[3], area=p[4])
+                                                 std_mags=std_mags, mag_scale=p[3], area=p[4],
+                                                 mode=self._config.get('MAG_ERR_MODE', 'zp'))
 
             col_names.extend(p[0])
             data_list.extend(mag_avg)
@@ -1446,6 +1449,10 @@ class AnalyseSatObs(object):
             est_trail_count_err = est_trail_count * rel_error
 
             mag_corr_sat = sat_apphot[i]['mag_corr'].values[0]
+            mag_corr_sat_err = (sat_apphot[i]['mag_corr_err'].values[0]
+                                if 'mag_corr_err' in sat_apphot[i] else 0.)
+            mag_err_mode = self._config.get('MAG_ERR_MODE', 'zp')
+            mag_err_components = None
 
             obs_mag_avg_w = None
             obs_mag_avg_err = None
@@ -1468,8 +1475,11 @@ class AnalyseSatObs(object):
                                                          std_fluxes=_aper_sum,
                                                          mag_corr=mag_corr,
                                                          mag_corr_sat=mag_corr_sat,
-                                                         std_mags=_mags)
-                obs_mag_avg_w, obs_mag_avg_err = obs_mag_avg
+                                                         mag_corr_sat_err=mag_corr_sat_err,
+                                                         std_mags=_mags,
+                                                         mode=mag_err_mode,
+                                                         return_components=True)
+                obs_mag_avg_w, obs_mag_avg_err, mag_err_components = obs_mag_avg
 
                 # Estimated magnitude difference
                 est_mag_avg = sats.get_average_magnitude(flux=est_trail_count,
@@ -1477,7 +1487,9 @@ class AnalyseSatObs(object):
                                                          std_fluxes=_aper_sum,
                                                          mag_corr=mag_corr,
                                                          mag_corr_sat=mag_corr_sat,
-                                                         std_mags=_mags)
+                                                         mag_corr_sat_err=mag_corr_sat_err,
+                                                         std_mags=_mags,
+                                                         mode=mag_err_mode)
                 est_mag_avg_w, est_mag_avg_err = est_mag_avg
 
                 # Estimated magnitude difference scaled with mag scale
@@ -1487,7 +1499,9 @@ class AnalyseSatObs(object):
                                                                 std_mags=_mags,
                                                                 mag_corr=mag_corr,
                                                                 mag_corr_sat=mag_corr_sat,
-                                                                mag_scale=mag_scale)
+                                                                mag_corr_sat_err=mag_corr_sat_err,
+                                                                mag_scale=mag_scale,
+                                                                mode=mag_err_mode)
                 est_mag_avg_w_scaled, est_mag_avg_err_scaled = est_mag_avg_scaled
 
                 # If there is a magnitude zero point, also calculate the result
@@ -1498,16 +1512,19 @@ class AnalyseSatObs(object):
                     obs_mag_zp, obs_mag_zp_err = sats.get_magnitude_zpmag(obs_trail_count,
                                                                           obs_trail_count_err,
                                                                           mag_zp,
-                                                                          mag_corr_sat=mag_corr_sat)
+                                                                          mag_corr_sat=mag_corr_sat,
+                                                                          mag_corr_sat_err=mag_corr_sat_err)
 
                     est_mag_zp, est_mag_zp_err = sats.get_magnitude_zpmag(est_trail_count,
                                                                           est_trail_count_err,
-                                                                          mag_zp, mag_corr_sat=mag_corr_sat)
+                                                                          mag_zp, mag_corr_sat=mag_corr_sat,
+                                                                          mag_corr_sat_err=mag_corr_sat_err)
 
                     est_mag_zp_scaled, est_mag_zp_err_scaled = sats.get_magnitude_zpmag(est_trail_count,
                                                                                         est_trail_count_err,
                                                                                         mag_zp,
                                                                                         mag_corr_sat=mag_corr_sat,
+                                                                                        mag_corr_sat_err=mag_corr_sat_err,
                                                                                         mag_scale=mag_scale)
 
             if not self._silent:
@@ -1536,7 +1553,8 @@ class AnalyseSatObs(object):
                          'SunAzAng', 'SunElevAng',
                          'FluxScale', 'MagScale',
                          'MagCorrect', 'e_MagCorrect',
-                         'MagCorrectSat',
+                         'MagCorrectSat', 'e_MagCorrectSat',
+                         'MagZpStd', 'e_MagZpStd', 'NStdUsed', 'e_ObsMag_flux', 'MagErrMode',
                          'dt_tle-obs', 'mag_conv']
 
             # Make sure that the RA and DEC are consistent and rounded to the same decimal
@@ -1563,7 +1581,13 @@ class AnalyseSatObs(object):
                         est_mag_zp, est_mag_zp_err,
                         est_mag_zp_scaled, est_mag_zp_err_scaled,
                         sun_az, sun_alt, (est_trail_len / obs_trail_len), mag_scale,
-                        mag_corr[0], mag_corr[1], mag_corr_sat, 0,
+                        mag_corr[0], mag_corr[1], mag_corr_sat, mag_corr_sat_err,
+                        mag_err_components['zp'] if mag_err_components else None,
+                        mag_err_components['err_zp'] if mag_err_components else None,
+                        mag_err_components['n_std'] if mag_err_components else None,
+                        mag_err_components['err_flux'] if mag_err_components else None,
+                        mag_err_mode,
+                        0,
                         'T' if mag_conv else 'F']
 
             for k, v in zip(tbl_names, tbl_vals):
@@ -1844,6 +1868,16 @@ class AnalyseSatObs(object):
             flux_ratios = phot_df['flux_counts_inf_aper'] / phot_df['flux_counts_aper']
             mag_corr = -2.5 * np.log10(flux_ratios)
 
+            # Uncertainty of the aperture correction. The apertures are nested, so the flux in the
+            # outer ring is independent of the flux in the optimum aperture.
+            f_aper = np.asarray(phot_df['flux_counts_aper'], dtype=float)
+            f_aper_err = np.asarray(phot_df['flux_counts_err_aper'], dtype=float)
+            f_inf_err = np.asarray(phot_df['flux_counts_err_inf_aper'], dtype=float)
+            f_ring = np.asarray(phot_df['flux_counts_inf_aper'], dtype=float) - f_aper
+            f_ring_err = np.sqrt(np.clip(f_inf_err ** 2 - f_aper_err ** 2, 0., None))
+            ratio_err = np.sqrt((f_ring_err / f_aper) ** 2 + (f_ring * f_aper_err / f_aper ** 2) ** 2)
+            mag_corr_err = 2.5 / np.log(10) * ratio_err / np.asarray(flux_ratios, dtype=float)
+
             self._log.debug(f'  > Aperture correction for satellite trail: {mag_corr[0]:.4f} mag')
 
             # Set optimum aperture parameters
@@ -1869,6 +1903,7 @@ class AnalyseSatObs(object):
                                                                theta=ang)
             # Add the estimated magnitude correction to the photometry table
             sat_phot['mag_corr'] = mag_corr
+            sat_phot['mag_corr_err'] = mag_corr_err
 
             # Update the photometry dictionary
             sat_phot_dict[i] = sat_phot
