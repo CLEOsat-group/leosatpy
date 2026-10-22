@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "LEOSatpy"
+abstract: "LEOSatpy is a highly-automated end-to-end pipeline for the reduction, calibration, and analysis of Low Earth Orbit Satellite observations from various telescopes."
+authors:
+  - family-names: Adam
+    given-names: Christian
+    affiliation: "Centro de Investigación, Tecnología, Educación y Vinculación Astronómica (CITEVA)"
+    orcid: "https://orcid.org/0000-0002-9021-3928"
+version: v0.5.1-alpha
+date-released: 2026-10-22
+doi: 10.5281/zenodo.8012131
+license: GPL-3.0-only
+repository-code: "https://github.com/CLEOsat-group/leosatpy"
+url: "https://leosatpy.readthedocs.io"
+keywords:
+  - astronomy
+  - satellite constellations
+  - satellite trails
+  - photometry
+  - astrometry
