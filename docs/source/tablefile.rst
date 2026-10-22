@@ -414,6 +414,40 @@ Trail properties
 
    Estimated magnitude correction for satellite.
 
+.. py:function:: e_MagCorrectSat:
+
+   ``mag``
+
+   1σ uncertainty of MagCorrectSat.
+
+.. py:function:: MagZpStd:
+
+   ``mag``
+
+   Photometric zero point from the reference stars (sigma-clipped, inverse-variance weighted mean).
+   Empty if MagErrMode is ``legacy``.
+
+.. py:function:: e_MagZpStd:
+
+   ``mag``
+
+   1σ uncertainty of MagZpStd. The larger of the formal error of the weighted mean and the scatter of the reference stars divided by √N.
+
+.. py:function:: NStdUsed:
+
+   Number of reference stars used for MagZpStd after sigma-clipping.
+
+.. py:function:: e_ObsMag_flux:
+
+   ``mag``
+
+   Contribution of the trail flux uncertainty to e_ObsMag.
+
+.. py:function:: MagErrMode:
+
+   Method used for the magnitude uncertainties (``MAG_ERR_MODE`` in the config): ``zp`` (weighted zero point,
+   shared error terms added once) or ``legacy`` (mean of the per-star errors, as in versions up to 0.5.0).
+
 .. py:function:: dt_tle-obs:
 
    ``s``
