@@ -603,20 +603,6 @@ def get_aper_photometry(image: np.ndarray,
     # print(bkg_std)
     # print(bkg_median, bkg_std)
 
-    if np.any(image) < 0:
-        img_error = None
-    else:
-        from photutils.datasets import make_noise_image
-        image_masked = image * ~mask if mask is not None else image
-        img_mean = np.nanmean(image_masked)
-        if img_mean < 0:
-            img_error = None
-        else:
-
-            img_error = make_noise_image(image.shape,
-                                     distribution='poisson',
-                                     mean=img_mean)
-
     # error = None
     # aper_stats = ApertureStats(image, aperture, mask=mask,
     #                            sigma_clip=None, sum_method='exact')
@@ -638,7 +624,6 @@ def get_aper_photometry(image: np.ndarray,
     # Run the aperture photometry
     phot_table = aperture_photometry(image, aperture,
                                      mask=mask,
-                                     error=img_error,
                                      method=sum_method)
     del mask, aperture, annulus_aperture
 
@@ -660,10 +645,10 @@ def get_aper_photometry(image: np.ndarray,
     phot_table['aperture_sum_bkgsub'] = phot_bkgsub
     # phot_table.loc[phot_table['aperture_sum_bkgsub'] <= 0] = 0
 
-    # Compute the flux error using DAOPHOT style
-    flux_variance = phot_table['aperture_sum_bkgsub'].values
-    if img_error is not None:
-        flux_variance = phot_table['aperture_sum_err'].values ** 2
+    # Compute the flux error using DAOPHOT style: Poisson noise of the source counts
+    # plus the sky noise measured in the annulus (which already contains the read noise).
+    # Negative background-subtracted fluxes carry no source Poisson term.
+    flux_variance = np.clip(phot_table['aperture_sum_bkgsub'].values, 0., None)
 
     bkg_var = (aperture_area * bkg_std ** 2.) * (1. + aperture_area / annulus_area)
     flux_error = (flux_variance / gain + bkg_var) ** 0.5

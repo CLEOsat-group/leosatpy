@@ -158,9 +158,73 @@ norm_type = cv2.NORM_MINMAX
 # -----------------------------------------------------------------------------
 
 
+def get_photometric_zeropoint(std_fluxes, std_mags, sigma=3., maxiters=10):
+    """Estimate the photometric zero point from the comparison stars.
+
+    For each star, ZP_i = m_cat,i + 2.5 log10(F_i). The values are sigma-clipped and
+    combined with an inverse-variance weighted mean. The uncertainty is the larger of
+    the formal error of the weighted mean and the standard error of the clipped scatter,
+    so that unmodelled terms (colour terms, catalogue problems) are not ignored.
+
+    Parameters
+    ----------
+    std_fluxes: np.ndarray
+        Standard star fluxes and their uncertainties (in electrons), shape (N, 2)
+    std_mags: np.ndarray
+        Standard star catalogue magnitudes and their uncertainties, shape (N, 2)
+    sigma: float
+        Clipping threshold in units of the MAD standard deviation
+    maxiters: int
+        Maximum number of clipping iterations
+
+    Returns
+    -------
+    dict
+        Zero point `zp`, its uncertainty `zp_err`, the formal error `zp_err_formal`,
+        the scatter-based error `zp_err_scatter`, the scatter `zp_std`,
+        the number of stars used `n_std`, and the boolean mask of used stars `used`.
+    """
+    flux = np.asarray(std_fluxes[:, 0], dtype=float)
+    flux_err = np.asarray(std_fluxes[:, 1], dtype=float)
+    mag = np.asarray(std_mags[:, 0], dtype=float)
+    mag_err = np.asarray(std_mags[:, 1], dtype=float)
+
+    with np.errstate(divide='ignore', invalid='ignore'):
+        zp_i = mag + 2.5 * np.log10(flux)
+        zp_err_i = np.sqrt(mag_err ** 2 + (2.5 / np.log(10) * flux_err / flux) ** 2)
+
+    valid = np.isfinite(zp_i) & np.isfinite(zp_err_i) & (zp_err_i > 0.) & (flux > 0.)
+
+    used = np.zeros(len(zp_i), dtype=bool)
+    if valid.sum() > 1:
+        clip_mask = np.asarray(sigma_clip(zp_i[valid], sigma=sigma, maxiters=maxiters,
+                                          cenfunc=np.nanmedian, stdfunc=mad_std).mask)
+        used[np.where(valid)[0][~clip_mask]] = True
+    else:
+        used = valid.copy()
+
+    n_std = int(used.sum())
+    if n_std == 0:
+        return dict(zp=np.nan, zp_err=np.nan, zp_err_formal=np.nan,
+                    zp_err_scatter=np.nan, zp_std=np.nan, n_std=0, used=used)
+
+    w = 1. / zp_err_i[used] ** 2
+    zp = np.sum(w * zp_i[used]) / np.sum(w)
+    zp_err_formal = 1. / np.sqrt(np.sum(w))
+
+    zp_std = float(np.std(zp_i[used], ddof=1)) if n_std > 1 else np.nan
+    zp_err_scatter = zp_std / np.sqrt(n_std) if n_std > 1 else np.nan
+
+    zp_err = np.nanmax([zp_err_formal, zp_err_scatter])
+
+    return dict(zp=float(zp), zp_err=float(zp_err), zp_err_formal=float(zp_err_formal),
+                zp_err_scatter=float(zp_err_scatter), zp_std=zp_std, n_std=n_std, used=used)
+
+
 def get_average_magnitude(flux, flux_err, std_fluxes, std_mags, mag_corr, mag_corr_sat=0.,
-                          mag_scale=None, area=None):
-    """Calculate mean magnitude.
+                          mag_scale=None, area=None, mag_corr_sat_err=0.,
+                          mode='zp', return_components=False):
+    """Calculate the magnitude of a source relative to the standard stars.
 
     Parameters
     ----------
@@ -180,12 +244,57 @@ def get_average_magnitude(flux, flux_err, std_fluxes, std_mags, mag_corr, mag_co
         Magnitude scale correction (e.g., for exposure time).
     area: float | None
         Area correction (e.g., for aperture size).
+    mag_corr_sat_err: float
+        Uncertainty of the magnitude correction for the satellite (mode 'zp' only).
+    mode: str
+        'zp' (default): weighted zero point from the stars; the shared error terms
+        (source flux, aperture corrections) are added once in quadrature.
+        'legacy': mean of the per-star magnitudes and mean of the per-star errors (<= 0.5.0).
+    return_components: bool
+        If True, also return a dict with the individual error terms.
 
     Returns
     -------
     tuple
-        Magnitude and its uncertainty
+        Magnitude and its uncertainty (and the error components if requested)
     """
+    if mode not in ('zp', 'legacy'):
+        raise ValueError(f"Unknown MAG_ERR_MODE '{mode}', expected 'zp' or 'legacy'")
+
+    if mode == 'legacy':
+        mag_avg, mag_avg_err = _get_average_magnitude_legacy(flux, flux_err, std_fluxes, std_mags,
+                                                             mag_corr, mag_corr_sat=mag_corr_sat,
+                                                             mag_scale=mag_scale, area=area)
+        if return_components:
+            return mag_avg, mag_avg_err, None
+        return mag_avg, mag_avg_err
+
+    zp_res = get_photometric_zeropoint(std_fluxes, std_mags)
+
+    mag = -2.5 * np.log10(flux) + zp_res['zp'] + mag_corr[0] + mag_corr_sat
+    mag = mag + mag_scale if mag_scale is not None else mag
+    mag = mag + 2.5 * np.log10(area) if area is not None else mag
+
+    err_flux = 2.5 / np.log(10) * flux_err / flux
+    err_zp = zp_res['zp_err']
+    err_corr_std = mag_corr[1]
+    err_corr_sat = mag_corr_sat_err if mag_corr_sat_err is not None else 0.
+
+    mag_err = np.sqrt(err_flux ** 2 + err_zp ** 2 + err_corr_std ** 2 + err_corr_sat ** 2)
+
+    if return_components:
+        components = dict(err_flux=float(err_flux), err_zp=float(err_zp),
+                          err_mag_corr=float(err_corr_std), err_mag_corr_sat=float(err_corr_sat),
+                          zp=zp_res['zp'], zp_std=zp_res['zp_std'], n_std=zp_res['n_std'])
+        return float(mag), float(mag_err), components
+
+    return float(mag), float(mag_err)
+
+
+def _get_average_magnitude_legacy(flux, flux_err, std_fluxes, std_mags, mag_corr, mag_corr_sat=0.,
+                                  mag_scale=None, area=None):
+    """Magnitude as calculated up to leosatpy 0.5.0: mean of the per-star magnitudes
+    and mean of the per-star errors. Kept for reproducing older results."""
 
     # Calculate the error in the magnitude difference using error propagation
     flux_ratio = flux / std_fluxes[:, 0]
@@ -210,15 +319,14 @@ def get_average_magnitude(flux, flux_err, std_fluxes, std_mags, mag_corr, mag_co
     mag_cleaned = mag[~mask]
     mag_err_cleaned = mag_err[~mask]
 
-    mag_avg_w = np.nanmean(mag_cleaned)
+    mag_avg = np.nanmean(mag_cleaned)
     mag_avg_err = np.nanmean(mag_err_cleaned)
 
-    bc.clean_up(flux, flux_err, std_fluxes, std_mags, mag_corr)
-
-    return mag_avg_w, mag_avg_err
+    return mag_avg, mag_avg_err
 
 
-def get_magnitude_zpmag(flux, flux_err, zp_mag, mag_corr_sat=0., mag_scale=None, area=None):
+def get_magnitude_zpmag(flux, flux_err, zp_mag, mag_corr_sat=0., mag_scale=None, area=None,
+                        mag_corr_sat_err=0.):
     """Calculate satellite magnitude using the zero-point magnitude from the header.
 
     Reference:
@@ -238,11 +346,14 @@ def get_magnitude_zpmag(flux, flux_err, zp_mag, mag_corr_sat=0., mag_scale=None,
         Magnitude scale correction (e.g., for exposure time).
     area: float | None
         Area correction (e.g., for aperture size).
+    mag_corr_sat_err: float
+        Uncertainty of the magnitude correction for the satellite.
 
     Returns
     -------
     tuple
-        Magnitude and its uncertainty
+        Magnitude and its uncertainty. The header zero point carries no recorded
+        uncertainty, so the error is a lower bound.
     """
     # The flux = counts * t_exp -> zp_mag in mag
     mag = -2.5 * np.log10(flux) + zp_mag + mag_corr_sat
@@ -250,7 +361,7 @@ def get_magnitude_zpmag(flux, flux_err, zp_mag, mag_corr_sat=0., mag_scale=None,
     mag = mag + 2.5 * np.log10(area) if area is not None else mag
 
     # Calculate uncertainty
-    mag_err = 2.5 / np.log(10) * (flux_err / flux)
+    mag_err = np.sqrt((2.5 / np.log(10) * (flux_err / flux)) ** 2 + mag_corr_sat_err ** 2)
 
     return mag, mag_err
 
