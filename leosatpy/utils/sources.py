@@ -249,7 +249,7 @@ def remove_close_elements(df, distance_threshold, flux_col=5):
 
 
 def build_source_catalog(data, mask, input_catalog=None, known_fwhm=None,
-                         **config):
+                         silent=False, **config):
     """ Detect sources in the image and determine the Full Width Half Maximum (FWHM) of the image.
 
     Parameters
@@ -286,7 +286,7 @@ def build_source_catalog(data, mask, input_catalog=None, known_fwhm=None,
     box_size = int(np.ceil(fwhm_multiplier * init_fwhm)) + 0.5
     box_size = default_box_size if known_fwhm is None else 2. * box_size
 
-    log.info(f'{" ":<4}> Find sources and estimate Full Width Half Maximum (FWHM)')
+    log.debug(f'{" ":<4}> Find sources and estimate Full Width Half Maximum (FWHM)')
     if mask is None:
         mask = np.zeros(data.shape, dtype=bool)
 
@@ -325,15 +325,15 @@ def build_source_catalog(data, mask, input_catalog=None, known_fwhm=None,
 
     # Sort by maximum value
     sources.sort_values(by='flux', ascending=False, inplace=True)
-    log.info(f'{" ":<6}Initial number of sources: {len(sources)}')
+    log.debug(f'{" ":<6}Initial number of sources: {len(sources)}')
 
-    log.info(f'{" ":<6}Run profile fit (This may take a second.)')
+    log.debug(f'{" ":<6}Run profile fit (This may take a second.)')
     sources = fit_source_cat(data, sources, box_size, init_fwhm,
                              update_position=True, **config)
     df = sources.copy()
 
-    log.info(f"{' ':<6}>> Sources found: {np.sum(sources['fit_mask'])}")
-    log.info(f'{" ":<4}> Filter outlier')
+    log.debug(f"{' ':<6}>> Sources found: {np.sum(sources['fit_mask'])}")
+    log.debug(f'{" ":<4}> Filter outlier')
 
     # List of columns to apply sigma clipping on, in sequence
     columns_to_clip = ['eccentricity', 'fwhm']
@@ -351,7 +351,7 @@ def build_source_catalog(data, mask, input_catalog=None, known_fwhm=None,
                                  cenfunc=np.nanmedian,
                                  stdfunc=mad_std)
         current_mask = ~masked_data.mask  # Get a boolean mask of valid (unmasked) values
-        log.info(f'{" ":<6}{f"Masked {column} outlier":<28}: {np.sum(~current_mask)}')
+        log.debug(f'{" ":<6}{f"Masked {column} outlier":<28}: {np.sum(~current_mask)}')
 
         # Update the cumulative mask based on the current mask
         temp_mask = cumulative_mask.copy()
@@ -369,17 +369,18 @@ def build_source_catalog(data, mask, input_catalog=None, known_fwhm=None,
     image_fwhm_err = np.nanstd(sources['masked_fwhm'].values)
 
     if input_catalog is None:
-        log.info(f'{" ":<2}{f"==> Detected sources":<20}: {len(sources[cumulative_mask])}')
-        log.info(f'{" ":<6}{f"FWHM":<16}: {image_fwhm:.3f} +/- {image_fwhm_err:.3f} px')
+        if not silent:
+            log.info(f"> Detect sources: {len(sources[cumulative_mask])} "
+                     f"(FWHM {image_fwhm:.2f} ± {image_fwhm_err:.2f} px)")
         return (image_fwhm, image_fwhm_err), sources, True, None
     else:
         obs_df = sources[cumulative_mask]
-        log.info(f'{" ":<4}>> Detected sources: {len(obs_df)}')
+        log.debug(f'{" ":<4}>> Detected sources: {len(obs_df)}')
 
         ref_df = input_catalog.copy()
         ref_df.reset_index(drop=True, inplace=True)
-        log.info(f'{" ":<4}> X-match with reference catalog')
-        log.info(f'{" ":<6}Initial number of reference sources: {len(ref_df)}')
+        log.debug(f'{" ":<4}> X-match with reference catalog')
+        log.debug(f'{" ":<6}Initial number of reference sources: {len(ref_df)}')
         hsize = (box_size - 1) // 2
         boundary_mask = ((ref_df['xcentroid'] > hsize)
                          & (ref_df['xcentroid'] < (data.shape[1] - 1 - hsize))
@@ -388,10 +389,10 @@ def build_source_catalog(data, mask, input_catalog=None, known_fwhm=None,
 
         ref_df = ref_df[boundary_mask]
 
-        log.info(f'{" ":<6}Sources near boundary removed: {np.sum(~boundary_mask):d}')
+        log.debug(f'{" ":<6}Sources near boundary removed: {np.sum(~boundary_mask):d}')
         ref_df, n_crowded = remove_close_elements(df=ref_df,
                                                   distance_threshold=hsize)
-        log.info(f'{" ":<6}Crowded sources removed: {n_crowded:d}')
+        log.debug(f'{" ":<6}Crowded sources removed: {n_crowded:d}')
 
         ref_df.reset_index(drop=True, inplace=True)
 
@@ -401,8 +402,9 @@ def build_source_catalog(data, mask, input_catalog=None, known_fwhm=None,
 
         image_fwhm = np.nanmedian(sources['fwhm'].values)
         image_fwhm_err = np.nanstd(sources['fwhm'].values)
-        log.info(f'{" ":<2}==> Usable sources: {len(sources)}, '
-                 f'FWHM: {image_fwhm:.3f} +/- {image_fwhm_err:.3f} [ pixels ]')
+        if not silent:
+            log.info(f"> Match reference stars in image: {len(sources)} usable "
+                     f"(FWHM {image_fwhm:.2f} ± {image_fwhm_err:.2f} px)")
 
         return (image_fwhm, image_fwhm_err), sources, True, None
 
@@ -748,8 +750,7 @@ def load_background_file(bkg_fname, silent=False):
     bkg_rms_median: float
         The median value of the RMS of the computed background.
     """
-    if not silent:
-        log.info(f"  > Load 2D background from file: ../auxiliary/{bkg_fname[1]}.fits")
+    log.debug(f"{' ':<4}Load 2D background from file: ../auxiliary/{bkg_fname[1]}.fits")
 
     # Load fits file
     with fits.open(f'{bkg_fname[0]}.fits') as hdul:
@@ -825,8 +826,7 @@ def compute_2d_background(imgarr, mask, box_size, win_size,
         del imgarr, mask
         return load_background_file(bkg_fname, silent=silent)
 
-    if not silent:
-        log.info("  > Estimate 2D background from image. (This may take a second.)")
+    log.debug(f"{' ':<4}Estimate 2D background from image")
 
     bkg = None
     exclude_percentiles = [10, 25, 50, 75]
@@ -884,8 +884,7 @@ def compute_2d_background(imgarr, mask, box_size, win_size,
     # the background to be used in source identification
     if bkg is None:
         if not silent:
-            log.warning("    Background2D failure detected. "
-                        "Using alternative background calculation instead....")
+            log.warning(f"{' ':<4}Background2D failed; using a sigma-clipped constant background instead")
 
         # Detect the sources
         threshold = detect_threshold(imgarr, nsigma=2.0,
@@ -908,8 +907,7 @@ def compute_2d_background(imgarr, mask, box_size, win_size,
         # Create background frame shaped like imgarr populated with sigma-clipped standard deviation value
         bkg_rms = np.full_like(imgarr, sigcl_std).astype('float32')
 
-    if not silent:
-        log.info(f"    Save 2D background to file: ../auxiliary/{bkg_fname[1]}.fits")
+    log.debug(f"{' ':<4}Save 2D background to file: ../auxiliary/{bkg_fname[1]}.fits")
 
     # Write results to fits
     hdu1 = fits.PrimaryHDU(data=bkg_background)
@@ -1094,7 +1092,7 @@ def extract_source_catalog(imgarr,
     if not isinstance(imgarr, np.ndarray):
         raise ValueError(f"Input {imgarr} not a np.ndarray object.")
 
-    log.info("> Extract sources from image")
+    log.debug("> Extract sources from image")
 
     # Create masks
     bad_pixel_mask = config['image_mask']  # Bad pixel mask
@@ -1122,17 +1120,16 @@ def extract_source_catalog(imgarr,
         # Subtract the extracted background from the image
         imgarr_bkg_subtracted = imgarr - bkg_arr
 
-    if not silent:
-        if source_catalog is not None:
-            log.info("  > Build source catalog from known sources")
-        else:
-            log.info("  > Build source catalog from detected sources")
+    if source_catalog is not None:
+        log.debug(f"{' ':<4}Build source catalog from known sources")
+    else:
+        log.debug(f"{' ':<4}Build source catalog from detected sources")
 
     # Build the source catalog
     fwhm, source_cat, state, fail_msg = build_source_catalog(data=imgarr_bkg_subtracted,
                                                              input_catalog=source_catalog,
                                                              known_fwhm=known_fwhm,
-                                                             mask=image_mask, **config)
+                                                             mask=image_mask, silent=silent, **config)
     del imgarr, imgarr_bkg_subtracted, image_mask, bad_pixel_mask, invalid_mask
     gc.collect()
 
@@ -1188,8 +1185,7 @@ def download_astro_ref_cat(ra, dec, sr=0.5,
         Gaia.ROW_LIMIT = -1  # Ensure the default row limit.
 
         if not silent:
-            log.info("> Get astrometric reference catalog via astroquery")
-            log.info(f"  Downloading data... This may take a while!!! Don't panic")
+            log.info(f"> Download {catalog} reference catalog (this may take a while)")
 
         mag_lim_str = f"""AND phot_g_mean_mag <= {mag_lim}"""
         if mag_lim == -1:
@@ -1275,18 +1271,17 @@ def download_phot_ref_cat(ra, dec, sr=0.1, epoch=None,
 
     base_spec = spec_str.format(ra, dec, sr, fmt, catalog)
     spec = base_spec + epoch_str.format(epoch) if epoch is not None else base_spec
-    if not silent:
-        log.info("> Get photometric reference catalog via VO web service")
 
     url_chk = url_checker(f'{bc.SERVICELOCATION}/{serviceType}')
     if not url_chk[0]:
         log.error(f"  {url_chk[1]}. ")
         sys.exit(1)
     if not silent:
-        log.info(f"  {url_chk[1]}. Downloading data... This may take a while!!! Don't panic")
+        log.info(f"> Download {catalog} photometric reference catalog (this may take a while)")
+    log.debug(f"{' ':<4}{url_chk[1]}")
 
     serviceUrl = f'{bc.SERVICELOCATION}/{serviceType}?{spec}'
-    log.info("Getting catalog using: \n    {}".format(serviceUrl))
+    log.debug(f"{' ':<4}Catalog query: {serviceUrl}")
     rawcat = requests.get(serviceUrl, headers=headers)
 
     # Convert from bytes to a String
@@ -1298,7 +1293,7 @@ def download_phot_ref_cat(ra, dec, sr=0.1, epoch=None,
     if rstr[0].startswith('Error'):
         # Try again without EPOCH
         serviceUrl = f'{bc.SERVICELOCATION}/{serviceType}?{base_spec}'
-        log.info(f"Getting catalog using: \n    {serviceUrl}")
+        log.debug(f"{' ':<4}Catalog query (without epoch): {serviceUrl}")
         rawcat = requests.get(serviceUrl, headers=headers)
         r_contents = rawcat.content.decode()  # Convert from bytes to a String
         rstr = r_contents.split('\r\n')
@@ -1408,7 +1403,7 @@ def get_photometric_catalog(fname, loc, imgarr, hdr, wcsprm,
 
     # Get photometric reference catalog
     if read_ref_cat_photo:
-        log.info("> Load photometric references catalog from file")
+        log.debug("> Load photometric reference catalog from file")
         ref_tbl_photo, _, ref_catalog_photo = read_catalog(photo_ref_cat_fname)
     else:
         # Get reference catalog
@@ -1433,13 +1428,13 @@ def get_photometric_catalog(fname, loc, imgarr, hdr, wcsprm,
                (ref_tbl_photo["ycentroid"] < hdr['NAXIS2'])
         ref_tbl_photo = ref_tbl_photo[mask]
 
-        if not silent:
-            log.info("> Save photometric references catalog.")
+        log.debug("> Save photometric reference catalog")
         save_catalog(cat=ref_tbl_photo, wcsprm=wcsprm, out_name=photo_ref_cat_fname,
                      mode='ref_photo', catalog=ref_catalog_photo)
 
     if not silent:
-        log.info("> Check photometric references catalog and select suitable sources.")
+        log.info(f"> Photometric reference: {ref_catalog_photo}, {len(ref_tbl_photo)} stars "
+                 f"({'loaded from file' if read_ref_cat_photo else 'downloaded'})")
     df, std_fkeys, mag_conv, exec_state, fail_msg = select_std_stars(ref_tbl_photo,
                                                                      ref_catalog_photo,
                                                                      config['_filter_val'],
@@ -1544,9 +1539,10 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
     read_ref_cat_astro = not (config["force_download"] or not chk_ref_cat_astro)
 
     if read_src_cat:
-        if not silent:
-            log.info("> Load image source catalog from file")
         src_tbl, kernel_fwhm, _ = read_catalog(src_cat_fname)
+        if not silent:
+            log.info(f"> Detect sources: {len(src_tbl)} (FWHM {kernel_fwhm[0]:.2f} ± {kernel_fwhm[1]:.2f} px, "
+                     f"loaded from file)")
     else:
         # Detect sources in image and get positions
         src_tbl, kernel_fwhm, state, fail_msg = \
@@ -1557,15 +1553,13 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
             gc.collect()
             return (None for _ in range(6)), False, fail_msg
 
-        if not silent:
-            log.info("> Save image source catalog.")
+        log.debug("> Save image source catalog")
         save_catalog(cat=src_tbl, wcsprm=wcsprm, out_name=src_cat_fname,
                      kernel_fwhm=kernel_fwhm)
 
     # Get astrometric reference catalog
     if read_ref_cat_astro:
         # Get reference catalog for precise positions from file
-        log.info("> Load astrometric references catalog from file")
         ref_tbl_astro, _, ref_catalog_astro = read_catalog(astro_ref_cat_fname)
 
     else:
@@ -1577,11 +1571,10 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
                                    mag_lim=config['ref_cat_mag_lim'],
                                    silent=silent)
 
-        if not silent:
-            log.info("> Save astrometric references catalog.")
-            save_catalog(cat=ref_tbl_astro, wcsprm=wcsprm,
-                         out_name=astro_ref_cat_fname,
-                         mode='ref_astro', catalog=ref_catalog_astro)
+        log.debug("> Save astrometric reference catalog")
+        save_catalog(cat=ref_tbl_astro, wcsprm=wcsprm,
+                     out_name=astro_ref_cat_fname,
+                     mode='ref_astro', catalog=ref_catalog_astro)
 
         # Add positions to table
         pos_on_det = wcsprm.s2p(ref_tbl_astro[["RA", "DEC"]].values, 0)['pixcrd']
@@ -1589,6 +1582,10 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
         ref_tbl_astro["ycentroid"] = pos_on_det[:, 1]
 
         del pos_on_det
+
+    if not silent:
+        log.info(f"> Astrometric reference: {ref_catalog_astro}, {len(ref_tbl_astro)} stars "
+                 f"({'loaded from file' if read_ref_cat_astro else 'downloaded'})")
 
     del imgarr
     if len(src_tbl) == 0:

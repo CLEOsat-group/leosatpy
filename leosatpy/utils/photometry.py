@@ -345,9 +345,8 @@ def get_opt_aper_trail(image,
     optimum_aprad = max_snr_aprad * 1.25  # increased by 25%
     qlf_aptrail = True
 
-    if not silent:
-        log.info('    ==> best-fit aperture height: %3.1f (FWHM)' % (max_snr_aprad * 2))
-        log.info('    ==> optimum aperture height (h x 1.25): %3.1f (FWHM)' % (optimum_aprad * 2))
+    log.debug('    Best-fit aperture height: %3.1f (FWHM)' % (max_snr_aprad * 2))
+    log.debug('    Optimum aperture height (h x 1.25): %3.1f (FWHM)' % (optimum_aprad * 2))
 
     del image
     return output, rapers, max_snr_aprad, optimum_aprad, qlf_aptrail
@@ -463,14 +462,13 @@ def get_optimum_aper_rad(image: np.ndarray,
     optimum_aprad = max_snr_aprad * 1.25
     qlf_aprad = True
     if optimum_aprad > 3.:
-        log.warning('Optimum radius seems high [%.1f x FWHM] '
-                    '- setting to %.1f x FWHM' % (optimum_aprad, aper_rad))
+        log.warning('    Optimum aperture radius seems high [%.1f x FWHM]; '
+                    'using %.1f x FWHM' % (optimum_aprad, aper_rad))
         optimum_aprad = aper_rad
         qlf_aprad = False
 
-    if not silent:
-        log.info('    ==> best-fit aperture radius: %3.1f (FWHM)' % max_snr_aprad)
-        log.info('    ==> optimum aperture radius (r x 1.25): %3.1f (FWHM)' % optimum_aprad)
+    log.debug('    Best-fit aperture radius: %3.1f (FWHM)' % max_snr_aprad)
+    log.debug('    Optimum aperture radius (r x 1.25): %3.1f (FWHM)' % optimum_aprad)
 
     del image, std_cat
     gc.collect()

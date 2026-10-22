@@ -131,12 +131,12 @@ class DataSet(object):
                 shutil.copy(default_ini_path, configfile)
 
                 self.log.info('> Read configuration')
-                self.log.info("  `leosatpy_config.ini` not found in the user's home directory")
-                self.log.info(f'  ==> Default config file copied to {configfile}')
-                self.log.info('  Please check the config file parameter and values and re-start when ready.')
+                self.log.info("    `leosatpy_config.ini` not found in the user's home directory")
+                self.log.info(f'    Default config file copied to {configfile}')
+                self.log.info('    Please check the config file parameters and values and re-start when ready.')
                 sys.exit(0)
             else:
-                self.log.info(f'> Read configuration ({configfile})')
+                self.log.debug(f'> Read configuration ({configfile})')
 
         except PermissionError:
             self.log.error(f"  Unable to access or create the .ini "
@@ -301,23 +301,18 @@ class DataSet(object):
         fits_image_filenames = []
         regex_ext = re.compile(r'.*\.(fits|fit|fts)$', re.IGNORECASE)
         n_args = len(self._input_args)
-        if not self.silent:
-            log.info(f"  Number of input arguments: {n_args}")
+        log.debug(f"{' ':<4}Number of input arguments: {n_args}")
 
         # Process each input argument
         for name in self._input_args:
             path_arg = Path(name).expanduser()
-            if not self.silent:
-                log.info(f"  Processing input: {path_arg}")
+            log.debug(f"{' ':<4}Processing input: {path_arg}")
             if path_arg.is_dir():
-                if not self.silent:
-                    log.info(f"  Input type: Directory")
-                    log.info(f"  Searching for .fits file(s)")
+                log.debug(f"{' ':<4}Input type: directory; searching for .fits file(s)")
                 fits_image_filenames.extend(self.process_directory_recursive(path_arg, regex_ext))
 
             elif path_arg.is_file() and re.search(regex_ext, path_arg.name):
-                if not self.silent:
-                    log.info("  Input type: File")
+                log.debug(f"{' ':<4}Input type: file")
                 if self.prog_mode != 'reduceCalibObs':
                     fits_image_filenames.append(path_arg)
                 else:
@@ -326,9 +321,8 @@ class DataSet(object):
             elif path_arg.parent.is_dir() and not path_arg.is_dir():
                 parent_folder = path_arg.parent
                 name_part = path_arg.name
-                if not self.silent:
-                    log.info(f"  Input type: Unknown (treating as prefix)")
-                    log.info(f"  (A) Searching for folder with prefix '{name_part}' in {parent_folder}")
+                log.debug(f"{' ':<4}Input type: unknown (treating as prefix)")
+                log.debug(f"{' ':<4}(A) Searching for folder with prefix '{name_part}' in {parent_folder}")
 
                 # Check if name_part matches subdirectories in parent_folder
                 matching_dirs = [
@@ -344,20 +338,18 @@ class DataSet(object):
 
                 # No matching dirs, treat as file prefix
                 else:
-                    if not self.silent:
-                        log.info(f"  (B) Searching for files with prefix '{name_part}' in {parent_folder}")
+                    log.debug(f"{' ':<4}(B) Searching for files with prefix '{name_part}' in {parent_folder}")
 
                     regex_with_prefix = re.compile(r'^' + re.escape(name_part) + r'.*\.(fits|fit|fts)$',
                                                    re.IGNORECASE)
                     fits_image_filenames.extend(
                         self.process_directory_recursive(parent_folder, regex_with_prefix))
             else:
-                if not self.silent:
-                    log.error(f"  Path not found: {path_arg}. No matching directories or files.")
-                    sys.exit()
+                log.error(f"Path not found: {path_arg}. No matching directories or files.")
+                sys.exit(1)
 
         if not self.silent:
-            log.info(f'  ==> FITS-file(s) found: {len(fits_image_filenames)}')
+            log.info(f"{' ':<4}FITS file(s) found: {len(fits_image_filenames)}")
 
         self._fits_images = fits_image_filenames
 
@@ -430,8 +422,7 @@ class DataSet(object):
                       'Please check the input!!!')
             sys.exit()
         if not self.silent:
-            log.info(f'> Registering FITS-file(s) for {prog_typ_conversion[mode]}')
-            log.info(f'  Collecting FITS header information. (This may take a while...)')
+            log.info(f'> Register FITS file(s) for {prog_typ_conversion[mode]} (reading headers, may take a while)')
         # Create a file collection with all header data
         data = ImageFileCollection(filenames=filenames)
 
@@ -441,7 +432,7 @@ class DataSet(object):
         inst_dict = collections.OrderedDict({k: {} for k in instruments_list})
 
         if not self.silent:
-            log.info(f'  ==> {len(instruments_list)} supported instrument(s) found: {", ".join(instruments_list)}')
+            log.info(f"{' ':<4}Supported instrument(s): {', '.join(instruments_list)}")
         for i in range(len(instruments_list)):
             inst_val = instruments_list[i]
 
@@ -449,8 +440,7 @@ class DataSet(object):
             obsparams = _tele_conf.TELESCOPE_PARAMETERS[tel_id]
             telescope = obsparams['telescope_keyword']
 
-            if not self.silent:
-                log.info(f'  Instrument: {inst_val} @ Telescope: {telescope}')
+            log.debug(f"{' ':<4}Instrument: {inst_val} @ Telescope: {telescope}")
 
             inst_dict[inst_val]['telescope'] = telescope
             inst_dict[inst_val]['obsparams'] = obsparams
@@ -516,7 +506,7 @@ class DataSet(object):
                           "Please check your input.")
                 sys.exit()
             if not self.silent:
-                log.info(f'  ==> Valid science FITS-file(s) found: {len(_files.summary)} ')
+                log.info(f"{' ':<4}Valid science FITS file(s): {len(_files.summary)}")
 
             if mode != 'satPhotometry':
                 inst_dict[inst_val]['dataset'] = _files.summary['file'].data
@@ -828,27 +818,19 @@ def get_binning(header, obsparams):
             binning_y = param_bin_y
         elif '#' in param_bin_x:
             if '#blank' in param_bin_x:
-                binning_x = float(header[param_bin_x.
-                                  split('#')[0]].split()[0])
-                binning_y = float(header[param_bin_y.
-                                  split('#')[0]].split()[1])
+                binning_x = float(header[param_bin_x.split('#')[0]].split()[0])
+                binning_y = float(header[param_bin_y.split('#')[0]].split()[1])
             elif '#x' in param_bin_x:
-                binning_x = float(header[param_bin_x.
-                                  split('#')[0]].split('x')[0])
-                binning_y = float(header[param_bin_y.
-                                  split('#')[0]].split('x')[1])
+                binning_x = float(header[param_bin_x.split('#')[0]].split('x')[0])
+                binning_y = float(header[param_bin_y.split('#')[0]].split('x')[1])
             elif '#_' in param_bin_x:
-                binning_x = float(header[param_bin_x.
-                                  split('#')[0]].split('_')[0])
-                binning_y = float(header[param_bin_y.
-                                  split('#')[0]].split('_')[1])
+                binning_x = float(header[param_bin_x.split('#')[0]].split('_')[0])
+                binning_y = float(header[param_bin_y.split('#')[0]].split('_')[1])
             elif '#CH#' in param_bin_x:
                 # Only for RATIR
                 channel = header['INSTRUME'].strip()[1]
-                binning_x = float(header[param_bin_x.
-                                  replace('#CH#', channel)])
-                binning_y = float(header[param_bin_y.
-                                  replace('#CH#', channel)])
+                binning_x = float(header[param_bin_x.replace('#CH#', channel)])
+                binning_y = float(header[param_bin_y.replace('#CH#', channel)])
         else:
             binning_x = header[param_bin_x]
             binning_y = header[param_bin_y]

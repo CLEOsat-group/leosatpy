@@ -200,8 +200,7 @@ class CalibrateObsWCS(object):
 
         if not silent:
             self._log.info("> Search input and prepare data")
-        if verbose:
-            self._log.debug("  > Check input argument(s)")
+        self._log.debug("  > Check input argument(s)")
 
         # Check the input arguments and prepare the data set
         ds = DataSet(input_args=self._input_path,
@@ -238,52 +237,48 @@ class CalibrateObsWCS(object):
             # Loop over groups and run reduction for each group
             for src_path, files in obsfile_list:
                 if not silent:
-                    self._log.info("====> Astrometric calibration run <====")
-                    self._log.info(f"> Calibrate WCS of {len(files)} data sets from instrument {inst} "
-                                   f"at the {self._telescope} "
-                                   "telescope in folder:")
-                    self._log.info(f"  {src_path}")
+                    self._log.info(f"> Calibrate WCS of {len(files)} image(s) from {inst} ({self._telescope})")
+                    self._log.info(f"{' ':<4}Folder: {src_path}")
                 multiple = False
                 if len(list(files)) > 1:
                     multiple = True
                 # not_converged = []
                 converged_counter = 0
                 progress_counter = 0
-                pass_str = bc.BCOLORS.PASS + "SUCCESSFUL" + bc.BCOLORS.ENDC
-                fail_str = bc.BCOLORS.FAIL + "FAILED" + bc.BCOLORS.ENDC
+                pass_str = bc.BCOLORS.PASS + "PASS" + bc.BCOLORS.ENDC
+                fail_str = bc.BCOLORS.FAIL + "FAIL" + bc.BCOLORS.ENDC
                 for _, file_df in files.iterrows():
                     progress = f"{progress_counter + 1}/{len(files)}"
                     self.run_calibration_single(src_path, file_df, progress,
                                                 hdu_idx=self._hdu_idx)
 
                     result = self._converged
+                    # In silent mode the image header is not shown, so name the file in the result line
+                    result_label = f"{file_df['file_name']}: " if silent else ''
                     if result:
-                        self._log.info(f">> Astrometric calibration was {pass_str}")
+                        self._log.info(f"> Result: {result_label}{pass_str}")
                         converged_counter += 1
                     else:
-                        self._log.info(f">> Astrometric calibration has {fail_str}")
+                        self._log.warning(f"> Result: {result_label}{fail_str}")
                         # not_converged.append(file_df['input'])
                         with open(fail_fname, "a", encoding="utf8") as file:
                             file.write('{}\t{}\n'.format(self._telescope, file_df["input"]))
                     progress_counter += 1
 
+                N = len(files)
+                not_converged_counter = N - converged_counter
                 if multiple:
-                    self._log.info(">> Final report:")
-                    N = len(files)
-                    not_converged_counter = N - converged_counter
-                    self._log.info(f"   Processed: {N} file(s), "
+                    self._log.info(f"> Summary: {N} image(s), "
                                    f"{pass_str}: {converged_counter}, "
                                    f"{fail_str}: {not_converged_counter}")
-                    if not_converged_counter > 0:
-                        self._log.info(f"   FAILED calibrations are stored here: {fail_fname}")
-                        # self._log.info("   \n".join(not_converged))
+                if not_converged_counter > 0:
+                    self._log.warning(f"{' ':<4}Failed calibrations are listed in: {fail_fname}")
 
         EndTime = time.perf_counter()
         dt = EndTime - StartTime
         td = timedelta(seconds=dt)
 
-        if not silent:
-            self._log.info(f"Program execution time in hh:mm:ss: {td}")
+        self._log.info(f"Program execution time in hh:mm:ss: {td}")
         self._log.info('====>  Astrometric calibration finished <====')
 
     def run_calibration_single(self, file_src_path, file_df, progress, hdu_idx=0):
@@ -314,8 +309,7 @@ class CalibrateObsWCS(object):
         fbase = file_name.replace('_red', '')
 
         # Create required folders
-        if self._verbose:
-            self._log.debug("  > Create folder")
+        self._log.debug("  > Create folder")
         cal_path = Path(file_src_path, 'calibrated')
         if not cal_path.exists():
             cal_path.mkdir(exist_ok=True)
@@ -330,7 +324,8 @@ class CalibrateObsWCS(object):
         if not aux_path.exists():
             aux_path.mkdir(exist_ok=True)
 
-        self._log.info(f"==> Run astrometric calibration for {file_name} [{progress}] <==")
+        if not self._silent:
+            self._log.info(f"==> Image {progress}: {file_name}")
 
         # Set background file name and create folder
         bkg_fname_short = file_name.replace('_red', '_bkg')
@@ -458,17 +453,20 @@ class CalibrateObsWCS(object):
         wcs_res = get_wcs.find_wcs(init_wcs, imgarr, match_radius)
         has_solution, best_wcsprm, dict_rms = wcs_res
 
-        # Check the result sate
-        status_str = bc.BCOLORS.PASS + "PASS" + bc.BCOLORS.ENDC
+        # Check the result state
         if not has_solution or best_wcsprm is None:
-            status_str = bc.BCOLORS.FAIL + "FAIL" + bc.BCOLORS.ENDC
+            wcs_summary = 'no solution found'
         else:
             # Move scaling to cdelt and out of the pc matrix
             best_wcsprm, scales = imtrans.translate_wcsprm(wcsprm=best_wcsprm)
             wcsprm = best_wcsprm
+            wcs_summary = (f"{dict_rms['matches']}/{dict_rms['n_src_total']} sources matched, "
+                           f"RMS {dict_rms['rms']:.2f} px")
+            if not dict_rms['converged']:
+                wcs_summary += ' (best available, not fully converged)'
 
         if not self._silent:
-            self._log.info("  ==> Calibration status: " + status_str)
+            self._log.info(f"> WCS solution: {wcs_summary}")
 
         # Get updated reference catalog positions
         ref_tbl_adjusted = imtrans.update_catalog_positions(ref_tbl, wcsprm, origin=0)
@@ -510,8 +508,7 @@ class CalibrateObsWCS(object):
                                            threshold=dict_rms["radius_px"])
             _, _, _, ref_positions_after, _, _, _ = matches
 
-            if not self._silent:
-                self._log.info("> Plot WCS calibration result")
+            self._log.debug("> Plot WCS calibration result")
 
             # Plot the final result
             config['match_radius_px'] = dict_rms["radius_px"]
@@ -573,8 +570,7 @@ class CalibrateObsWCS(object):
         # Initialize logging for this function
         log = self._log
 
-        if not self._silent:
-            log.info("> Gather header information")
+        log.debug("> Gather header information")
 
         # Check binning keyword
         if isinstance(obsparams['binning'][0], str) and isinstance(obsparams['binning'][1], str):
@@ -689,16 +685,15 @@ class CalibrateObsWCS(object):
             if self._telescope in ['DDOTI 28-cm f/2.2', 'CTIO 0.9 meter telescope']:
                 fov_radius *= 2.
 
-        if not self._silent:
-            log.info(f"{' ':<2}{'Pointing (deg)':<24}: RA={wcsprm.crval[0]:.8g}, "
-                     f"DEC={wcsprm.crval[1]:.8g}")
-            log.info(f"{' ':<2}{'Binning':<24}: {self._bin_str}")
-            log.info(f"{' ':<2}{'Image size (pix)':<24}: {axis1} x {axis2}")
-            log.info(f"{' ':<2}{'Image size (arcmin)':<24}: {x_size:.3g} x {y_size:.3g}")
-            log.info(f"{' ':<2}{'Pixel scale (arcsec/pix)':<24}: {pixscale_x:.3g} x {pixscale_y:.3g}")
-            log.info(f"{' ':<2}{'Pixel scale (deg/pixel)':<24}: "
-                     f"{wcsprm.cdelt[0]:.3g} x {wcsprm.cdelt[1]:.3g}")
-            log.info(f"{' ':<2}{'FoV radius (deg)':<24}: {fov_radius:.3g}")
+        log.debug(f"{' ':<4}{'Pointing (deg)':<24}: RA={wcsprm.crval[0]:.8g}, "
+                  f"DEC={wcsprm.crval[1]:.8g}")
+        log.debug(f"{' ':<4}{'Binning':<24}: {self._bin_str}")
+        log.debug(f"{' ':<4}{'Image size (pix)':<24}: {axis1} x {axis2}")
+        log.debug(f"{' ':<4}{'Image size (arcmin)':<24}: {x_size:.3g} x {y_size:.3g}")
+        log.debug(f"{' ':<4}{'Pixel scale (arcsec/pix)':<24}: {pixscale_x:.3g} x {pixscale_y:.3g}")
+        log.debug(f"{' ':<4}{'Pixel scale (deg/pixel)':<24}: "
+                  f"{wcsprm.cdelt[0]:.3g} x {wcsprm.cdelt[1]:.3g}")
+        log.debug(f"{' ':<4}{'FoV radius (deg)':<24}: {fov_radius:.3g}")
 
         self._wcsprm = wcs_n
         self._fov_radius = fov_radius
@@ -727,8 +722,7 @@ class CalibrateObsWCS(object):
         -------
         None
         """
-        if not self._silent:
-            self._log.info("> Update FITS file.")
+        self._log.debug("> Update FITS file.")
 
         with fits.open(original_filename) as hdul:
 
@@ -979,6 +973,15 @@ class CalibrateObsWCS(object):
 
         return ax
 
+    def _save_pdf_quietly(self, fname: str, fig_dpi):
+        """Save the current figure as PDF without matplotlib's INFO chatter, keeping the caller's log level"""
+        prev_level = self._log.level
+        self._log.setLevel(max(prev_level, logging.WARNING))
+        try:
+            plt.savefig(fname + '.pdf', format='pdf', dpi=fig_dpi)
+        finally:
+            self._log.setLevel(prev_level)
+
     def save_plot(self, fname: str):
         """Save plots"""
 
@@ -988,17 +991,13 @@ class CalibrateObsWCS(object):
             plt.savefig(fname + '.png', format='png', dpi=fig_dpi)
             subprocess.call(f'mogrify -trim {fname}.png ', shell=True)
         elif fig_type == 'pdf':
-            self._log.setLevel("warning".upper())
-            plt.savefig(fname + '.pdf', format='pdf', dpi=fig_dpi)
-            self._log.setLevel("info".upper())
+            self._save_pdf_quietly(fname, fig_dpi)
             subprocess.call('pdfcrop ' + fname + '.pdf ' + fname + '.pdf', shell=True)
         else:
-            self._log.info(f"Figure will be saved as .png and.pdf")
+            self._log.debug("Figure will be saved as .png and .pdf")
             plt.savefig(fname + '.png', format='png', dpi=fig_dpi)
             subprocess.call(f'mogrify -trim {fname}.png ', shell=True)
-            self._log.setLevel("warning".upper())
-            plt.savefig(fname + '.pdf', format='pdf', dpi=fig_dpi)
-            self._log.setLevel("info".upper())
+            self._save_pdf_quietly(fname, fig_dpi)
             subprocess.call('pdfcrop ' + fname + '.pdf ' + fname + '.pdf', shell=True)
 
     @staticmethod

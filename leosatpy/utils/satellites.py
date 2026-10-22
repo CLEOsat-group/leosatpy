@@ -991,8 +991,7 @@ def detect_sat_trails(image: np.ndarray,
         mask |= saturation_mask
     else:
         mask = saturation_mask
-    if not silent:
-        log.info("    Create segmentation map from image")
+    log.debug("    Create segmentation map from image")
 
     if mask is not None:
 
@@ -1083,8 +1082,7 @@ def detect_sat_trails(image: np.ndarray,
     # Eccentricity mask. Choose 99.5 percentile as limit
     e_lim = np.percentile(cat.eccentricity, 99.5)
     orig_data['e_lim'] = e_lim
-    if not silent:
-        log.info(f"    Initial filter. Keep segments with ecc >= {e_lim:.4f}")
+    log.debug(f"    Initial filter. Keep segments with ecc >= {e_lim:.4f}")
     ecc_mask = cat.eccentricity.data >= e_lim
 
     # Combine eccentricity and border masks
@@ -1099,7 +1097,7 @@ def detect_sat_trails(image: np.ndarray,
     # First check if there are any labels
     if labels.size == 0:
         if not silent:
-            log.info("  ==> NO satellite trail(s) detected.")
+            log.info(f"{' ':<4}No trail detected")
         bc.clean_up(sharpened, labels, segm, segm_init)
         return None, False
 
@@ -1118,7 +1116,7 @@ def detect_sat_trails(image: np.ndarray,
     if df_init.shape[0] == 1:
         if df_init['eccentricity'].values[0] < 0.999:
             if not silent:
-                log.info("  ==> NO satellite trail(s) detected.")
+                log.info(f"{' ':<4}No trail detected")
             bc.clean_up(sharpened, segm, segm_init, labels, df_init)
             return None, False
         else:
@@ -1148,7 +1146,7 @@ def detect_sat_trails(image: np.ndarray,
 
         if df_quantize.empty:
             if not silent:
-                log.info("  ==> NO satellite trails detected.")
+                log.info(f"{' ':<4}No trail detected")
             bc.clean_up(sharpened, segm, segm_init,
                                 labels, df_init, df_quantize, grouped)
             return None, False
@@ -1169,7 +1167,7 @@ def detect_sat_trails(image: np.ndarray,
 
     if reg_dict is None:
         if not silent:
-            log.info("  ==> NO satellite trail(s) detected.")
+            log.info(f"{' ':<4}No trail detected")
         bc.clean_up(sharpened, segm, segm_init, labels, df_init, df_search, orig_data)
         return None, False
 
@@ -1179,12 +1177,11 @@ def detect_sat_trails(image: np.ndarray,
 
     if not np.isfinite(check_props).all():
         if not silent:
-            log.warning(f"    => Trail parameter fit {bc.fail_str} ")
+            log.warning(f"{' ':<4}Trail parameter fit {bc.fail_str}")
         has_trail = False
         n_trail_total -= 1
     else:
-        if not silent:
-            log.info(f"    => Trail parameter fit was {bc.pass_str}")
+        log.debug(f"    Trail parameter fit {bc.pass_str}")
         has_trail = True
 
     if config['roi_offset'] is not None:
@@ -1203,7 +1200,7 @@ def detect_sat_trails(image: np.ndarray,
 
     trail_data['N_trails'] = n_trail_total
     if not silent:
-        log.info(f"  ==> Total number of satellite trail(s) detected: {n_trail_total}")
+        log.info(f"{' ':<4}Trails detected: {n_trail_total}")
 
     # Clean up
     bc.clean_up(sharpened, segm, segm_init, df_init, labels)
@@ -1319,8 +1316,7 @@ def get_trail_properties(segm_map, df, config, orig_data,
 
     del binary_img
 
-    if not silent:
-        log.info(f"    Create Hough space accumulator array (This may take a second!)")
+    log.debug(f"    Create Hough space accumulator array (This may take a second!)")
     # Create hough space and get peaks
     hspace_smooth, peaks, dist, theta = get_hough_transform(dilated,
                                                             theta_bin_size=theta_bin_size,
@@ -1397,8 +1393,7 @@ def get_trail_properties(segm_map, df, config, orig_data,
     sub_win_size = (rho_sub_win_size, theta_sub_win_size)
 
     theta_init = np.deg2rad(theta[col_ind])
-    if not silent:
-        log.info("    Determine trail parameter: length, width, and orientation")
+    log.debug("    Determine trail parameter: length, width, and orientation")
     fit_res = fit_trail_params(hspace_smooth, dist, theta, theta_init,
                                dilated.shape, center_idx, sub_win_size,
                                config['TRAIL_PARAMS_FITTING_METHOD'])

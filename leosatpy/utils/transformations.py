@@ -30,7 +30,7 @@ import logging
 import fast_histogram as fhist
 
 # scipy
-from scipy.spatial import KDTree, cKDTree
+from scipy.spatial import cKDTree
 from scipy.ndimage import maximum_filter, gaussian_filter, label
 from scipy.ndimage.measurements import center_of_mass
 from scipy.optimize import least_squares
@@ -211,22 +211,22 @@ class FindWCS(object):
 
         possible_solutions = []
 
-        self.log.info("> Run WCS calibration")
+        self.log.debug("> Run WCS calibration")
 
         # Prepare source catalog
         if has_large_src_cat:
-            self.log.info("  Using a subset of the source catalog for initial matching.")
+            self.log.debug("  Using a subset of the source catalog for initial matching.")
             self.source_cat = self.source_cat_full.head(init_src_num)
         else:
             self.source_cat = self.source_cat_full.copy()
         self.get_source_cat_variables()
 
-        self.log.info(f"  {'Detected sources (total)':<28}: {Nobs_total}")
-        self.log.info(f"  {'Reference sources (total)':<28}: {Nref_total}")
-        self.log.info(f"  {'Match radius (r)':<28}: {self.match_radius_px:.2f} px")
+        self.log.debug(f"  {'Detected sources (total)':<28}: {Nobs_total}")
+        self.log.debug(f"  {'Reference sources (total)':<28}: {Nref_total}")
+        self.log.debug(f"  {'Match radius (r)':<28}: {self.match_radius_px:.2f} px")
         str_match_radius = f"Match radius limit ({int(self.config['MATCH_RADIUS_LIM'])} x r)"
-        self.log.info(f"  {str_match_radius:<28}: {match_radius_limit_px:.2f} px")
-        self.log.info(f"  > Search possible solutions (This may take a second.)")
+        self.log.debug(f"  {str_match_radius:<28}: {match_radius_limit_px:.2f} px")
+        self.log.debug(f"  > Search possible solutions (This may take a second.)")
 
         total_iterations = len(rotations) * num_ref_samples
         rot_matrix_idx = 0
@@ -267,7 +267,7 @@ class FindWCS(object):
                 Nref_current = len(ref_cat_filtered)
 
                 if Nref_current <= 0:
-                    self.log.warning("{' ':<4}No reference sources found after filtering.")
+                    self.log.debug(f"{' ':<4}No reference sources found after filtering.")
                     break  # No reference sources to consider, move to next rotation
 
                 use_endpoint = False
@@ -353,7 +353,7 @@ class FindWCS(object):
 
         # After the main loop
         if possible_solutions:
-            self.log.info(f"{' ':<2}>> Possible solutions: {len(possible_solutions)}")
+            self.log.debug(f"{' ':<2}>> Possible solutions: {len(possible_solutions)}")
             # Sort possible solutions by completeness, number of matches, and score
             possible_solutions.sort(key=lambda x: (x['Nobs_matched'], x['score']),
                                     reverse=True)
@@ -367,7 +367,7 @@ class FindWCS(object):
             best_overall_solution = None
             best_solution = None
 
-            self.log.info(f"{' ':<2}> Analysing top {len(top_solutions)} solutions")
+            self.log.debug(f"{' ':<2}> Analysing top {len(top_solutions)} solutions")
 
             # Loop over top solutions
             for idx, solution in enumerate(top_solutions):
@@ -461,15 +461,15 @@ class FindWCS(object):
                     converged_solutions.sort(key=lambda x: (x['rms_dist'], -x['Nobs_matched'], -x['score']),
                                              reverse=False)
                     best_solution = converged_solutions[0]
-                    self.log.info(
+                    self.log.debug(
                         f"{' ':<2}>> " + bc.BCOLORS.PASS + "Solution found." + bc.BCOLORS.OKGREEN)
                 else:
                     # No solution fully converged
-                    self.log.warning(f"{' ':<2}>> No solution fully converged.")
+                    self.log.debug(f"{' ':<2}>> No solution fully converged.")
                     # Use best overall solution if available
                     if best_overall_solution is not None:
                         best_solution = best_overall_solution
-                        self.log.info(f"{' ':<2}>> Using the best available solution.")
+                        self.log.debug(f"{' ':<2}>> Using the best available solution.")
                     else:
                         best_solution = None
 
@@ -488,7 +488,9 @@ class FindWCS(object):
                                "matches": best_solution['Nobs_matched'],
                                "rms": best_solution['rms_dist'],
                                'std_x': best_solution['std_x'],
-                               'std_y': best_solution['std_y']}
+                               'std_y': best_solution['std_y'],
+                               'n_src_total': Nobs_total,
+                               'converged': bool(best_solution['has_converged'])}
                 has_solution = True
 
             else:
@@ -496,13 +498,13 @@ class FindWCS(object):
                 has_solution = False
                 final_wcsprm = None
                 result_dict = result_dict_fail
-                self.log.warning("  No solution found after testing all rotation matrices.")
+                self.log.debug("  No solution found after testing all rotation matrices.")
         else:
             # No solutions found
             has_solution = False
             final_wcsprm = None
             result_dict = result_dict_fail
-            self.log.warning("  No solution found after testing all rotation matrices.")
+            self.log.debug("  No solution found after testing all rotation matrices.")
 
         # Return the final results
         return has_solution, final_wcsprm, result_dict
@@ -529,16 +531,16 @@ class FindWCS(object):
         completeness = solution['completeness']
         rms_dist = solution['rms_dist']
 
-        self.log.info(f"{' ':<2}{'-' * 50}")
-        self.log.info(f"{' ':<2}WCS find summary:")
-        self.log.info(f"{' ':<2}{'-' * 50}")
-        self.log.info(f"{' ':<2}{'Matched (detected sources)':<30} {f'{Nobs}/{Nobs_total}'} ")
-        self.log.info(f"{' ':<2}{'Matched (reference sources)':<30} {f'{Nref}/{Nref_total}'} ")
-        self.log.info(f"{' ':<2}{'Matched (src/ref)':<30} {f'{Nobs}/{Nref}'} ")
-        self.log.info(f"{' ':<2}{'Completeness':<30} {completeness:.3f} ({completeness * 100:.1f}%)")
-        self.log.info(f"{' ':<2}{'RMS distance':<30} {rms_dist:.2f} px")
-        self.log.info(f"{' ':<2}{'Positional error x':<30} {solution['std_x']:.2f} px")
-        self.log.info(f"{' ':<2}{'Positional error y':<30} {solution['std_y']:.2f} px")
+        self.log.debug(f"{' ':<2}{'-' * 50}")
+        self.log.debug(f"{' ':<2}WCS find summary:")
+        self.log.debug(f"{' ':<2}{'-' * 50}")
+        self.log.debug(f"{' ':<2}{'Matched (detected sources)':<30} {f'{Nobs}/{Nobs_total}'} ")
+        self.log.debug(f"{' ':<2}{'Matched (reference sources)':<30} {f'{Nref}/{Nref_total}'} ")
+        self.log.debug(f"{' ':<2}{'Matched (src/ref)':<30} {f'{Nobs}/{Nref}'} ")
+        self.log.debug(f"{' ':<2}{'Completeness':<30} {completeness:.3f} ({completeness * 100:.1f}%)")
+        self.log.debug(f"{' ':<2}{'RMS distance':<30} {rms_dist:.2f} px")
+        self.log.debug(f"{' ':<2}{'Positional error x':<30} {solution['std_x']:.2f} px")
+        self.log.debug(f"{' ':<2}{'Positional error y':<30} {solution['std_y']:.2f} px")
 
     def apply_wcs_and_filter_sources(self, current_wcsprm, source_df, match_radius):
         """Apply the given WCS to the full reference catalog, filter it, then match the observed sources
@@ -1323,58 +1325,6 @@ def get_shift_from_peak(inv_cross_power_spec, peak):
     del inv_cross_power_spec
 
     return x_shift, y_shift, signal
-
-
-def match_catalogs(catalog1, catalog2, ra_dec_tol=None, radius=None, N=3):
-    """
-    Match catalogs based on the closest points within a tolerance or centroid within a radius.
-
-    Parameters
-    ----------
-    catalog1 : DataFrame
-        First catalog.
-    catalog2 : DataFrame
-        Second catalog.
-    ra_dec_tol : float
-        Tolerance in RA/DEC coordinates for matching.
-    radius : float
-        Radius in pixels to consider for matching.
-    N : int
-        Number of the closest points to return.
-
-    Returns
-    -------
-    DataFrame
-        A DataFrame that is a subset of catalog2 with matched points.
-    """
-    if ra_dec_tol is not None:
-        # Build a KDTree for catalog1 based on RA/DEC coordinates
-        catalog1_tree = KDTree(catalog1[['RA', 'DEC']].values)
-
-        # Find the indices of the closest points for each row in catalog2
-        # based on RA/DEC coordinates
-        distances, indices = catalog1_tree.query(catalog2[['RA', 'DEC']].values, k=N)
-
-        # Create a mask for distances within the specified tolerance
-        mask = distances <= ra_dec_tol
-
-    elif radius is not None:
-        # Build a KDTree for catalog1 based on centroid coordinates
-        catalog1_tree = KDTree(catalog1[['xcentroid', 'ycentroid']].values)
-
-        # Find the indices and distances of the closest points for each row in catalog2
-        # based on centroid coordinates
-        distances, indices = catalog1_tree.query(catalog2[['xcentroid', 'ycentroid']].values, k=N)
-
-        # Create a mask for distances within the specified radius
-        mask = distances <= radius
-    else:
-        raise ValueError("Either ra_dec_tol or radius must be specified for matching.")
-
-    # Select the matching rows from catalog2
-    matched_catalog2_subset = catalog2[mask]
-
-    return matched_catalog2_subset
 
 
 def plot_catalog_positions(source_catalog, reference_catalog, wcsprm_in=None, image=None):
