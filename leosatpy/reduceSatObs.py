@@ -101,7 +101,7 @@ _log_level = _log.level
 
 
 @dataclass
-class CalibrationPhaseResult:
+class CalibrationPrepResult:
     ok: bool
     dataset_failed: bool
     status: str
@@ -114,15 +114,15 @@ class CalibrationPhaseResult:
     failed_products: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     searched_sources: list[Path] = field(default_factory=list)
-    effective_state: Optional[dict[str, Any]] = None
-    runtime_dark: Optional[dict[str, Any]] = None
+    calib_state: Optional[dict[str, Any]] = None
+    master_darks: Optional[dict[str, Any]] = None
 
 
 class CalibrationInternalError(RuntimeError):
     pass
 
 
-class CalibrationMaterializationError(RuntimeError):
+class MasterBuildError(RuntimeError):
     pass
 
 
@@ -131,25 +131,35 @@ ALLOWED_RESULT_STATUSES = {
     'dataset_failed_missing_requested_bias',
     'dataset_failed_missing_requested_flat',
     'dataset_failed_no_bias_or_dark',
-    'dataset_failed_master_materialization_error',
+    'dataset_failed_master_build_error',
     'dataset_failed_validation_error',
     'dataset_failed_internal_error',
 }
 
-ALLOWED_MATERIALIZATION_STATUSES = {
+ALLOWED_MASTER_STATUSES = {
     'loaded_existing_science_date_master',
     'adopted_from_fallback_master',
     'overwritten_by_adopted_fallback_master',
     'created_from_raw',
     'overwritten_from_raw',
-    'skipped_not_requested',
+    'skipped_by_preference',
     'skipped_optional_unavailable_bias_fallback',
-    'failed_materialization',
+    'skipped_unavailable_dark_baseline',
+    'failed_build',
     'failed_validation',
 }
 
-MATERIALIZATION_EXCEPTION_STATUSES = {
-    CalibrationMaterializationError: 'dataset_failed_master_materialization_error',
+FAILURE_STATUS_TEXT = {
+    'dataset_failed_missing_requested_bias': 'no usable master bias',
+    'dataset_failed_missing_requested_flat': 'no usable master flat',
+    'dataset_failed_no_bias_or_dark': 'neither a usable bias nor a usable dark',
+    'dataset_failed_master_build_error': 'building a master calibration failed',
+    'dataset_failed_validation_error': 'calibration check failed',
+    'dataset_failed_internal_error': 'internal error (run with -v for details)',
+}
+
+EXCEPTION_RESULT_STATUSES = {
+    MasterBuildError: 'dataset_failed_master_build_error',
     CalibrationInternalError: 'dataset_failed_internal_error',
 }
 
@@ -208,8 +218,8 @@ class ReduceSatObs(object):
         self._obsTable = None
         self._bin_str = None
         self._binxy = [1, 1]
-        self._effective_state = None  # Phase-1 truth; set by find_and_create_calibrations
-        self._runtime_dark = None  # Phase-1 dark CCDData map; assigned from CalibrationPhaseResult
+        self._calib_state = None  # calibration availability; set by find_and_create_calibrations
+        self._master_darks = None  # loaded master darks for science reduction; assigned from CalibrationPrepResult
         self._reduction_failures = []
         self._failure_log_path = None
 
@@ -289,11 +299,10 @@ class ReduceSatObs(object):
         dt = endtime - starttime
         td = timedelta(seconds=dt)
 
-        if not silent:
-            self._log.info(f"Program execution time: {td}")
-        if self._reduction_failures and not silent:
-            self._log.warning(f"Controlled reduction failures recorded: {len(self._reduction_failures)}")
-            self._log.warning(f"Failure log: {self._failure_log_path}")
+        self._log.info(f"Program execution time: {td}")
+        if self._reduction_failures:
+            self._log.warning(f"Skipped dataset/binning combinations: {len(self._reduction_failures)}")
+            self._log.warning(f"Details in: {self._failure_log_path}")
         self._log.info('====> IMAGE REDUCTION FINISHED <====')
 
     @staticmethod
@@ -303,7 +312,7 @@ class ReduceSatObs(object):
                              searched_sources=None, severity='error'):
         if status not in ALLOWED_RESULT_STATUSES:
             raise CalibrationInternalError(f'Unsupported controlled failure status: {status}')
-        return CalibrationPhaseResult(
+        return CalibrationPrepResult(
             ok=False,
             dataset_failed=True,
             status=status,
@@ -316,15 +325,15 @@ class ReduceSatObs(object):
             failed_products=list(failed_products or []),
             warnings=list(warnings or []),
             searched_sources=[Path(p).resolve() for p in (searched_sources or [])],
-            effective_state=None,
-            runtime_dark=None,
+            calib_state=None,
+            master_darks=None,
         )
 
     def _result_from_exception(self, exc, dataset_path=None, binning=None,
                                selected_source=None, master_output=None,
                                searched_sources=None):
-        if isinstance(exc, CalibrationMaterializationError):
-            status = 'dataset_failed_master_materialization_error'
+        if isinstance(exc, MasterBuildError):
+            status = 'dataset_failed_master_build_error'
         else:
             status = 'dataset_failed_internal_error'
         return self._make_failure_result(
@@ -338,13 +347,13 @@ class ReduceSatObs(object):
         )
 
     def _record_reduction_failure(self, result):
-        if not isinstance(result, CalibrationPhaseResult):
-            raise CalibrationInternalError('Failure recorder requires CalibrationPhaseResult input.')
+        if not isinstance(result, CalibrationPrepResult):
+            raise CalibrationInternalError('Failure recorder requires CalibrationPrepResult input.')
 
         record = {
             'dataset_path': str(result.dataset_path) if result.dataset_path else '',
             'binning': result.binning or '',
-            'filters': ','.join(sorted((result.effective_state or {}).get('flat', {}).keys())),
+            'filters': ','.join(sorted((result.calib_state or {}).get('flat', {}).keys())),
             'status': result.status,
             'reason': result.reason,
             'failed_products': '; '.join(sorted(
@@ -412,7 +421,7 @@ class ReduceSatObs(object):
 
         # Get the file suffix
         unique_suffixes = np.unique(fits_files_dict['suffix'].values)
-        if len(unique_suffixes) > 1 and not self.silent:
+        if len(unique_suffixes) > 1:
             self._log.warning(f"{' ':<2}Multiple file suffixes found {list(unique_suffixes)}; "
                               f"using '{unique_suffixes[0]}'.")
         suffix = unique_suffixes[0]
@@ -483,17 +492,15 @@ class ReduceSatObs(object):
                 self._log.info(f"{'-' * 45}")
 
             # Find and prepare calibration files
-            if not self.silent:
-                self._log.info(f"> Calibration preparation for binning: {binxy[0]}x{binxy[1]}.")
-            self._effective_state = None
-            self._runtime_dark = None
+            self._calib_state = None
+            self._master_darks = None
             try:
                 result = self.find_and_create_calibrations(self._telescope,
                                                            self._obsparams,
                                                            filters,
                                                            binxy,
                                                            obs_date=obs_date)
-            except (CalibrationInternalError, CalibrationMaterializationError) as exc:
+            except (CalibrationInternalError, MasterBuildError) as exc:
                 result = self._result_from_exception(exc,
                                                      dataset_path=self._sci_root_path,
                                                      binning=self._bin_str)
@@ -504,46 +511,50 @@ class ReduceSatObs(object):
                     binning=self._bin_str,
                 )
 
-            if not isinstance(result, CalibrationPhaseResult):
+            if not isinstance(result, CalibrationPrepResult):
                 result = self._make_failure_result(
                     status='dataset_failed_internal_error',
-                    reason='Phase-1 did not return CalibrationPhaseResult.',
+                    reason='Calibration preparation did not return CalibrationPrepResult.',
                     dataset_path=self._sci_root_path,
                     binning=self._bin_str,
                 )
 
+            # In silent mode the dataset header is not shown, so name the folder in the result line
+            result_label = f"binning {self._bin_str}" + (f", {self._sci_root_path}" if self.silent else '')
             if not result.ok:
                 self._record_reduction_failure(result)
-                if not self.silent:
-                    self._log.warning(
-                        f"  Skipping science reduction for dataset/binning due to controlled calibration failure: "
-                        f"{result.status} ({result.reason})"
-                    )
+                products = ', '.join(sorted({str(item.get('reason', '')) for item in result.failed_products}))
+                self._log.warning(
+                    f"> Skipped science reduction ({result_label}): "
+                    f"{FAILURE_STATUS_TEXT.get(result.status, result.status)}"
+                    + (f" [{products}]" if products else '')
+                )
+                self._log.debug(f"{' ':<4}Failure details: {result.reason}")
                 continue
 
-            self._effective_state = result.effective_state
-            self._runtime_dark = result.runtime_dark
+            self._calib_state = result.calib_state
+            self._master_darks = result.master_darks
 
             # Run the CCD processing on the science images
             self.run_ccdproc(self._obsparams, filters, binxy)
+            self._log.info(f"> Science reduction done ({result_label})")
 
         # Clean temporary folder
-        if not self.silent:
-            self._log.info(f"{' ':<2}> Cleaning up")
+        self._log.debug(f"{' ':<2}> Cleaning up")
         if tmp_path.name == 'atmp' and tmp_path != tmp_path.anchor:
             shutil.rmtree(tmp_path, ignore_errors=True)
 
 
     def run_ccdproc(self, obsparams, filters, binnings):
-        """Run ccdproc on data set (Phase 2).
+        """Run ccdproc on the prepared data set.
 
-        Consumes the Phase-1 effective state and runtime dark map prepared by
+        Consumes the calib_state and master_darks map prepared by
         ``find_and_create_calibrations``.  Does NOT re-discover, re-create, or
         re-stage any calibration products, and does NOT mutate ``self._config``
         to reflect ephemeral availability.
 
-        Behaviour (spec Phase 11):
-           * If ``self._runtime_dark['sci_dark']`` has an entry for a science
+        Behaviour:
+           * If ``self._master_darks['sci_dark']`` has an entry for a science
              frame's exposure time → apply dark (only when DARK_CORRECT=True).
            * Else if master bias is available and BIAS_CORRECT=True → bias-only
              fallback.
@@ -559,67 +570,44 @@ class ReduceSatObs(object):
             Binning of the current data set, typically specified as "XxY" (e.g., "2x2").
         """
 
-        # ── Phase 2.0: Guard — Phase 1 must have run first ───────────────────
-        if self._effective_state is None or self._runtime_dark is None:
+        # Calibration file preparation must have run first
+        if self._calib_state is None or self._master_darks is None:
             raise RuntimeError(
-                'run_ccdproc called before find_and_create_calibrations. '
-                'Phase 1 must complete successfully before Phase 2 can run.'
+                'run_ccdproc called before find_and_create_calibrations.'
             )
 
-        # ── Phase 2.1: Initialize ImageFileCollection ────────────────────────
+        # Initialize ImageFileCollection
         ic_all = ImageFileCollection(location=self._tmp_path)
         _bin_str = f'{binnings[0]}x{binnings[1]}'
         self._bin_str = _bin_str
 
         has_multiple_amps = obsparams['multiple_amps']
 
-        # ── Phase 2.2: Extract gain / readnoise from staged science frames ───
+        # Extract gain / readnoise from staged science frames
         gain, readnoise = self._extract_gain_readnoise(ic_all)
 
-        # ── Phase 2.3: Load master bias from Phase-1 committed path ──────────
-        # Phase 1 already created/verified the file on disk.  Phase 2 only
-        # loads it; it never calls create_master_bias.
-        effective_state = self._effective_state
+        # Load master bias
+        calib_state = self._calib_state
         ccd_master_bias = None
-        if self._config['BIAS_CORRECT'] and effective_state['bias'].get('available'):
-            master_bias_path = effective_state['bias'].get('master_path')
+        if self._config['BIAS_CORRECT'] and calib_state['bias'].get('available'):
+            master_bias_path = calib_state['bias'].get('master_path')
             if master_bias_path is not None:
-                if not self.silent:
-                    self._log.info(
-                        f'  Loading master bias (calibration output): '
-                        f'{os.path.basename(str(master_bias_path))}'
-                    )
+                self._log.debug(f"{' ':<4}Loading master bias: {os.path.basename(str(master_bias_path))}")
                 ccd_master_bias = self.convert_fits_to_ccd(str(master_bias_path), single=True)
                 if (readnoise is None
                         and ccd_master_bias is not None
                         and 'ron' in ccd_master_bias.header):
                     readnoise = ccd_master_bias.header['ron']
 
-        # ── Phase 2.4: Consume Phase-1 dark runtime map ──────────────────────
-        # self._runtime_dark is populated by Phase 1 with only available darks.
-        # ccdproc_sci_images performs per-exposure lookup so config mutation is
-        # never needed — an empty map simply produces no dark correction.
-        dark_runtime = self._runtime_dark  # {'sci_dark': {...}, 'flat_dark': {...}}
-        sci_dark_count = len(dark_runtime['sci_dark'])
-        flat_dark_count = len(dark_runtime['flat_dark'])
+        # Load master darks
+        master_darks = self._master_darks  # {'sci_dark': {...}, 'flat_dark': {...}}
+        sci_dark_count = len(master_darks['sci_dark'])
+        flat_dark_count = len(master_darks['flat_dark'])
 
-        if not self.silent:
-            self._log.info(
-                f'  Science-reduction dark runtime: {sci_dark_count} sci_dark exposure(s), '
-                f'{flat_dark_count} flat_dark exposure(s).'
-            )
-            if self._config['DARK_CORRECT'] and sci_dark_count == 0:
-                self._log.info(
-                    '  DARK_CORRECT=True but dark runtime is empty. '
-                    'Science frames will use bias-only fallback (if BIAS_CORRECT=True).'
-                )
-            if self._config['FLATDARK_CORRECT'] and flat_dark_count == 0:
-                self._log.info(
-                    '  FLATDARK_CORRECT=True but flat-dark runtime is empty. '
-                    'Flat frames were already created with bias-only fallback during calibration preparation.'
-                )
+        self._log.debug(f"{' ':<4}Science-reduction darks: {sci_dark_count} sci_dark exposure(s), "
+                        f"{flat_dark_count} flat_dark exposure(s)")
 
-        # ── Phase 2.5: Process files by filter ───────────────────────────────
+        # Process files by filter
         for filt in filters:
             filt_name = filt[0]
             sci_img_count_by_filter = len(
@@ -629,23 +617,15 @@ class ReduceSatObs(object):
                 continue
 
             if not self.silent:
-                self._log.info(
-                    f'> Processing {sci_img_count_by_filter} images in filter '
-                    f'{filt_name}, binning {_bin_str}.'
-                )
+                self._log.info(f"> Reduce {sci_img_count_by_filter} science image(s) in filter {filt_name}")
 
-            # ── Phase 2.6: Load master flat from Phase-1 committed path ──────
-            # Phase 1 already created/verified the flat; Phase 2 only loads it.
+            # Load master flat
             ccd_master_flat = {}
             if self._config['FLAT_CORRECT']:
-                flat_state = effective_state['flat'].get(filt_name, {})
+                flat_state = calib_state['flat'].get(filt_name, {})
                 flat_path = flat_state.get('master_path')
                 if flat_path is not None and flat_state.get('available'):
-                    if not self.silent:
-                        self._log.info(
-                            f'  Loading master flat (calibration output): '
-                            f'{os.path.basename(str(flat_path))}'
-                        )
+                    self._log.debug(f"{' ':<4}Loading master flat: {os.path.basename(str(flat_path))}")
                     loaded = self.convert_fits_to_ccd(str(flat_path), single=True)
                     if loaded:
                         ccd_master_flat[filt_name] = loaded
@@ -654,17 +634,13 @@ class ReduceSatObs(object):
                 ccd_master_flat = None
                 self._ccd_mask_fname = None
 
-            # ── Phase 2.7: Reduce science images ─────────────────────────────
-            # ccdproc_sci_images applies the Phase-11 decision tree:
-            #   dark map entry for exptime → apply dark
-            #   else + bias available       → bias-only fallback
-            #   else                        → no correction (logged in header)
+            # Reduce science images
             self.ccdproc_sci_images(
                 files_list=ic_all,
                 obsparams=obsparams,
                 image_filter=filt_name,
                 master_bias=ccd_master_bias,
-                master_dark=dark_runtime['sci_dark'],
+                master_dark=master_darks['sci_dark'],
                 master_flat=ccd_master_flat,
                 gain=gain,
                 readnoise=readnoise,
@@ -790,17 +766,20 @@ class ReduceSatObs(object):
             self._ccd_mask_fname = None
 
         # Loop over files and process them individually
-        for filename in files_list:
-            if not self.silent:
-                self._log.info(f"  >>> ccdproc is processing: {filename}")
+        files_list = list(files_list)
+        n_files = len(files_list)
+        for file_index, filename in enumerate(files_list):
+            self._log.debug(f"{' ':<4}Reducing: {filename}")
+            if not self.silent and not self.verbose:
+                bc.print_progress_bar(file_index + 1, n_files, length=77,
+                                      color=bc.BCOLORS.OKGREEN, prefix=' ' * 2)
 
             # Read image into a CCD object
             fname = os.path.join(self._tmp_path, filename)
             try:
                 ccd = CCDData.read(fname, unit=u.Unit("adu"))
             except (Exception,):
-                if not self.silent:
-                    self._log.warning(f"{' ':<6}Failed to load FITS file. Skipping file.")
+                self._log.warning(f"{' ':<4}Failed to load {filename}. Skipping file.")
                 continue
 
             # Extract header info and exposure time
@@ -938,8 +917,7 @@ class ReduceSatObs(object):
                                                crop_section_unbinned=ccd_hdr[crop_key])
                 ccd.mask = ccd_mask
 
-            # Cosmic ray correction (run last, on bias/dark/flat-corrected data, so LA Cosmic's
-            # noise model sees a flat field and can use the bad-pixel mask set above).
+            # Cosmic ray correction
             if cosmic and gain is not None and self._config['CORRECT_GAIN']:
                 ccd = self.clean_cosmic_ray(ccd, ccd_mask_fname,
                                             mbox=mbox, rbox=rbox, gbox=gbox, sigclip=sigclip,
@@ -986,6 +964,9 @@ class ReduceSatObs(object):
             self._obsTable.update_obs_table(fbase, hdr_dict, obsparams)
 
             del ccd
+        if not self.silent and not self.verbose and n_files:
+            # Add a new line after the progress bar
+            sys.stdout.write('\n')
         del files_list
         gc.collect()
 
@@ -1219,7 +1200,7 @@ class ReduceSatObs(object):
             del ccd
 
         if not self.silent:
-            self._log.info(f'  Creating master flat file: {os.path.basename(mflat_fname)}')
+            self._log.info(f'    Creating master flat file: {os.path.basename(mflat_fname)}')
 
         # Combine flat ccds
         combine = ccdproc.combine(lflat, method=method,
@@ -1326,7 +1307,7 @@ class ReduceSatObs(object):
 
         """
         if not self.silent:
-            self._log.info(f'  Creating master dark file: {os.path.basename(mdark_fname)}')
+            self._log.info(f'    Creating master dark file: {os.path.basename(mdark_fname)}')
 
         # Check inputs
         if gain is not None and not isinstance(gain, u.Quantity):
@@ -1468,7 +1449,7 @@ class ReduceSatObs(object):
 
         """
         if not self.silent:
-            self._log.info(f'  Creating master bias file: {os.path.basename(mbias_fname)}')
+            self._log.info(f'    Creating master bias file: {os.path.basename(mbias_fname)}')
 
         # Check inputs
         if gain is not None and not isinstance(gain, u.Quantity):
@@ -1636,7 +1617,7 @@ class ReduceSatObs(object):
 
             # Log message if not in silent mode
             if not silent:
-                self._log.info(f'  Creating bad pixel map file: {os.path.basename(ccd_mask_fname)}')
+                self._log.info(f'    Creating bad pixel map file: {os.path.basename(ccd_mask_fname)}')
 
             # Convert mask to CCDData and set header
             mask_as_ccd = CCDData(data=ccd_mask, unit=u.dimensionless_unscaled)
@@ -1825,7 +1806,7 @@ class ReduceSatObs(object):
             if os.path.exists(fn):
                 hdr = fits.getheader(fn)
             else:
-                self._log.warning(f'>>> File "{os.path.basename(fn)}" NOT found')
+                self._log.warning(f'File "{os.path.basename(fn)}" NOT found')
                 continue
             if key_unit is not None and key_unit in hdr:
                 try:
@@ -1835,21 +1816,24 @@ class ReduceSatObs(object):
             if fits_unit is None:
                 if key_unit is not None:
                     raise RuntimeError(
-                        '>>> Units NOT found in header ("%s") of image "%s". '
+                        'Units NOT found in header ("%s") of image "%s". '
                         'Specify one in "unit" variable' % (
                             key_unit, os.path.basename(fn)))
                 else:
-                    self._log.warning('>>> "key_unit" not specified')
-            self._log.setLevel("warning".upper())
-            # ccd = CCDData.read(f, unit=fits_unit)
-            ccd = CCDData.read(fn)
-            self._log.setLevel("info".upper())
+                    self._log.debug('"key_unit" not specified')
+            # Silence astropy's INFO chatter during the read, then restore the caller's level
+            prev_level = self._log.level
+            self._log.setLevel(max(prev_level, logging.WARNING))
+            try:
+                ccd = CCDData.read(fn)
+            finally:
+                self._log.setLevel(prev_level)
             if key_file is not None and key_file not in ccd.header:
                 ccd.header[key_file] = os.path.basename(fn)
             lccd.append(ccd)
             del ccd
         if len(lccd) == 0:
-            self._log.warning('>>> NO files found!')
+            self._log.warning('No files found!')
             return []
         if single and len(lccd) == 1:
             lccd = lccd[0]
@@ -2008,9 +1992,11 @@ class ReduceSatObs(object):
         if self._telescope == 'DDOTI 28-cm f/2.2':
             inst = self._instrument
 
-        # ── Phase 1.1: date resolution ──────────────────────────────────────────
         if not self.silent:
-            self._log.info(f"{' ':<2}> Resolve science dataset context")
+            self._log.info("> Prepare calibrations")
+
+        # Resolve date
+        self._log.debug(f"{' ':<2}> Resolve science dataset context")
         try:
             resolved_date, date_route, same_night_path, parent_search_root = self._resolve_date_context(
                 sci_root_path,
@@ -2024,7 +2010,7 @@ class ReduceSatObs(object):
                 binning=sci_bin_str,
             )
 
-        # ── Phase 1.2: Option C – dataset date root and master output dir ───────
+        # Derive dataset date root and master output directory
         dataset_date_root, date_root_route = self._derive_dataset_date_root(sci_root_path, same_night_path)
         master_out = dataset_date_root / 'master_calibs'
         master_out.mkdir(exist_ok=True, parents=True)
@@ -2043,36 +2029,26 @@ class ReduceSatObs(object):
                 master_output=master_out,
             )
 
-        # ──Phase 1.2b: Initialize requested/effective correction model ─────────
-        if not self.silent:
-            self._log.info(f"{' ':<2}> Initialize correction policy")
-        effective_state = self._build_effective_state_template(requirement)
-        if not self.silent:
-            self._log.info(f"{' ':<4}User-requested correction flags:")
+        # Initialize calibration state from user preferences
+        calib_state = self._build_calib_state_template(requirement)
+        prefs = requirement['user_preferences']
+        self._log.debug(f"{' ':<4}User correction preferences: " + ', '.join(
+            f"{flag_name}={prefs.get(flag_name)}"
             for flag_name in ['BIAS_CORRECT', 'FLAT_CORRECT', 'DARK_CORRECT',
-                              'FLATDARK_CORRECT', 'ALLOW_DARK_SCALING', 'DARK_TOLERANCE']:
-                self._log.info(f"{' ':<6}{flag_name:<20}: {requirement['requested_flags'].get(flag_name)}")
+                              'FLATDARK_CORRECT', 'ALLOW_DARK_SCALING', 'DARK_TOLERANCE']))
+        self._log.debug(f"{' ':<4}Date resolution route : {date_route}")
+        self._log.debug(f"{' ':<4}Dataset date root     : {dataset_date_root}  [{date_root_route}]")
+        self._log.debug(f"{' ':<4}Date-resolved path    : {same_night_path}")
+        self._log.debug(f"{' ':<4}Master output root    : {master_out}")
+        self._log.debug(f"{' ':<4}Science exposures     : {requirement['science_exposure_times']}")
+        self._log.debug(f"{' ':<4}Science filters       : {[f[0] for f in requirement['filters']]}")
 
-        if not self.silent:
-            self._log.info(f"{' ':<2}> Resolved dataset context")
-            self._log.info(f"{' ':<4}Date resolution route : {date_route}")
-            self._log.info(f"{' ':<4}Dataset date root     : {dataset_date_root}  [{date_root_route}]")
-            self._log.info(f"{' ':<4}Date-resolved path    : {same_night_path}")
-            self._log.info(f"{' ':<4}Same-night candidate  : {Path(dataset_date_root)}")
-            self._log.info(f"{' ':<4}Master output root    : {master_out}")
-            self._log.info(f"{' ':<4}Science exposures     : {requirement['science_exposure_times']}")
-            self._log.info(f"{' ':<4}Science filters       : {[f[0] for f in requirement['filters']]}")
-
-        # ── Phase 1.3: probe same-night candidate first ────────────────────────
-        # Fallback discovery is intentionally lazy: do not collect or log fallback
-        # candidates unless the force-aware same-night probe is incomplete.
+        # Probe same-night candidate
         selected_probe = None  # type: Optional[dict]
         fallback_deltas = []
         same_night_candidate = Path(dataset_date_root)
 
-        if not self.silent:
-            self._log.info(f"{' ':<2}> Evaluate same-night calibration candidate")
-            self._log.info(f"{' ':<4}Candidate root        : {same_night_candidate}")
+        self._log.debug(f"{' ':<2}> Evaluate same-night calibration candidate")
 
         same_night_probe = self._probe_candidate(search_path=same_night_candidate,
                                                  resolved_date=resolved_date,
@@ -2088,14 +2064,11 @@ class ReduceSatObs(object):
 
         if same_night_probe['complete']:
             selected_probe = same_night_probe
-            if not self.silent:
-                self._log.info(f"{' ':<4}Selected candidate    : {same_night_candidate}")
-                self._log.info(f"{' ':<4}Fallback search       : skipped; same-night candidate complete")
+            self._log.debug(f"{' ':<4}Fallback search       : skipped; same-night candidate complete")
         else:
             if not self.silent:
-                self._log.info(f"{' ':<4}Same-night result     : incomplete; fallback search required")
-                self._log.info(
-                    f"{' ':<2}> Collect fallback calibration candidates (±{self._config['TIMEDELTA_DAYS']} days under {parent_search_root})")
+                self._log.info(f"{' ':<4}Same-night calibrations incomplete; searching "
+                               f"±{self._config['TIMEDELTA_DAYS']} days under {parent_search_root}")
 
             fallback_candidates, fallback_deltas = self._collect_fallback_candidates(parent_search_root, resolved_date)
             fallback_candidates = [
@@ -2103,15 +2076,11 @@ class ReduceSatObs(object):
                 if p.resolve() != Path(dataset_date_root).resolve()
             ]
 
-            if not self.silent:
-                self._log.info(f"{' ':<4}Fallback candidates   : {len(fallback_candidates)}")
-                self._log.info(
-                    f"{' ':<4}Fallback source order : {[str(p) for p in fallback_candidates]}")
-                self._log.info(f"{' ':<2}> Evaluate fallback calibration candidates for binning {sci_bin_str}")
+            self._log.debug(f"{' ':<4}Fallback candidates   : {len(fallback_candidates)}")
+            self._log.debug(f"{' ':<4}Fallback source order : {[str(p) for p in fallback_candidates]}")
 
             for i, cpath in enumerate(fallback_candidates, start=1):
-                if not self.silent:
-                    self._log.info(f"{' ':<4}Fallback candidate {i}: {cpath}")
+                self._log.debug(f"{' ':<2}> Evaluate fallback candidate {i}/{len(fallback_candidates)}")
 
                 probe = self._probe_candidate(search_path=cpath,
                                               resolved_date=resolved_date,
@@ -2126,11 +2095,8 @@ class ReduceSatObs(object):
                 probe_log.append(probe)
                 if probe['complete']:
                     selected_probe = probe
-                    if not self.silent:
-                        self._log.info(f"{' ':<4}Selected fallback     : {cpath}")
                     break
-                if not self.silent:
-                    self._log.info(f"{' ':<4}Candidate result      : incomplete; trying next fallback candidate")
+                self._log.debug(f"{' ':<4}Candidate result      : incomplete; trying next fallback candidate")
 
         if selected_probe is None:
             unresolved_union = sorted({item for p in probe_log for item in p['unresolved']})
@@ -2146,9 +2112,9 @@ class ReduceSatObs(object):
             )
             failure_items = []
             for token in unresolved_union:
-                product = 'flat' if token.startswith('flat:') else token
+                product = 'flat' if token.startswith(('flat:', 'flat-baseline:')) else token
                 failure_items.append({'product': product, 'reason': token})
-            if any(str(item['reason']).startswith('dark-baseline:') for item in failure_items):
+            if any(str(item['reason']).startswith(('dark-baseline:', 'flat-baseline:')) for item in failure_items):
                 status = 'dataset_failed_no_bias_or_dark'
             elif any(i['product'] == 'flat' for i in failure_items):
                 status = 'dataset_failed_missing_requested_flat'
@@ -2164,7 +2130,7 @@ class ReduceSatObs(object):
                 searched_sources=searched,
             )
 
-        # ── Phase 1.5: commit selected candidate ─────────────────────────────────
+        # Select calibration source
         selected_search_path = Path(selected_probe['search_path']).resolve()
         selected_stage_plan = selected_probe.get('stage_plan', {'bias': [], 'dark': [], 'flat': {}})
         selected_adoption_plan = selected_probe.get('adoption_plan', {'bias': None, 'dark': {}, 'flat': {}})
@@ -2189,37 +2155,30 @@ class ReduceSatObs(object):
             candidate_role = 'fallback raw creation'
         else:
             candidate_role = 'fallback candidate already satisfied'
-        if not self.silent:
-            self._log.info(f"{' ':<2}> Commit selected calibration candidate")
-            self._log.info(f"{' ':<4}Selected candidate root : {selected_probe['search_path']}")
-            self._log.info(f"{' ':<4}Candidate role          : {candidate_role}")
-            self._log.info(f"{' ':<4}Master output root      : {master_out}")
+        self._log.debug(f"{' ':<2}> Select calibration source")
+        self._log.debug(f"{' ':<4}Selected candidate root : {selected_probe['search_path']}")
+        self._log.debug(f"{' ':<4}Candidate role          : {candidate_role}")
         self._master_calib_path = master_out
         self._selected_calibration_source_folder = str(selected_search_path)
 
-        # Phase 7 spec: merge winning probe's effective_state_preview into the live
-        # effective_state — this is the single commit point; nothing outside this
-        # block writes to effective_state before Phase 9 materialization.
-        preview = selected_probe['effective_state_preview']
-        effective_state['bias'].update(preview['bias'])
+        # Merge winning probe's calib_state_preview into the live
+        # calib_state — the only place it is set from the probe
+        preview = selected_probe['calib_state_preview']
+        calib_state['bias'].update(preview['bias'])
         for filt_name, filt_data in preview['flat'].items():
-            if filt_name in effective_state['flat']:
-                effective_state['flat'][filt_name].update(filt_data)
+            if filt_name in calib_state['flat']:
+                calib_state['flat'][filt_name].update(filt_data)
             else:
-                effective_state['flat'][filt_name] = filt_data
+                calib_state['flat'][filt_name] = filt_data
         # Dark entries: replace entirely (probe has the authoritative availability result)
-        effective_state['dark']['science'].update(preview['dark']['science'])
-        effective_state['dark']['flat'].update(preview['dark']['flat'])
-        if not self.silent:
-            self._log.info(f"{' ':<4}Effective state after commit — "
-                           f"bias.available={effective_state['bias']['available']}, "
-                           f"flat={[(f, v['available']) for f, v in effective_state['flat'].items()]}, "
-                           f"sci_darks={[(k, v['available']) for k, v in effective_state['dark']['science'].items()]}")
+        calib_state['dark']['science'].update(preview['dark']['science'])
+        calib_state['dark']['flat'].update(preview['dark']['flat'])
+        self._log.debug(f"{' ':<4}Calibration state after selection — "
+                        f"bias.available={calib_state['bias']['available']}, "
+                        f"flat={[(f, v['available']) for f, v in calib_state['flat'].items()]}, "
+                        f"sci_darks={[(k, v['available']) for k, v in calib_state['dark']['science'].items()]}")
 
-        # ── Phase 1.6: generate committed master calibration filenames ───────────
-        if not self.silent:
-            self._log.info(f"{' ':<2}> Resolve committed master targets")
-
+        # Resolve master calibration filenames
         dbias = selected_probe['master_bias_info']
         ddark = selected_probe['master_dark_info']
         dflat = selected_probe['master_flat_info']
@@ -2228,97 +2187,89 @@ class ReduceSatObs(object):
         self._master_dark_info = ddark
         self._master_flat_info = dflat
         self._dark_exptimes = dark_exptimes
-        if not self.silent:
-            def _format_committed_target(value):
-                path, create = value
-                action = 'create' if create else 'load/use'
-                return f'{Path(path).name} [{action}]'
+        def _format_target(value):
+            path, create = value
+            action = 'create' if create else 'load/use'
+            return f'{Path(path).name} [{action}]'
 
-            bias_summary = _format_committed_target(dbias) if dbias else 'not requested'
-            dark_summary = ', '.join(
-                f'{float(exp):g}s={_format_committed_target(info)}'
-                for exp, info in sorted(ddark.items())
-            ) if ddark else 'none'
-            flat_summary = ', '.join(
-                f'{filt}={_format_committed_target(info)}'
-                for filt, info in sorted(dflat.items())
-            ) if dflat else 'none'
+        if dbias:
+            bias_summary = _format_target(dbias)
+        elif requirement['user_preferences']['BIAS_CORRECT']:
+            bias_summary = 'unavailable (science darks used)'
+        else:
+            bias_summary = 'not requested'
+        dark_summary = ', '.join(
+            f'{float(exp):g}s={_format_target(info)}'
+            for exp, info in sorted(ddark.items())
+        ) if ddark else 'none'
+        flat_summary = ', '.join(
+            f'{filt}={_format_target(info)}'
+            for filt, info in sorted(dflat.items())
+        ) if dflat else 'none'
+        self._log.debug(f"{' ':<4}Bias targets : {bias_summary}")
+        self._log.debug(f"{' ':<4}Dark targets : {dark_summary}")
+        self._log.debug(f"{' ':<4}Flat targets : {flat_summary}")
 
-            self._log.info(f"{' ':<4}Bias targets : {bias_summary}")
-            self._log.info(f"{' ':<4}Dark targets : {dark_summary}")
-            self._log.info(f"{' ':<4}Flat targets : {flat_summary}")
-
-        # ── Phase 1.6b: Adopt fallback masters before raw staging ───────────────
+        # Adopt fallback masters before raw staging
         if adoption_needed:
-            if not self.silent:
-                self._log.info(f"{' ':<2}> Apply fallback-master adoption plan")
+            self._log.debug(f"{' ':<2}> Apply fallback-master adoption plan")
             self._adopt_fallback_master_products(adoption_plan=selected_adoption_plan,
                                                  requirement=requirement,
-                                                 effective_state=effective_state)
+                                                 calib_state=calib_state)
 
-        # ── Phase 1.7: stage and prepare raw calibration files ───────────────────
-        if not self.silent:
-            self._log.info(f"{' ':<2}> Stage raw calibration files if needed")
+        # Stage and prepare raw calibration files
+        self._log.debug(f"{' ':<2}> Stage raw calibration files if needed")
         staged_seen = set()
-        # Use effective_state (not self._config) to decide what needs staging
-        if effective_state['bias']['requested']:
-            if dbias[1]:
-                if not self.silent:
-                    self._log.info(f"{' ':<4}Staging bias files")
+        # Use calib_state (not self._config) to decide what needs staging
+        if calib_state['bias']['requested']:
+            if not dbias:
+                self._log.debug(f"{' ':<4}Bias raw staging skipped: no bias available")
+            elif dbias[1]:
                 self._stage_and_prepare(selected_stage_plan.get('bias', []), 'bias', staged_seen,
                                         telescope, obsparams)
             else:
-                if not self.silent:
-                    self._log.info(f"{' ':<4}Bias raw staging skipped: committed product already satisfied")
+                self._log.debug(f"{' ':<4}Bias raw staging skipped: master already available")
 
-        if requirement['requested_flags']['DARK_CORRECT']:
+        if requirement['user_preferences']['DARK_CORRECT']:
             create_dark = np.any(np.array([v[1] for _, v in ddark.items()])) if ddark else False
             if create_dark:
-                if not self.silent:
-                    self._log.info(f"{' ':<4}Staging dark files")
                 self._stage_and_prepare(selected_stage_plan.get('dark', []), 'dark', staged_seen,
                                         telescope, obsparams)
             else:
-                if not self.silent:
-                    self._log.info(f"{' ':<4}Dark raw staging skipped: committed products already satisfied")
+                self._log.debug(f"{' ':<4}Dark raw staging skipped: masters already available")
 
         for filt in filters:
             filt_name = filt[0]
-            if not effective_state['flat'].get(filt_name, {}).get('requested', False):
+            if not calib_state['flat'].get(filt_name, {}).get('requested', False):
                 continue
             if filt_name in dflat and dflat[filt_name][1]:
-                if not self.silent:
-                    self._log.info(f"{' ':<4}Staging flat files for filter: {filt_name}")
                 flat_stage_map = selected_stage_plan.get('flat', {})
                 self._stage_and_prepare(flat_stage_map.get(filt_name, []), 'flat', staged_seen,
-                                        telescope, obsparams)
+                                        telescope, obsparams, label=f'flat ({filt_name})')
             else:
-                if not self.silent:
-                    self._log.info(f"{' ':<4}Flat raw staging skipped for {filt_name}: committed product already satisfied")
+                self._log.debug(f"{' ':<4}Flat raw staging skipped for {filt_name}: master already available")
 
-        # ── Phase 1.8: create or load committed master products ──────────────────
-        if not self.silent:
-            self._log.info(f"{' ':<2}> Materialize committed master products")
+        # Create or load master products
+        self._log.debug(f"{' ':<2}> Build master calibration files")
         try:
-            runtime_dark = self._materialize_phase1_products(requirement=requirement,
-                                                             effective_state=effective_state,
-                                                             obsparams=obsparams,
-                                                             filters=requirement['filters'])
-        except CalibrationMaterializationError:
+            master_darks = self._build_master_products(requirement=requirement,
+                                                       calib_state=calib_state,
+                                                       obsparams=obsparams,
+                                                       filters=requirement['filters'])
+        except MasterBuildError:
             raise
         except Exception as exc:
-            raise CalibrationMaterializationError(str(exc)) from exc
+            raise MasterBuildError(str(exc)) from exc
 
-        # ── Phase 1.9: validate committed output ─────────────────────────────────
-        if not self.silent:
-            self._log.info(f"{' ':<2}> Validate committed calibration outputs")
-        fatal_missing, optional_missing = self._validate_phase1_products(requirement=requirement,
-                                                                         effective_state=effective_state,
+        # Validate master products
+        self._log.debug(f"{' ':<2}> Validate master calibration outputs")
+        fatal_missing, optional_missing = self._validate_master_products(requirement=requirement,
+                                                                         calib_state=calib_state,
                                                                          master_out=master_out)
         if fatal_missing:
             searched = [p['search_path'] for p in probe_log]
             reason = (
-                f"Phase-1 validation failed. Missing hard products: {fatal_missing}. "
+                f"Calibration validation failed. Missing hard products: {fatal_missing}. "
                 f"Optional unavailable: {optional_missing}. "
                 f"Master output root: {master_out}. "
                 f"Date resolution route: {date_route}. "
@@ -2340,14 +2291,14 @@ class ReduceSatObs(object):
                 searched_sources=searched,
             )
 
-        # Controlled gate: correction baseline unavailable (no usable bias + no science dark runtime)
-        if requirement['requested_flags']['DARK_CORRECT']:
-            bias_available = bool(effective_state['bias'].get('available'))
-            dark_available = bool(runtime_dark and runtime_dark.get('sci_dark'))
+        # Controlled gate: correction baseline unavailable (no usable bias + no science master dark)
+        if requirement['user_preferences']['DARK_CORRECT']:
+            bias_available = bool(calib_state['bias'].get('available'))
+            dark_available = bool(master_darks and master_darks.get('sci_dark'))
             if not bias_available and not dark_available:
                 return self._make_failure_result(
                     status='dataset_failed_no_bias_or_dark',
-                    reason='No usable science bias or science dark available after Phase 1 materialization.',
+                    reason='No usable science bias or science dark available.',
                     dataset_path=sci_root_path,
                     binning=sci_bin_str,
                     selected_source=selected_search_path,
@@ -2358,24 +2309,11 @@ class ReduceSatObs(object):
         self._obsparams = obsparams
 
         if not self.silent:
-            self._log.info(f"{' ':<2}> Calibration preparation complete")
-            self._log.info(f"{' ':<4}Selected candidate root : {selected_probe['search_path']}")
-            self._log.info(f"{' ':<4}Master output   : {master_out}")
-            self._log.info(f"{' ':<4}Bias effective  : available={effective_state['bias']['available']}, "
-                           f"created={effective_state['bias']['created']}")
-            flatdark_available = any(
-                v.get('available') for v in effective_state['dark']['flat'].values()
-            )
-            sci_dark_available_count = sum(
-                1 for v in effective_state['dark']['science'].values() if v.get('available')
-            )
-            self._log.info(f"{' ':<4}Dark effective  : sci_dark_available={sci_dark_available_count}, "
-                           f"flat_dark_available={flatdark_available}")
-            self._log.info(f"{' ':<2}> Science-reduction handoff")
-            self._log.info(f"{' ':<4}Status          : READY")
-            self._log.info(f"{' ':<4}Execution       : disabled in current runner (run_ccdproc is not called)")
+            self._log_calibration_summary(requirement=requirement,
+                                          calib_state=calib_state,
+                                          source=None if is_same_night_candidate else selected_search_path)
 
-        return CalibrationPhaseResult(
+        return CalibrationPrepResult(
             ok=True,
             dataset_failed=False,
             status='ok',
@@ -2384,9 +2322,63 @@ class ReduceSatObs(object):
             selected_source=selected_search_path,
             master_output=master_out,
             searched_sources=[Path(p['search_path']).resolve() for p in probe_log],
-            effective_state=effective_state,
-            runtime_dark=runtime_dark,
+            calib_state=calib_state,
+            master_darks=master_darks,
         )
+
+    def _log_calibration_summary(self, requirement, calib_state, source=None):
+        """Log a compact per-binning overview of the calibrations used for science reduction.
+
+        ``source`` is the fallback folder the calibrations came from, or None for same-night.
+        """
+        status_words = {
+            'loaded_existing_science_date_master': 'loaded',
+            'adopted_from_fallback_master': 'adopted',
+            'overwritten_by_adopted_fallback_master': 'adopted',
+            'created_from_raw': 'created',
+            'overwritten_from_raw': 're-created',
+        }
+        prefs = requirement['user_preferences']
+
+        def _darks_line(entries):
+            parts = []
+            for target, info in sorted(entries.items()):
+                if not info.get('available'):
+                    parts.append(f"{target:g}s missing" + (' (bias only)' if info.get('fallback') == 'bias' else ''))
+                    continue
+                text = f"{target:g}s {status_words.get(info.get('master_status'), 'loaded')}"
+                actual = info.get('actual_exposure')
+                if not info.get('is_exact') and actual is not None and float(actual) != float(target):
+                    text += f" (scaled from {float(actual):g}s)"
+                parts.append(text)
+            return ', '.join(parts) if parts else 'none'
+
+        bias = calib_state['bias']
+        if not prefs['BIAS_CORRECT']:
+            bias_line = 'off'
+        elif bias.get('master_status') == 'skipped_unavailable_dark_baseline':
+            bias_line = 'none (science darks used instead)'
+        else:
+            bias_name = Path(bias['master_path']).name if bias.get('master_path') else ''
+            bias_line = f"{status_words.get(bias.get('master_status'), 'loaded'):<10} {bias_name}".rstrip()
+
+        dark_line = _darks_line(calib_state['dark']['science']) if prefs['DARK_CORRECT'] else 'off'
+
+        if prefs['FLAT_CORRECT']:
+            flat_line = ', '.join(
+                f"{filt} {status_words.get(info.get('master_status'), 'loaded')}"
+                for filt, info in sorted(calib_state['flat'].items())
+            ) or 'none'
+        else:
+            flat_line = 'off'
+
+        source_text = 'same-night' if source is None else f'fallback {Path(source).name}'
+        self._log.info(f"> Calibrations (binning {self._bin_str}) — source: {source_text}")
+        self._log.info(f"{' ':<4}Bias      : {bias_line}")
+        self._log.info(f"{' ':<4}Darks     : {dark_line}")
+        if prefs['FLATDARK_CORRECT']:
+            self._log.info(f"{' ':<4}Flat-darks: {_darks_line(calib_state['dark']['flat'])}")
+        self._log.info(f"{' ':<4}Flats     : {flat_line}")
 
     def _list_fits(self, search_path, suffix):
         fits_files = list(Path(search_path).rglob(f"*{suffix}"))
@@ -2496,16 +2488,16 @@ class ReduceSatObs(object):
         return ordered, deltas
 
     def _build_science_calibration_requirement(self, obsparams, filters, obs_date, master_out):
-        """Build immutable requirement model from science data and user config.
+        """Build requirement model from science data and user config.
         
         This requirement model is created once per binning pass and represents:
         - observation parameters
         - science data characteristics
-        - user-requested correction flags (IMMUTABLE)
+        - user correction preferences
         - correction policy settings (tolerance, scaling)
         
-        Note: requested_flags are NEVER overwritten during probing/materialization.
-        Effective availability is tracked separately in effective_state.
+        Note: user_preferences are NEVER overwritten during probing/build.
+        Actual availability is tracked separately in calib_state.
         """
         ic_all = ImageFileCollection(location=self._tmp_path)
         ic_science = ic_all.filter(imagetyp=bc.IMAGETYP_LIGHT, binning=self._bin_str)
@@ -2530,9 +2522,8 @@ class ReduceSatObs(object):
 
         science_shape = self._derive_processed_science_shape(representative_science_file, obsparams)
 
-        # Phase 2: Build immutable requested flags snapshot from config
-        # These express user intent and are NEVER mutated during the phase
-        requested_flags = {
+        # Build user-preferences snapshot from config
+        user_preferences = {
             'BIAS_CORRECT': bool(self._config.get('BIAS_CORRECT', False)),
             'FLAT_CORRECT': bool(self._config.get('FLAT_CORRECT', False)),
             'DARK_CORRECT': bool(self._config.get('DARK_CORRECT', False)),
@@ -2551,40 +2542,40 @@ class ReduceSatObs(object):
             'filters': science_filters,
             'science_exposure_times': sorted(science_exptimes),
             'science_image_shape': science_shape,
-            'requested_flags': requested_flags,  # Phase 2: immutable user intent
+            'user_preferences': user_preferences,
             'force_reduction': bool(self._force_reduction),
             'master_output_root': Path(master_out).resolve(),
         }
 
     @staticmethod
-    def _build_effective_state_template(requirement):
-        """Phase 3: Initialize effective state tracking structure.
+    def _build_calib_state_template(requirement):
+        """Initialize the calibration state (calib_state).
         
-        Effective state tracks what is actually available/created at runtime,
-        separate from user-requested flags. This model is updated during
-        probing/materialization but requested_flags are never mutated.
+        calib_state tracks what is actually available/created at runtime,
+        separate from user correction preferences. This model is updated during
+        probing/build but user_preferences are never mutated.
         """
-        requested_flags = requirement['requested_flags']
+        user_preferences = requirement['user_preferences']
         filters = requirement['filters']
 
-        # Initialize effective state structure per policy
-        effective_state = {
+        # Initialize calib_state per user preferences
+        calib_state = {
             'bias': {
-                'requested': requested_flags['BIAS_CORRECT'],
+                'requested': user_preferences['BIAS_CORRECT'],
                 'available': False,
                 'created': False,
                 'master_path': None,
-                'blocking': requested_flags['BIAS_CORRECT'],  # Hard product when requested
-                'materialization_status': 'skipped_not_requested' if not requested_flags['BIAS_CORRECT'] else None,
+                'blocking': user_preferences['BIAS_CORRECT'],
+                'master_status': 'skipped_by_preference' if not user_preferences['BIAS_CORRECT'] else None,
             },
             'flat': {
                 filt[0]: {
-                    'requested': requested_flags['FLAT_CORRECT'],
+                    'requested': user_preferences['FLAT_CORRECT'],
                     'available': False,
                     'created': False,
                     'master_path': None,
-                    'blocking': requested_flags['FLAT_CORRECT'],  # Hard product when requested
-                    'materialization_status': 'skipped_not_requested' if not requested_flags['FLAT_CORRECT'] else None,
+                    'blocking': user_preferences['FLAT_CORRECT'],
+                    'master_status': 'skipped_by_preference' if not user_preferences['FLAT_CORRECT'] else None,
                 }
                 for filt in filters
             },
@@ -2600,22 +2591,22 @@ class ReduceSatObs(object):
         }
 
         # Initialize science dark entries for all science exposure times
-        if requested_flags['DARK_CORRECT']:
+        if user_preferences['DARK_CORRECT']:
             for exp in requirement['science_exposure_times']:
-                effective_state['dark']['science'][float(exp)] = {
+                calib_state['dark']['science'][float(exp)] = {
                     'requested': True,
                     'available': False,
                     'created': False,
                     'blocking': False,  # Non-blocking optional product
-                    'fallback': 'bias',  # Will fallback to bias if missing
+                    'fallback': 'bias',  # Fallback to bias if missing
                     'actual_exposure': None,
                     'is_exact': False,
-                    'materialization_status': None,
+                    'master_status': None,
                 }
         else:
             # Even if not requested, track for diagnostic purposes
             for exp in requirement['science_exposure_times']:
-                effective_state['dark']['science'][float(exp)] = {
+                calib_state['dark']['science'][float(exp)] = {
                     'requested': False,
                     'available': False,
                     'created': False,
@@ -2623,15 +2614,15 @@ class ReduceSatObs(object):
                     'fallback': None,
                     'actual_exposure': None,
                     'is_exact': False,
-                    'materialization_status': 'skipped_not_requested',
+                    'master_status': 'skipped_by_preference',
                 }
 
         # Flat-dark entries will be populated during flat probing
-        if requested_flags['FLATDARK_CORRECT']:
+        if user_preferences['FLATDARK_CORRECT']:
             # Placeholder for flat-darks (will be populated when flat exposure times are known)
             pass
 
-        return effective_state
+        return calib_state
 
     def _derive_processed_science_shape(self, science_file, obsparams):
         ccd = CCDData.read(science_file, unit=u.Unit('adu'))
@@ -2820,7 +2811,7 @@ class ReduceSatObs(object):
         candidate_master_root = self._derive_candidate_master_root(search_path)
         fallback_master_allowed = not self._is_same_master_root(science_master_root, candidate_master_root)
 
-        self._log.info(f"{' ':<4}Candidate probe       : {search_path}")
+        self._log.debug(f"{' ':<4}Candidate probe       : {search_path}")
 
         stage_plan = {'bias': [], 'dark': [], 'flat': {}}
         adoption_plan = {'bias': None, 'dark': {}, 'flat': {}}
@@ -2853,7 +2844,7 @@ class ReduceSatObs(object):
 
         master_bias_path = self._build_master_bias_path(science_master_root, suffix, sci_bin_str,
                                                         self._telescope, inst)
-        if requirement['requested_flags']['BIAS_CORRECT']:
+        if requirement['user_preferences']['BIAS_CORRECT']:
             local_exists = Path(master_bias_path).exists()
             local_usable = self._is_master_usable(master_bias_path, expected_shape)
             if local_usable and not force_make:
@@ -2896,14 +2887,14 @@ class ReduceSatObs(object):
                         stage_plan['bias'] = bias_files
                         bias_status = {'status': 'raw_creatable', 'path': master_bias_path, 'source': None}
                     else:
-                        bias_status = {'status': 'hard_unavailable', 'path': master_bias_path, 'source': None}
+                        bias_status = {'status': 'unavailable', 'path': master_bias_path, 'source': None}
                 else:
-                    bias_status = {'status': 'hard_unavailable', 'path': master_bias_path, 'source': None}
+                    bias_status = {'status': 'unavailable', 'path': master_bias_path, 'source': None}
         else:
             bias_status = {'status': 'not_requested', 'path': master_bias_path, 'source': None}
 
         flat_raw_exposure_requirements = {}
-        if requirement['requested_flags']['FLAT_CORRECT']:
+        if requirement['user_preferences']['FLAT_CORRECT']:
             for filt in filters:
                 filt_name = filt[0]
                 master_flat_path = self._build_master_flat_path(science_master_root, suffix, filt_name, sci_bin_str,
@@ -2961,10 +2952,10 @@ class ReduceSatObs(object):
                                 'exposures': flat_raw_exposure_requirements[filt_name],
                             }
                         else:
-                            flat_status[filt_name] = {'status': 'hard_unavailable', 'path': master_flat_path,
+                            flat_status[filt_name] = {'status': 'unavailable', 'path': master_flat_path,
                                                       'source': None, 'exposures': []}
                     else:
-                        flat_status[filt_name] = {'status': 'hard_unavailable', 'path': master_flat_path,
+                        flat_status[filt_name] = {'status': 'unavailable', 'path': master_flat_path,
                                                   'source': None, 'exposures': []}
         else:
             for filt in filters:
@@ -2974,7 +2965,7 @@ class ReduceSatObs(object):
                 flat_status[filt_name] = {'status': 'not_requested', 'path': master_flat_path, 'source': None,
                                           'exposures': []}
 
-        science_dark_requirements = requirement['science_exposure_times'] if requirement['requested_flags'][
+        science_dark_requirements = requirement['science_exposure_times'] if requirement['user_preferences'][
             'DARK_CORRECT'] else []
         flat_dark_requirements = sorted({float(exp)
                                          for _, exps in flat_raw_exposure_requirements.items()
@@ -2982,7 +2973,7 @@ class ReduceSatObs(object):
 
         dark_products = {}
         dark_required = bool(
-            requirement['requested_flags']['DARK_CORRECT'] or requirement['requested_flags']['FLATDARK_CORRECT'])
+            requirement['user_preferences']['DARK_CORRECT'] or requirement['user_preferences']['FLATDARK_CORRECT'])
         if dark_required:
             local_dark_masters = {} if force_make else self._scan_existing_dark_masters(science_master_root,
                                                                                         requirement,
@@ -2991,8 +2982,8 @@ class ReduceSatObs(object):
             all_targets = science_dark_requirements + flat_dark_requirements
             local_matches = self._select_exposure_matches(required_exposures=all_targets,
                                                           available_exposures=local_dark_masters.keys(),
-                                                          tolerance=requirement['requested_flags']['DARK_TOLERANCE'],
-                                                          allow_scaling=requirement['requested_flags'][
+                                                          tolerance=requirement['user_preferences']['DARK_TOLERANCE'],
+                                                          allow_scaling=requirement['user_preferences'][
                                                               'ALLOW_DARK_SCALING'])
 
             unresolved_targets = [t for t, m in local_matches.items() if m is None]
@@ -3005,9 +2996,9 @@ class ReduceSatObs(object):
                                                                          inst=inst)
                 fallback_matches = self._select_exposure_matches(required_exposures=unresolved_targets,
                                                                  available_exposures=fallback_dark_masters.keys(),
-                                                                 tolerance=requirement['requested_flags'][
+                                                                 tolerance=requirement['user_preferences'][
                                                                      'DARK_TOLERANCE'],
-                                                                 allow_scaling=requirement['requested_flags'][
+                                                                 allow_scaling=requirement['user_preferences'][
                                                                      'ALLOW_DARK_SCALING'])
 
             unresolved_targets = [t for t in unresolved_targets if fallback_matches.get(t) is None]
@@ -3024,9 +3015,9 @@ class ReduceSatObs(object):
                 raw_dark_groups = self._group_files_by_exposure(raw_dark_files, obsparams)
                 raw_dark_matches = self._select_exposure_matches(required_exposures=unresolved_targets,
                                                                  available_exposures=raw_dark_groups.keys(),
-                                                                 tolerance=requirement['requested_flags'][
+                                                                 tolerance=requirement['user_preferences'][
                                                                      'DARK_TOLERANCE'],
-                                                                 allow_scaling=requirement['requested_flags'][
+                                                                 allow_scaling=requirement['user_preferences'][
                                                                      'ALLOW_DARK_SCALING'])
 
             bias_available_for_fallback = bias_status['status'] in allowed_available_status
@@ -3049,7 +3040,7 @@ class ReduceSatObs(object):
                             status = 'raw_creatable'
 
                     if status is None:
-                        status = 'optional_unavailable_bias_fallback' if bias_available_for_fallback else 'hard_unavailable'
+                        status = 'optional_unavailable_bias_fallback' if bias_available_for_fallback else 'unavailable'
                         dark_status[consumer][target] = {
                             'status': status,
                             'target_exposure': float(target),
@@ -3061,7 +3052,7 @@ class ReduceSatObs(object):
                             'available': False,
                             'blocking': False,
                             'fallback': 'bias' if bias_available_for_fallback else 'none',
-                            'materialization_status': 'skipped_optional_unavailable_bias_fallback'
+                            'master_status': 'skipped_optional_unavailable_bias_fallback'
                             if bias_available_for_fallback else None,
                         }
                         if status == 'optional_unavailable_bias_fallback':
@@ -3084,7 +3075,7 @@ class ReduceSatObs(object):
                         'available': True,
                         'blocking': False,
                         'fallback': 'none',
-                        'materialization_status': None,
+                        'master_status': None,
                     }
                     if status == 'fallback_master_adoptable' and source_master is not None:
                         adoption_plan['dark'][actual_exp] = {
@@ -3100,37 +3091,53 @@ class ReduceSatObs(object):
 
             stage_plan['dark'] = sorted(set(stage_plan['dark']))
 
-        hard_product_blocking = []
-        if requirement['requested_flags']['FLAT_CORRECT']:
+        product_blocking = []
+        if requirement['user_preferences']['FLAT_CORRECT']:
             for filt in filters:
                 filt_name = filt[0]
-                if flat_status[filt_name]['status'] == 'hard_unavailable':
-                    hard_product_blocking.append(f'flat:{filt_name}')
+                if flat_status[filt_name]['status'] == 'unavailable':
+                    product_blocking.append(f'flat:{filt_name}')
+                elif flat_status[filt_name]['status'] == 'raw_creatable':
+                    # A flat built from raw frames needs a bias or unscaled flat-darks for every
+                    # flat exposure; otherwise the bias level stays in the flat.
+                    bias_usable = bias_status['status'] in allowed_available_status
+                    flat_darks_cover = requirement['user_preferences']['FLATDARK_CORRECT'] and all(
+                        dark_status['flat'].get(float(exp), {}).get('status') in allowed_available_status
+                        and dark_status['flat'].get(float(exp), {}).get('is_exact')
+                        for exp in flat_status[filt_name]['exposures']
+                    )
+                    if not bias_usable and not flat_darks_cover:
+                        product_blocking.append(f'flat-baseline:{filt_name}')
 
-        if requirement['requested_flags']['BIAS_CORRECT'] and bias_status['status'] == 'hard_unavailable':
+        if requirement['user_preferences']['BIAS_CORRECT'] and bias_status['status'] == 'unavailable':
+            # Darks can only replace the bias when used unscaled: scaling an impure
+            # dark would scale its bias pedestal too (see _dark_needs_bias_removal).
             all_sci_dark_covered = bool(science_dark_requirements) and all(
                 dark_status['science'].get(float(exp), {}).get('status') in allowed_available_status
+                and dark_status['science'].get(float(exp), {}).get('is_exact')
                 for exp in science_dark_requirements
             )
             if not all_sci_dark_covered:
-                hard_product_blocking.append('bias')
+                product_blocking.append('bias')
 
-        # Darks become baseline-hard only when no bias fallback is available.
-        if requirement['requested_flags']['DARK_CORRECT'] and not bias_status['status'] in allowed_available_status:
+        # Darks are used when no bias is available.
+        if requirement['user_preferences']['DARK_CORRECT'] and not bias_status['status'] in allowed_available_status:
             missing_science_dark_targets = [
                 float(exp) for exp in science_dark_requirements
-                if dark_status['science'].get(float(exp), {}).get('status') == 'hard_unavailable'
+                if dark_status['science'].get(float(exp), {}).get('status') == 'unavailable'
             ]
             if missing_science_dark_targets:
-                hard_product_blocking.extend(
+                product_blocking.extend(
                     [f'dark-baseline:{exp:g}' for exp in sorted(set(missing_science_dark_targets))]
                 )
 
-        complete = len(hard_product_blocking) == 0
-        unresolved = list(hard_product_blocking)
+        complete = len(product_blocking) == 0
+        unresolved = list(product_blocking)
 
+        # If None = no bias will be used, else path to bias master (existing or to be created)
+        use_bias = bias_status['status'] in allowed_available_status
         master_bias_info = [Path(master_bias_path),
-                            bias_status['status'] == 'raw_creatable']
+                            bias_status['status'] == 'raw_creatable'] if use_bias else None
         master_flat_info = {}
         for filt in filters:
             filt_name = filt[0]
@@ -3139,26 +3146,26 @@ class ReduceSatObs(object):
                                            status_info['status'] == 'raw_creatable']
         master_dark_info = {exp: [info['path'], bool(info['create'])] for exp, info in sorted(dark_products.items())}
 
-        effective_state_preview = {
+        calib_state_preview = {
             'bias': {
-                'requested': requirement['requested_flags']['BIAS_CORRECT'],
-                'available': bias_status['status'] in allowed_available_status,
+                'requested': requirement['user_preferences']['BIAS_CORRECT'],
+                'available': use_bias,
                 'created': False,
-                'master_path': Path(master_bias_path),
-                'blocking': requirement['requested_flags']['BIAS_CORRECT'],
+                'master_path': Path(master_bias_path) if use_bias else None,
+                'blocking': requirement['user_preferences']['BIAS_CORRECT'] and use_bias,
                 'probe_status': bias_status['status'],
-                'materialization_status': 'skipped_not_requested' if not requirement['requested_flags'][
+                'master_status': 'skipped_by_preference' if not requirement['user_preferences'][
                     'BIAS_CORRECT'] else None,
             },
             'flat': {
                 filt[0]: {
-                    'requested': requirement['requested_flags']['FLAT_CORRECT'],
+                    'requested': requirement['user_preferences']['FLAT_CORRECT'],
                     'available': flat_status[filt[0]]['status'] in allowed_available_status,
                     'created': False,
                     'master_path': Path(flat_status[filt[0]]['path']),
-                    'blocking': requirement['requested_flags']['FLAT_CORRECT'],
+                    'blocking': requirement['user_preferences']['FLAT_CORRECT'],
                     'probe_status': flat_status[filt[0]]['status'],
-                    'materialization_status': 'skipped_not_requested' if not requirement['requested_flags'][
+                    'master_status': 'skipped_by_preference' if not requirement['user_preferences'][
                         'FLAT_CORRECT'] else None,
                 }
                 for filt in filters
@@ -3189,13 +3196,13 @@ class ReduceSatObs(object):
             f'dark:{actual_exp:g}s'
             for actual_exp in sorted(science_master_dark_exposures)
         )
-        if science_master_items and not self.silent:
-            self._log.info(
+        if science_master_items:
+            self._log.debug(
                 f"{' ':<6}Science-date master check: PASS "
                 f"(usable master_calibs found: {', '.join(science_master_items)})"
             )
-            self._log.info(f"{' ':<6}Science-date master root : {science_master_root}")
-            self._log.info(f"{' ':<6}Science-date master action: use in place; no adoption/copy needed")
+            self._log.debug(f"{' ':<6}Science-date master root : {science_master_root}")
+            self._log.debug(f"{' ':<6}Science-date master action: use in place; no adoption/copy needed")
 
         adoption_items = []
         if adoption_plan.get('bias'):
@@ -3207,23 +3214,23 @@ class ReduceSatObs(object):
             f'dark:{float(actual_exp):g}s'
             for actual_exp in sorted(adoption_plan.get('dark', {}).keys(), key=lambda value: float(value))
         )
-        if adoption_items and not self.silent:
-            self._log.info(
+        if adoption_items:
+            self._log.debug(
                 f"{' ':<6}Fallback master check: PASS "
                 f"(usable master_calibs found: {', '.join(adoption_items)})"
             )
-            self._log.info(f"{' ':<6}Fallback master root : {candidate_master_root}")
-            self._log.info(f"{' ':<6}Fallback master action: adopt/copy to {science_master_root}")
+            self._log.debug(f"{' ':<6}Fallback master root : {candidate_master_root}")
+            self._log.debug(f"{' ':<6}Fallback master action: adopt/copy to {science_master_root}")
 
-        if has_any_calib is not None and not self.silent:
+        if has_any_calib is not None:
             raw_screen_label = 'present' if has_any_calib else 'none found'
             raw_reason_text = ', '.join(raw_screen_reasons) if raw_screen_reasons else 'unspecified raw creation need'
-            self._log.info(
+            self._log.debug(
                 f"{' ':<6}Raw-calib screen: {raw_screen_label} "
                 f"(raw creation considered for: {raw_reason_text})"
             )
 
-        self._log.info(
+        self._log.debug(
             f"{' ':<6}Probe result: {'COMPLETE' if complete else f'INCOMPLETE – unresolved hard products: {unresolved}'}")
         return {
             'search_path': Path(search_path),
@@ -3236,7 +3243,7 @@ class ReduceSatObs(object):
             'unresolved': unresolved,
             'optional_unavailable': optional_unavailable,
             'complete': complete,
-            'effective_state_preview': effective_state_preview,
+            'calib_state_preview': calib_state_preview,
             'science_dark_requirements': science_dark_requirements,
             'flat_dark_requirements': flat_dark_requirements,
             'master_bias_info': master_bias_info,
@@ -3248,7 +3255,7 @@ class ReduceSatObs(object):
             },
         }
 
-    def _adopt_fallback_master_products(self, adoption_plan, requirement, effective_state):
+    def _adopt_fallback_master_products(self, adoption_plan, requirement, calib_state):
         if not adoption_plan:
             return
         if not (adoption_plan.get("bias") or adoption_plan.get("dark") or adoption_plan.get("flat")):
@@ -3262,7 +3269,7 @@ class ReduceSatObs(object):
             source_path = Path(source_path)
             target_path = Path(target_path)
             if not source_path.exists():
-                raise CalibrationMaterializationError(f'Fallback master missing for adoption: {source_path}')
+                raise MasterBuildError(f'Fallback master missing for adoption: {source_path}')
             target_path.parent.mkdir(exist_ok=True, parents=True)
             if target_path.exists() and not force_make and self._is_master_usable(target_path, expected_shape):
                 return 'loaded_existing_science_date_master'
@@ -3270,11 +3277,11 @@ class ReduceSatObs(object):
             try:
                 shutil.copy2(source_path, target_path)
             except Exception as exc:
-                raise CalibrationMaterializationError(
+                raise MasterBuildError(
                     f'Failed to copy fallback master {source_path} -> {target_path}: {exc}'
                 ) from exc
             if not self._is_master_usable(target_path, expected_shape):
-                raise CalibrationMaterializationError(f'Adopted master is unreadable/unsuitable: {target_path}')
+                raise MasterBuildError(f'Adopted master is unreadable/unsuitable: {target_path}')
             if was_existing:
                 return 'overwritten_by_adopted_fallback_master'
             return 'adopted_from_fallback_master'
@@ -3282,41 +3289,38 @@ class ReduceSatObs(object):
         bias_adoption = adoption_plan.get('bias')
         if bias_adoption:
             mat_status = _copy_and_verify(bias_adoption['source_path'], bias_adoption['target_path'])
-            effective_state['bias']['master_path'] = Path(bias_adoption['target_path'])
-            effective_state['bias']['created'] = False
-            effective_state['bias']['materialization_status'] = mat_status
-            if not self.silent:
-                self._log.info(
-                    f"{' ':<4}Adopted fallback bias master: {bias_adoption['source_path']} -> {bias_adoption['target_path']}"
-                )
+            calib_state['bias']['master_path'] = Path(bias_adoption['target_path'])
+            calib_state['bias']['created'] = False
+            calib_state['bias']['master_status'] = mat_status
+            self._log.debug(
+                f"{' ':<4}Adopted fallback bias master: {bias_adoption['source_path']} -> {bias_adoption['target_path']}"
+            )
 
         for filt_name, mapping in adoption_plan.get('flat', {}).items():
             mat_status = _copy_and_verify(mapping['source_path'], mapping['target_path'])
-            if filt_name in effective_state['flat']:
-                effective_state['flat'][filt_name]['master_path'] = Path(mapping['target_path'])
-                effective_state['flat'][filt_name]['created'] = False
-                effective_state['flat'][filt_name]['materialization_status'] = mat_status
-            if not self.silent:
-                self._log.info(
-                    f"{' ':<4}Adopted fallback flat master [{filt_name}]: {mapping['source_path']} -> {mapping['target_path']}"
-                )
+            if filt_name in calib_state['flat']:
+                calib_state['flat'][filt_name]['master_path'] = Path(mapping['target_path'])
+                calib_state['flat'][filt_name]['created'] = False
+                calib_state['flat'][filt_name]['master_status'] = mat_status
+            self._log.debug(
+                f"{' ':<4}Adopted fallback flat master [{filt_name}]: {mapping['source_path']} -> {mapping['target_path']}"
+            )
 
         for actual_exp, mapping in adoption_plan.get('dark', {}).items():
             mat_status = _copy_and_verify(mapping['source_path'], mapping['target_path'])
             for consumer in ('science', 'flat'):
-                for _, info in effective_state['dark'][consumer].items():
+                for _, info in calib_state['dark'][consumer].items():
                     if info.get('actual_exposure') == float(actual_exp):
                         info['master_path'] = Path(mapping['target_path'])
                         info['created'] = False
-                        info['materialization_status'] = mat_status
-            if not self.silent:
-                self._log.info(
-                    f"{' ':<4}Adopted fallback dark master [{actual_exp:g}s]: {mapping['source_path']} -> {mapping['target_path']}"
-                )
+                        info['master_status'] = mat_status
+            self._log.debug(
+                f"{' ':<4}Adopted fallback dark master [{actual_exp:g}s]: {mapping['source_path']} -> {mapping['target_path']}"
+            )
 
-    def _stage_and_prepare(self, file_list, imagetyp, seen, telescope, obsparams):
-        """Phase 8: Copy raw calibration files to tmp_path and prepare them.
-        
+    def _stage_and_prepare(self, file_list, imagetyp, seen, telescope, obsparams, label=None):
+        """Copy raw calibration files to tmp_path and prepare them.
+
         Only stages files when needed (master doesn't exist or needs creation).
         Tracks already-staged files to avoid duplicate processing.
         """
@@ -3327,7 +3331,8 @@ class ReduceSatObs(object):
         suffix = self._suffix
         new_paths = []
         if not self.silent:
-            self._log.info(f"{' ':<4}[stage:{imagetyp}] Copying {len(file_list)} file(s) to tmp: {tmp_path}")
+            self._log.info(f"{' ':<4}Copying {len(file_list)} raw {label or imagetyp} frame(s)")
+        self._log.debug(f"{' ':<4}[stage:{imagetyp}] Target folder: {tmp_path}")
         for i, fpath in enumerate(file_list):
             fpath_str = str(fpath)
             if fpath_str in seen:
@@ -3342,8 +3347,7 @@ class ReduceSatObs(object):
         if not self.silent:
             sys.stdout.write('\n')
         if new_paths:
-            if not self.silent:
-                self._log.info(f"{' ':<4}[stage:{imagetyp}] Normalising headers for {len(new_paths)} copied file(s)")
+            self._log.debug(f"{' ':<4}[stage:{imagetyp}] Normalising headers for {len(new_paths)} copied file(s)")
             self.prepare_fits_files(new_paths, telescope, obsparams, imagetyp)
         else:
             self._log.debug(f"{' ':<4}[stage:{imagetyp}] All files were already staged, nothing new to prepare")
@@ -3381,34 +3385,42 @@ class ReduceSatObs(object):
 
         return gain, readnoise
 
-    def _materialize_phase1_products(self, requirement, effective_state, obsparams, filters):
-        """Phase 9: Create or load committed master calibration products.
+    def _build_master_products(self, requirement, calib_state, obsparams, filters):
+        """Create or load master calibration products.
 
-        Reads product availability from ``effective_state`` (the single runtime
+        Reads product availability from ``calib_state`` (the single runtime
         truth) and writes back ``available``, ``created``, and ``master_path``
         after each product is successfully created or loaded.
 
         Key invariants:
-        1. Only darks with effective_state['dark'][consumer][exp]['available']=True
-           are materialized and entered into the runtime dark map.
-        2. Missing/optional darks are absent from the runtime map — not None.
-        3. FLATDARK_CORRECT is stored in effective_state, never in self._config.
-        4. Runtime dark map is returned for Phase-2 handoff.
+        1. Only darks with calib_state['dark'][consumer][exp]['available']=True
+           are built and entered into the master_darks map.
+        2. Missing/optional darks are absent from the master_darks map — not None.
+        3. FLATDARK_CORRECT is stored in calib_state, never in self._config.
+        4. The master_darks map is returned for the science-reduction handoff.
         """
         ic_all = ImageFileCollection(location=self._tmp_path)
         if ic_all.summary is None or len(ic_all.summary) == 0:
-            raise RuntimeError('No files available in temporary directory for Phase-1 materialization.')
+            raise RuntimeError('No files available in temporary directory for building master calibrations.')
 
         gain, readnoise = self._extract_gain_readnoise(ic_all)
         has_multiple_amps = obsparams['multiple_amps']
         dbias = self._master_bias_info
         ddark = self._master_dark_info
         dflat = self._master_flat_info
-        dark_state = effective_state['dark']  # shorthand — reads/writes in-place
+        dark_state = calib_state['dark']  # shorthand — reads/writes in-place
 
-        # ── Phase 9.1: Create or load master bias ───────────────────────────────
+        # Create or load master bias
         ccd_master_bias = None
-        if requirement['requested_flags']['BIAS_CORRECT']:
+        if requirement['user_preferences']['BIAS_CORRECT'] and not dbias:
+            # Bias requested but unavailable; the probe only allows this when the
+            # science darks cover every science exposure.
+            self._log.debug(f"{' ':<4}No master bias available; science darks are the correction baseline")
+            calib_state['bias']['available'] = False
+            calib_state['bias']['created'] = False
+            calib_state['bias']['master_path'] = None
+            calib_state['bias']['master_status'] = 'skipped_unavailable_dark_baseline'
+        elif requirement['user_preferences']['BIAS_CORRECT']:
             master_bias = dbias[0]
             create_bias = dbias[1]
             try:
@@ -3422,20 +3434,22 @@ class ReduceSatObs(object):
                                                               readnoise=readnoise,
                                                               method=self._config['COMBINE_METHOD_BIAS'])
                 else:
-                    status = 'loaded_existing_science_date_master'
-                    if not self.silent:
-                        self._log.info(f'  Loading committed master bias file: {os.path.basename(master_bias)}')
+                    # Keep an adoption status set by _adopt_fallback_master_products
+                    status = calib_state['bias'].get('master_status') or 'loaded_existing_science_date_master'
+                    self._log.debug(f"{' ':<4}Loading master bias file: {os.path.basename(master_bias)}")
                     ccd_master_bias = self.convert_fits_to_ccd(master_bias, single=True)
+                if ccd_master_bias is None:
+                    raise RuntimeError(f'master bias could not be read: {master_bias}')
             except Exception as exc:
-                effective_state['bias']['materialization_status'] = 'failed_materialization'
-                raise CalibrationMaterializationError(f'Bias materialization failed: {exc}') from exc
-            # Write back into effective_state
-            effective_state['bias']['available'] = ccd_master_bias is not None
-            effective_state['bias']['created'] = create_bias
-            effective_state['bias']['master_path'] = Path(master_bias)
-            effective_state['bias']['materialization_status'] = status
+                calib_state['bias']['master_status'] = 'failed_build'
+                raise MasterBuildError(f'Bias build failed: {exc}') from exc
+            # Write back into calib_state
+            calib_state['bias']['available'] = ccd_master_bias is not None
+            calib_state['bias']['created'] = create_bias
+            calib_state['bias']['master_path'] = Path(master_bias)
+            calib_state['bias']['master_status'] = status
 
-        # ── Phase 9.2: Identify pure-dark exposures (need bias removal) ─────────
+        # Identify pure-dark exposures (need bias removal)
         # A dark that will be SCALED (exposure mismatch beyond tolerance, in EITHER
         # direction) must be bias-free before scaling; unscaled (exact) darks may stay
         # impure since their bias cancels in the science subtraction. See
@@ -3448,7 +3462,7 @@ class ReduceSatObs(object):
             if self._dark_needs_bias_removal(info)
         }
 
-        # ── Phase 9.3: Materialise only darks referenced by available entries ───
+        # Build only darks referenced by available entries
         actual_dark_ccds = {}
         dark_preexisting_targets = {}
         for dark_exptime, dval in ddark.items():
@@ -3473,67 +3487,65 @@ class ReduceSatObs(object):
                         gain=gain, readnoise=readnoise,
                         method=self._config['COMBINE_METHOD_DARK'])
                 except Exception as exc:
-                    raise CalibrationMaterializationError(
-                        f'Dark materialization failed for exposure {dark_exptime:g}s: {exc}'
+                    raise MasterBuildError(
+                        f'Dark build failed for exposure {dark_exptime:g}s: {exc}'
                     ) from exc
             else:
-                if not self.silent:
-                    self._log.info(f'  Loading committed master dark file: {os.path.basename(master_dark)}')
+                self._log.debug(f"{' ':<4}Loading master dark file: {os.path.basename(master_dark)}")
                 try:
                     actual_dark_ccds[dark_exptime] = self.convert_fits_to_ccd(master_dark, single=True)
                 except Exception as exc:
-                    raise CalibrationMaterializationError(
+                    raise MasterBuildError(
                         f'Dark load failed for exposure {dark_exptime:g}s: {exc}'
                     ) from exc
 
-        # ── Phase 9.4: Build runtime dark map; write back into effective_state ──
-        dark_runtime = {'sci_dark': {}, 'flat_dark': {}}
-        consumer_to_runtime = {'science': 'sci_dark', 'flat': 'flat_dark'}
-        for consumer, runtime_key in consumer_to_runtime.items():
+        # Build master_darks map; write back into calib_state
+        master_darks = {'sci_dark': {}, 'flat_dark': {}}
+        consumer_to_key = {'science': 'sci_dark', 'flat': 'flat_dark'}
+        for consumer, dark_key in consumer_to_key.items():
             for target, info in dark_state[consumer].items():
                 if not info.get('available'):
-                    self._log.debug(f"{' ':<4}Dark {consumer}:{target:g}: unavailable, not in runtime map")
+                    self._log.debug(f"{' ':<4}Dark {consumer}:{target:g}: unavailable, not in master_darks")
                     if info.get('fallback') == 'bias':
-                        info['materialization_status'] = 'skipped_optional_unavailable_bias_fallback'
+                        info['master_status'] = 'skipped_optional_unavailable_bias_fallback'
                     continue
                 actual_exp = info.get('actual_exposure')
                 if actual_exp is None or actual_exp not in actual_dark_ccds:
-                    self._log.warning(f"{' ':<4}Dark {consumer}:{target:g}: available but not materialised")
-                    # Downgrade availability in effective_state
+                    self._log.warning(f"{' ':<4}Dark {consumer}:{target:g}: available but not built")
+                    # Downgrade availability in calib_state
                     info['available'] = False
                     continue
                 ccd_mdark = actual_dark_ccds[actual_exp]
                 bias_corr_in_dark = ccd_mdark.header.get('BIASCORR', False)
-                dark_runtime[runtime_key][float(target)] = (ccd_mdark, bias_corr_in_dark, bool(info['is_exact']))
-                # Write back: materialised = True
+                master_darks[dark_key][float(target)] = (ccd_mdark, bias_corr_in_dark, bool(info['is_exact']))
+                # Write back: built = True
                 info['created'] = ddark[actual_exp][1] if actual_exp in ddark else False
                 info['master_path'] = Path(ddark[actual_exp][0]) if actual_exp in ddark else None
                 if info['created']:
-                    info['materialization_status'] = (
+                    info['master_status'] = (
                         'overwritten_from_raw' if dark_preexisting_targets.get(actual_exp,
                                                                                False) else 'created_from_raw'
                     )
-                elif info.get('materialization_status') is None:
-                    info['materialization_status'] = 'loaded_existing_science_date_master'
-                self._log.debug(f"{' ':<4}Dark {consumer}:{target:g} → {actual_exp:g}s added to runtime map")
+                elif info.get('master_status') is None:
+                    info['master_status'] = 'loaded_existing_science_date_master'
+                self._log.debug(f"{' ':<4}Dark {consumer}:{target:g} → {actual_exp:g}s added to master_darks")
 
-        # ── Phase 9.5: Derive flat-dark availability into effective_state ────────
-        # Spec 06 / plan Phase 11: do NOT touch self._config here.
-        # Store into effective_state so Phase-2 reads it from there.
-        flat_dark_available = bool(dark_runtime['flat_dark'])
-        effective_state['flat_dark_available'] = flat_dark_available
-        if not self.silent:
-            self._log.info(f"{' ':<4}Flat-dark effective availability: {flat_dark_available}")
-            if flat_dark_available:
-                self._log.info(f"{' ':<4}  Available flat-dark exposures: {sorted(dark_runtime['flat_dark'].keys())}")
-            unavailable = [t for t, i in dark_state['flat'].items() if not i.get('available')]
-            if unavailable:
-                self._log.info(f"{' ':<4}  Flat-darks requested but unavailable: {unavailable}")
+        # Derive flat-dark availability into calib_state
+        # Do NOT touch self._config here.
+        # Store into calib_state so science reduction reads it from there.
+        flat_dark_available = bool(master_darks['flat_dark'])
+        calib_state['flat_dark_available'] = flat_dark_available
+        self._log.debug(f"{' ':<4}Flat-dark available: {flat_dark_available}")
+        if flat_dark_available:
+            self._log.debug(f"{' ':<6}Available flat-dark exposures: {sorted(master_darks['flat_dark'].keys())}")
+        unavailable = [t for t, i in dark_state['flat'].items() if not i.get('available')]
+        if unavailable:
+            self._log.debug(f"{' ':<6}Flat-darks requested but unavailable: {unavailable}")
 
-        # ── Phase 9.6: Create or load master flats with available-only dark map ─
+        # Create or load master flats with available-only dark map
         for filt in filters:
             filt_name = filt[0]
-            if filt_name not in dflat or not requirement['requested_flags']['FLAT_CORRECT']:
+            if filt_name not in dflat or not requirement['user_preferences']['FLAT_CORRECT']:
                 continue
             master_flat = dflat[filt_name][0]
             create_flat = dflat[filt_name][1]
@@ -3543,43 +3555,44 @@ class ReduceSatObs(object):
                     self.create_master_flat(files_list=ic_all, obsparams=obsparams,
                                             mflat_fname=master_flat, flat_filter=filt_name,
                                             mbias=ccd_master_bias,
-                                            mdark=dark_runtime['flat_dark'],
+                                            mdark=master_darks['flat_dark'],
                                             multiple_amps=has_multiple_amps,
                                             gain=gain, readnoise=readnoise,
                                             method=self._config['COMBINE_METHOD_FLAT'])
                 except Exception as exc:
-                    effective_state['flat'][filt_name]['materialization_status'] = 'failed_materialization'
-                    raise CalibrationMaterializationError(
-                        f'Flat materialization failed for filter {filt_name}: {exc}'
+                    calib_state['flat'][filt_name]['master_status'] = 'failed_build'
+                    raise MasterBuildError(
+                        f'Flat build failed for filter {filt_name}: {exc}'
                     ) from exc
             else:
-                flat_status = 'loaded_existing_science_date_master'
-                if not self.silent:
-                    self._log.info(f'  Loading committed master flat file: {os.path.basename(master_flat)}')
+                # Keep an adoption status set by _adopt_fallback_master_products
+                flat_status = (calib_state['flat'][filt_name].get('master_status')
+                               or 'loaded_existing_science_date_master')
+                self._log.debug(f"{' ':<4}Loading master flat file: {os.path.basename(master_flat)}")
                 try:
                     self.convert_fits_to_ccd(master_flat, single=True)
                 except Exception as exc:
-                    effective_state['flat'][filt_name]['materialization_status'] = 'failed_materialization'
-                    raise CalibrationMaterializationError(
+                    calib_state['flat'][filt_name]['master_status'] = 'failed_build'
+                    raise MasterBuildError(
                         f'Flat load failed for filter {filt_name}: {exc}'
                     ) from exc
-            # Write back into effective_state
-            effective_state['flat'][filt_name]['available'] = True
-            effective_state['flat'][filt_name]['created'] = create_flat
-            effective_state['flat'][filt_name]['master_path'] = Path(master_flat)
-            effective_state['flat'][filt_name]['materialization_status'] = flat_status
+            # Write back into calib_state
+            calib_state['flat'][filt_name]['available'] = True
+            calib_state['flat'][filt_name]['created'] = create_flat
+            calib_state['flat'][filt_name]['master_path'] = Path(master_flat)
+            calib_state['flat'][filt_name]['master_status'] = flat_status
 
-        return dark_runtime
+        return master_darks
 
-    def _validate_phase1_products(self, requirement, effective_state, master_out):
-        """Phase 10: Validation gate v2.
+    def _validate_master_products(self, requirement, calib_state, master_out):
+        """Validation gate v2.
 
-        Reads exclusively from ``effective_state`` — the single runtime truth.
+        Reads exclusively from ``calib_state`` — the single runtime truth.
 
         Fatal (hard) products:
-        - BIAS_CORRECT=True → no master bias file on disk after Phase 9
+        - BIAS_CORRECT=True → no master bias file on disk after the master build
         - FLAT_CORRECT=True → no master flat for a required science filter
-        - Any committed hard product path outside locked master_out
+        - Any hard product path outside locked master_out
 
         Optional (soft) products — logged, non-fatal:
         - DARK_CORRECT=True and science dark entry has available=False
@@ -3593,9 +3606,17 @@ class ReduceSatObs(object):
         ddark = self._master_dark_info
         dflat = self._master_flat_info
 
-        # Hard: bias
-        if requirement['requested_flags']['BIAS_CORRECT']:
-            bias_path = effective_state['bias'].get('master_path') or Path(dbias[0])
+        # Hard: bias — or, when no bias is used, a science dark for every exposure
+        if requirement['user_preferences']['BIAS_CORRECT'] and not dbias:
+            sci_darks = calib_state['dark']['science']
+            uncovered = [
+                float(exp) for exp in requirement['science_exposure_times']
+                if not sci_darks.get(float(exp), {}).get('available')
+            ]
+            if uncovered:
+                fatal_missing.extend(f'dark-baseline:{exp:g}' for exp in sorted(set(uncovered)))
+        elif requirement['user_preferences']['BIAS_CORRECT']:
+            bias_path = calib_state['bias'].get('master_path') or Path(dbias[0])
             bias_path = Path(bias_path)
             if not bias_path.exists():
                 fatal_missing.append('bias')
@@ -3603,10 +3624,10 @@ class ReduceSatObs(object):
                 fatal_missing.append(f'output-root-mismatch:bias:{bias_path}')
 
         # Hard: flats
-        if requirement['requested_flags']['FLAT_CORRECT']:
+        if requirement['user_preferences']['FLAT_CORRECT']:
             for filt in requirement['filters']:
                 filt_name = filt[0]
-                flat_info = effective_state['flat'].get(filt_name, {})
+                flat_info = calib_state['flat'].get(filt_name, {})
                 flat_path = flat_info.get('master_path') or Path(dflat[filt_name][0])
                 flat_path = Path(flat_path)
                 if not flat_path.exists():
@@ -3615,8 +3636,8 @@ class ReduceSatObs(object):
                     fatal_missing.append(f'output-root-mismatch:flat:{filt_name}:{flat_path}')
 
         # Soft: science darks
-        if requirement['requested_flags']['DARK_CORRECT']:
-            for target, info in effective_state['dark']['science'].items():
+        if requirement['user_preferences']['DARK_CORRECT']:
+            for target, info in calib_state['dark']['science'].items():
                 if not info.get('available'):
                     optional_missing.append(f'science-dark:{target:g}')
                 else:
@@ -3627,8 +3648,8 @@ class ReduceSatObs(object):
                             optional_missing.append(f'science-dark:{target:g}')
 
         # Soft: flat-darks
-        if requirement['requested_flags']['FLATDARK_CORRECT']:
-            for target, info in effective_state['dark']['flat'].items():
+        if requirement['user_preferences']['FLATDARK_CORRECT']:
+            for target, info in calib_state['dark']['flat'].items():
                 if not info.get('available'):
                     optional_missing.append(f'flat-dark:{target:g}')
                 else:
@@ -3638,35 +3659,34 @@ class ReduceSatObs(object):
                         if not dark_path.exists():
                             optional_missing.append(f'flat-dark:{target:g}')
 
-        # Output-root drift check for all materialised dark masters
+        # Output-root drift check for all built dark masters
         for actual_exp, dval in ddark.items():
             dark_path = Path(dval[0])
             if dark_path.exists() and master_out not in [dark_path.parent, *dark_path.parents]:
                 fatal_missing.append(f'output-root-mismatch:dark:{dark_path}')
 
-        # Gate I: enforce materialization status vocabulary.
-        status_records = [('bias', effective_state.get('bias', {}).get('materialization_status'))]
-        for filt_name, item in effective_state.get('flat', {}).items():
-            status_records.append((f'flat:{filt_name}', item.get('materialization_status')))
+        # Gate I: enforce master status vocabulary.
+        status_records = [('bias', calib_state.get('bias', {}).get('master_status'))]
+        for filt_name, item in calib_state.get('flat', {}).items():
+            status_records.append((f'flat:{filt_name}', item.get('master_status')))
         for consumer in ('science', 'flat'):
-            for target, item in effective_state.get('dark', {}).get(consumer, {}).items():
-                status_records.append((f'dark:{consumer}:{target:g}', item.get('materialization_status')))
+            for target, item in calib_state.get('dark', {}).get(consumer, {}).items():
+                status_records.append((f'dark:{consumer}:{target:g}', item.get('master_status')))
 
         invalid_status = [
             f'{label}:{status}'
             for label, status in status_records
-            if status is not None and status not in ALLOWED_MATERIALIZATION_STATUSES
+            if status is not None and status not in ALLOWED_MASTER_STATUSES
         ]
         if invalid_status:
-            fatal_missing.extend([f'invalid-materialization-status:{item}' for item in invalid_status])
+            fatal_missing.extend([f'invalid-master-status:{item}' for item in invalid_status])
 
         if fatal_missing:
             return fatal_missing, optional_missing
 
-        if not self.silent:
-            self._log.info(f"{' ':<4}Final validation result: PASS (hard products available)")
-            if optional_missing:
-                self._log.info(f"{' ':<4}Optional unavailable products (non-fatal): {optional_missing}")
+        self._log.debug(f"{' ':<4}Final validation result: PASS")
+        if optional_missing:
+            self._log.debug(f"{' ':<4}Optional unavailable products (non-fatal): {optional_missing}")
         return [], optional_missing
 
 
