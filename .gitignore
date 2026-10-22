@@ -184,3 +184,6 @@ leosatpy/docs/
 scripts/
 ToDo.md
 qodana.yaml
+
+# Local-only tests
+tests/
