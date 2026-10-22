@@ -239,7 +239,7 @@ ca123dlrmkiii_param = {
     'pc_matrix': None,  # Preferred CCD PC matrix
 
     'gain': 'GAIN',  # CD gain in el/DN
-    'readnoise': None,  # CCD Read Out Noise (e-)
+    'readnoise': 2.,  # CCD Read Out Noise (e-)
 
     # telescope pointing keywords
     'ra': 'RA',  # telescope pointing, RA
@@ -290,8 +290,8 @@ ca123dlrmkiii_param = {
     'apply_mask': True
 }
 
-# Chakana 0.6m telescope ckoirama
-ckoir_param = {
+# CDK24 telescope ckoirama
+ckoir_param_cdk24 = {
 
     # telescope location information
     "name": "Ckoirama Observatory, Universidad de Antofagasta, Chile",
@@ -341,7 +341,95 @@ ckoir_param = {
     # filtername translation dictionary
     'filter_translations': {'u\'': 'u', 'g\'': 'g',
                             'r\'': 'r', 'i\'': 'i',
-                            'z\'': 'z'},
+                            'z\'': 'z', 'B': 'B', 'V': 'V', 'G': 'G', 'R': 'R',
+                            'I': 'I', 'L': None},
+
+    'exptime': 'EXPTIME',  # exposure time keyword (s)
+    'airmass': 'AIRMASS',  # airmass keyword
+
+    # Reduction keywords
+    'ampsec': None,
+    'oscansec': None,
+    'trimsec': None,
+    'cropsec' : None,
+
+    # ccd mask for regions to exclude from all processes
+    'ccd_mask': {'1x1': None,
+                 '2x2': None,
+                 '4x4': None},
+
+    'imagetyp_light': 'LIGHT',
+    'imagetyp_bias': 'BIAS',
+    'imagetyp_dark': 'DARK',
+    'imagetyp_flat': 'FLAT',
+    'add_imagetyp_keys': True,
+    'add_imagetyp': {'light': {'imagetyp': 'Light Frame'}, 'bias': {'imagetyp': 'Bias Frame'},
+                     'dark': {'imagetyp': 'Dark Frame'}, 'flat': {'imagetyp': 'Flat Field'}},
+
+    # keywords to exclude from the header update while preparing the file
+    'keys_to_exclude': None,
+
+    # keywords for info_dict
+    'obs_keywords': ['telescop', 'instrume', 'object', 'date-obs', 'filter', 'exptime',
+                     'objctra', 'objctdec', 'airmass', 'binning'],
+
+    # source extractor settings
+    'saturation_limit': 6.5e4,
+    'apply_mask': True
+}
+
+
+# CDK20 telescope ckoirama
+ckoir_param_cdk20 = {
+
+    # telescope location information
+    "name": "Ckoirama Observatory, Universidad de Antofagasta, Chile",
+    "longitude": -69.930472,
+    "latitude": -24.089222,
+    "altitude": 960.0,
+    "tz": -4,
+
+    # telescope keywords
+    'telescope_instrument': 'QHYCCD-Cameras-Capture',  # telescope/instrument name
+    'telescope_keyword': 'CDK20',  # telescope/instrument keyword
+    'observatory_code': '',  # MPC observatory code
+
+    # instrument-specific FITS header keywords
+    'telescop': 'TELESCOP',  # telescope keyword
+    'instrume': 'INSTRUME',  # instrument keyword
+
+    'extent': ('NAXIS1', 'NAXIS2'),  # N_pixels in x/y
+    'n_ext': 0,  # Number of Extensions in the calibrated image
+    'n_amps': 1,  # number of chips on detector
+    'multiple_amps': False,
+    'namps_yx': None,
+    'amplist': None,  # amplifier list keyword
+    'secpix': (0.339, 0.339),  # pixel size (arcsec)
+    'binning': ('XBINNING', 'YBINNING'),  # binning in x/y
+    'image_size_1x1': (9576, 6388),
+    'pc_matrix': None,  # Preferred CCD PC matrix
+
+    # Gain and readout noise taken from https://people.bsu.edu/rberring/observing-facilities/
+    # for FLI PL16801 camera
+    'gain': 1.5,  # CD gain in el/DN
+    'readnoise': 7.5,  # CCD Read Out Noise (e-)
+
+    # telescope pointing keywords
+    'ra': 'OBJCTRA',  # telescope pointing, RA
+    'dec': 'OBJCTDEC',  # telescope pointing, Dec
+    'radec_separator': ' ',  # RA/Dec hms separator, use 'XXX' if already in degrees
+    'equinox': None,
+
+    # keyword; use 'date|time' if separate
+    'date_keyword': 'DATE-OBS',  # obs date/time
+
+    'imagetyp': 'IMAGETYP',
+    'object': 'OBJECT',  # object name keyword
+    'filter': 'FILTER',  # Filter keyword
+
+    # filtername translation dictionary
+    'filter_translations': {'g\'': 'g',
+                            'r\'': 'r', 'i\'': 'i'},
 
     'exptime': 'EXPTIME',  # exposure time keyword (s)
     'airmass': 'AIRMASS',  # airmass keyword
@@ -677,7 +765,7 @@ ouka_params = {
     'pc_matrix': None,  # Preferred CCD PC matrix
 
     'gain': 'EGAIN',  # CD gain in el/DN
-    'readnoise': None,  # CCD Read Out Noise (e-)
+    'readnoise': 3.,  # CCD Read Out Noise (e-)
 
     # telescope pointing keywords
     'ra': 'RA',  # telescope pointing, RA
@@ -813,13 +901,14 @@ fut_params = {
 }
 
 # currently available telescopes
-IMPLEMENTED_TELESCOPES = ['CA123DLRMKIII', 'CBNUO-JC', 'CKOIR', 'DK154_DFOSC', 'CTIO90', 'CTIO400',
+IMPLEMENTED_TELESCOPES = ['CA123DLRMKIII', 'CBNUO-JC', 'CKOIR20', 'CKOIR24', 'DK154_DFOSC', 'CTIO90', 'CTIO400',
                           'OUKA', 'SPM', 'FUT']
 
 # translate INSTRUME header keyword
 INSTRUMENT_IDENTIFIERS = OrderedDict({'DFOSC_FASU': 'DK154_DFOSC',
                                       'DLR-MKIII': 'CA123DLRMKIII',
-                                      'FLI': 'CKOIR',
+                                      'FLI': 'CKOIR24',
+                                      'QHYCCD-Cameras-Capture': 'CKOIR20',
                                       'SBIG STX-16803 CCD Camera': 'CBNUO-JC',
                                       'cfccd': 'CTIO90', 'DECam': 'CTIO400',
                                       'ZWO ASI2600MM Pro': 'OUKA',
@@ -830,7 +919,8 @@ INSTRUMENT_IDENTIFIERS = OrderedDict({'DFOSC_FASU': 'DK154_DFOSC',
 # translate telescope keyword into parameter set defined here
 TELESCOPE_PARAMETERS = OrderedDict({'CA123DLRMKIII': ca123dlrmkiii_param,
                                     'CBNUO-JC': cbnuo_params,
-                                    'CKOIR': ckoir_param,
+                                    'CKOIR20': ckoir_param_cdk20,
+                                    'CKOIR24': ckoir_param_cdk24,
                                     'DK154_DFOSC': dk154_params,
                                     'CTIO90': ctio_90cm_params,
                                     'CTIO400': ctio_400cm_params,

@@ -62,6 +62,12 @@ __status__ = "Production"
 # Logging
 _log = logging.getLogger(__name__)
 
+prog_typ_conversion = {
+    'reduceSatObs': 'reduction',
+    'reduceCalibObs': 'reduction',
+    'calibWCS': 'calibration',
+    'satPhotometry': 'analysis'
+}
 
 class DataSet(object):
     """Initialize and validate given input."""
@@ -72,17 +78,19 @@ class DataSet(object):
                  silent: bool = False,
                  log: logging.Logger = _log, log_level: int = 20):
         """ Constructor with default values """
-
-        if prog_sub_typ is None:
-            prog_sub_typ = []
+        # Ensure logger is active at current effective level
         log.setLevel(log_level)
 
+        # Set program subtype
+        if prog_sub_typ is None:
+            prog_sub_typ = []
+        # Validate input arguments
         if not isinstance(input_args, list):
             raise ValueError('Input argument must be a list')
 
-        if len(input_args) > 1:
-            if not silent:
-                log.info("  Multiple inputs detected")
+        # if len(input_args) > 1:
+        #     if not silent:
+        #         log.info("  Multiple inputs detected")
 
         self._datasets = {}
         self._datasets_full = None
@@ -123,12 +131,12 @@ class DataSet(object):
                 shutil.copy(default_ini_path, configfile)
 
                 self.log.info('> Read configuration')
-                self.log.info("  `leosatpy_config.ini` not found in the user's home directory")
-                self.log.info(f'  ==> Default config file copied to {configfile}')
-                self.log.info('  Please check the config file parameter and values and re-start when ready.')
+                self.log.info("    `leosatpy_config.ini` not found in the user's home directory")
+                self.log.info(f'    Default config file copied to {configfile}')
+                self.log.info('    Please check the config file parameters and values and re-start when ready.')
                 sys.exit(0)
             else:
-                self.log.info(f'> Read configuration ({configfile})')
+                self.log.debug(f'> Read configuration ({configfile})')
 
         except PermissionError:
             self.log.error(f"  Unable to access or create the .ini "
@@ -198,15 +206,16 @@ class DataSet(object):
         return self._calib_data_sorted
 
     def get_valid_calib_observations(self, imagetyps_selected: list):
-        """
+        """ Get valid calibration observations.
 
         Parameters
         ----------
-        imagetyps_selected
+        imagetyps_selected : list
+            List of selected image types for calibration.
 
         Returns
         -------
-
+        None
         """
         obs_data_sorted = []
         for subset in self._datasets:
@@ -242,8 +251,19 @@ class DataSet(object):
         self._calib_data_sorted = obs_data_sorted
 
     def get_valid_sci_observations(self, inst, prog_typ: str = "reduceSatObs"):
-        """Search the input argument for valid data"""
+        """Search the input argument for valid data.
 
+        Parameters
+        ----------
+        inst : str
+            Instrument name.
+        prog_typ : str, optional
+            Program type, by default "reduceSatObs".
+
+        Returns
+        -------
+        None
+        """
         folder_lvl1 = 'reduced'
         folder_lvl2 = 'raw'
         if prog_typ != 'reduceSatObs':
@@ -277,22 +297,23 @@ class DataSet(object):
 
     def check_input_for_fits_files(self):
         """ Check the given input and identify fits files."""
-
         log = self.log
         fits_image_filenames = []
         regex_ext = re.compile(r'.*\.(fits|fit|fts)$', re.IGNORECASE)
+        n_args = len(self._input_args)
+        log.debug(f"{' ':<4}Number of input arguments: {n_args}")
 
+        # Process each input argument
         for name in self._input_args:
             path_arg = Path(name).expanduser()
-
+            log.debug(f"{' ':<4}Processing input: {path_arg}")
             if path_arg.is_dir():
-                if not self.silent:
-                    log.info(f"  Directory detected: {path_arg}. Searching for .fits file(s).")
+                log.debug(f"{' ':<4}Input type: directory; searching for .fits file(s)")
                 fits_image_filenames.extend(self.process_directory_recursive(path_arg, regex_ext))
 
             elif path_arg.is_file() and re.search(regex_ext, path_arg.name):
+                log.debug(f"{' ':<4}Input type: file")
                 if self.prog_mode != 'reduceCalibObs':
-                    log.debug("  Single FITS-file detected.")
                     fits_image_filenames.append(path_arg)
                 else:
                     log.error("  Single FITS-file detected. Reduction of calibration files not possible.")
@@ -300,6 +321,8 @@ class DataSet(object):
             elif path_arg.parent.is_dir() and not path_arg.is_dir():
                 parent_folder = path_arg.parent
                 name_part = path_arg.name
+                log.debug(f"{' ':<4}Input type: unknown (treating as prefix)")
+                log.debug(f"{' ':<4}(A) Searching for folder with prefix '{name_part}' in {parent_folder}")
 
                 # Check if name_part matches subdirectories in parent_folder
                 matching_dirs = [
@@ -308,9 +331,6 @@ class DataSet(object):
                 ]
 
                 if matching_dirs:
-                    if not self.silent:
-                        log.info(f"  Matching directories found for prefix '{name_part}' in {parent_folder}")
-
                     for match in matching_dirs:
                         target_folder = parent_folder / match
                         fits_image_filenames.extend(
@@ -318,22 +338,20 @@ class DataSet(object):
 
                 # No matching dirs, treat as file prefix
                 else:
-                    if not self.silent:
-                        log.info(
-                            f"  No matching subdirectories. "
-                            f"Searching for files with prefix '{name_part}' in {parent_folder}")
+                    log.debug(f"{' ':<4}(B) Searching for files with prefix '{name_part}' in {parent_folder}")
 
                     regex_with_prefix = re.compile(r'^' + re.escape(name_part) + r'.*\.(fits|fit|fts)$',
                                                    re.IGNORECASE)
                     fits_image_filenames.extend(
                         self.process_directory_recursive(parent_folder, regex_with_prefix))
             else:
-                 if not self.silent:
-                    log.error(f"  Path not found: {path_arg}. No matching directories or files.")
-                    sys.exit()
+                log.error(f"Path not found: {path_arg}. No matching directories or files.")
+                sys.exit(1)
+
+        if not self.silent:
+            log.info(f"{' ':<4}FITS file(s) found: {len(fits_image_filenames)}")
 
         self._fits_images = fits_image_filenames
-
 
     def process_directory_recursive(self, path, regex):
         """
@@ -356,10 +374,10 @@ class DataSet(object):
         for root, dirs, files in os.walk(path):
             # Filter and validate FITS files
             for s in sorted(files):
+                # print(f"Checking file: {s} in {root}")  # Debugging line
                 if re.search(regex, s) and self.is_valid_fits_file(s, root):
                     fits_files.append(Path(os.path.join(root, s)))
         return fits_files
-
 
     def is_valid_fits_file(self, filename, root):
         """
@@ -378,12 +396,12 @@ class DataSet(object):
             True if the file is valid, False otherwise.
         """
         if ('master' not in filename or 'combined' not in filename) and \
-                'atmp' not in root and 'auxiliary' not in root:
+                'atmp' not in root and 'auxiliary' not in root and 'processed' not in root:
             if self.prog_mode != 'reduceCalibObs':
                 # Exclude flats in normal mode
                 return 'flat' not in filename and 'flat' not in root
             else:
-                # In reduction mode, exclude further directories
+                # In reduction mode, exclude the calibrated/reduced/master calibration folders
                 return 'calibrated' not in root and 'reduced' not in root and 'master_calibs' not in root
         return False
 
@@ -393,7 +411,7 @@ class DataSet(object):
         Returns
         -------
         result: Table
-            Filtered dataset(s).
+            Filtered data set(s).
             Contains folder and files suitable for reduction.
         """
         mode = self.prog_mode
@@ -403,7 +421,8 @@ class DataSet(object):
             log.error('Cannot find any data. This should not happen. '
                       'Please check the input!!!')
             sys.exit()
-
+        if not self.silent:
+            log.info(f'> Register FITS file(s) for {prog_typ_conversion[mode]} (reading headers, may take a while)')
         # Create a file collection with all header data
         data = ImageFileCollection(filenames=filenames)
 
@@ -412,12 +431,16 @@ class DataSet(object):
         instruments_list = sorted(instruments_list)
         inst_dict = collections.OrderedDict({k: {} for k in instruments_list})
 
+        if not self.silent:
+            log.info(f"{' ':<4}Supported instrument(s): {', '.join(instruments_list)}")
         for i in range(len(instruments_list)):
             inst_val = instruments_list[i]
 
             tel_id = _tele_conf.INSTRUMENT_IDENTIFIERS[inst_val]
             obsparams = _tele_conf.TELESCOPE_PARAMETERS[tel_id]
             telescope = obsparams['telescope_keyword']
+
+            log.debug(f"{' ':<4}Instrument: {inst_val} @ Telescope: {telescope}")
 
             inst_dict[inst_val]['telescope'] = telescope
             inst_dict[inst_val]['obsparams'] = obsparams
@@ -483,8 +506,7 @@ class DataSet(object):
                           "Please check your input.")
                 sys.exit()
             if not self.silent:
-                log.info(f'  ==> Found a total of {len(_files.summary)} valid FITS-file(s) '
-                         f'for instrument: {inst_val} @ telescope: {telescope}')
+                log.info(f"{' ':<4}Valid science FITS file(s): {len(_files.summary)}")
 
             if mode != 'satPhotometry':
                 inst_dict[inst_val]['dataset'] = _files.summary['file'].data
@@ -651,7 +673,6 @@ class DataSet(object):
         for idx, item in enumerate(data):
             _log.info(f"{' ':<{indent}}{item} --> {idx}")
 
-
         valid_selection = False
 
         timeout_reached = threading.Event()
@@ -797,27 +818,19 @@ def get_binning(header, obsparams):
             binning_y = param_bin_y
         elif '#' in param_bin_x:
             if '#blank' in param_bin_x:
-                binning_x = float(header[param_bin_x.
-                                  split('#')[0]].split()[0])
-                binning_y = float(header[param_bin_y.
-                                  split('#')[0]].split()[1])
+                binning_x = float(header[param_bin_x.split('#')[0]].split()[0])
+                binning_y = float(header[param_bin_y.split('#')[0]].split()[1])
             elif '#x' in param_bin_x:
-                binning_x = float(header[param_bin_x.
-                                  split('#')[0]].split('x')[0])
-                binning_y = float(header[param_bin_y.
-                                  split('#')[0]].split('x')[1])
+                binning_x = float(header[param_bin_x.split('#')[0]].split('x')[0])
+                binning_y = float(header[param_bin_y.split('#')[0]].split('x')[1])
             elif '#_' in param_bin_x:
-                binning_x = float(header[param_bin_x.
-                                  split('#')[0]].split('_')[0])
-                binning_y = float(header[param_bin_y.
-                                  split('#')[0]].split('_')[1])
+                binning_x = float(header[param_bin_x.split('#')[0]].split('_')[0])
+                binning_y = float(header[param_bin_y.split('#')[0]].split('_')[1])
             elif '#CH#' in param_bin_x:
                 # Only for RATIR
                 channel = header['INSTRUME'].strip()[1]
-                binning_x = float(header[param_bin_x.
-                                  replace('#CH#', channel)])
-                binning_y = float(header[param_bin_y.
-                                  replace('#CH#', channel)])
+                binning_x = float(header[param_bin_x.replace('#CH#', channel)])
+                binning_y = float(header[param_bin_y.replace('#CH#', channel)])
         else:
             binning_x = header[param_bin_x]
             binning_y = header[param_bin_y]

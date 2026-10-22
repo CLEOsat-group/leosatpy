@@ -33,6 +33,7 @@ from datetime import (timedelta, datetime, timezone)
 import collections
 from pathlib import Path
 import argparse
+import subprocess
 
 # THIRD PARTY
 import numpy as np
@@ -64,7 +65,10 @@ else:
     from mpl_toolkits.axes_grid1 import make_axes_locatable
 
     # matplotlib parameter
-    mpl.use('Qt5Agg')
+    try:
+        mpl.use('Qt5Agg')
+    except ImportError:
+        pass
     mpl.rc("lines", linewidth=1.2)
     mpl.rc('figure', dpi=150, facecolor='w', edgecolor='k')
     mpl.rc('text.latex', preamble=r'\usepackage{sfmath}')
@@ -196,10 +200,9 @@ class CalibrateObsWCS(object):
 
         if not silent:
             self._log.info("> Search input and prepare data")
-        if verbose:
-            self._log.debug("  > Check input argument(s)")
+        self._log.debug("  > Check input argument(s)")
 
-        # Check the input arguments and prepare the dataset
+        # Check the input arguments and prepare the data set
         ds = DataSet(input_args=self._input_path,
                      prog_typ='calibWCS',
                      log=self._log, log_level=self._log_level)
@@ -208,6 +211,7 @@ class CalibrateObsWCS(object):
         ds.load_config()
         self._config = ds.config
 
+        # Load observation table
         self._obsTable = ObsTables(config=self._config)
         self._obsTable.load_obs_table()
 
@@ -225,6 +229,7 @@ class CalibrateObsWCS(object):
             self._telescope = inst_data[inst]['telescope']
             self._obsparams = inst_data[inst]['obsparams']
 
+            # Collect valid science observations
             ds.get_valid_sci_observations(inst, prog_typ="calibWCS")
             obsfile_list = ds.valid_sci_obs
             self._dataset_object = obsfile_list
@@ -232,70 +237,79 @@ class CalibrateObsWCS(object):
             # Loop over groups and run reduction for each group
             for src_path, files in obsfile_list:
                 if not silent:
-                    self._log.info("====> Astrometric calibration run <====")
-                    self._log.info(f"> Calibrate WCS of {len(files)} datasets from instrument {inst} "
-                                   f"at the {self._telescope} "
-                                   "telescope in folder:")
-                    self._log.info(f"  {src_path}")
+                    self._log.info(f"> Calibrate WCS of {len(files)} image(s) from {inst} ({self._telescope})")
+                    self._log.info(f"{' ':<4}Folder: {src_path}")
                 multiple = False
                 if len(list(files)) > 1:
                     multiple = True
                 # not_converged = []
                 converged_counter = 0
                 progress_counter = 0
-                pass_str = bc.BCOLORS.PASS + "SUCCESSFUL" + bc.BCOLORS.ENDC
-                fail_str = bc.BCOLORS.FAIL + "FAILED" + bc.BCOLORS.ENDC
+                pass_str = bc.BCOLORS.PASS + "PASS" + bc.BCOLORS.ENDC
+                fail_str = bc.BCOLORS.FAIL + "FAIL" + bc.BCOLORS.ENDC
                 for _, file_df in files.iterrows():
                     progress = f"{progress_counter + 1}/{len(files)}"
                     self.run_calibration_single(src_path, file_df, progress,
                                                 hdu_idx=self._hdu_idx)
 
                     result = self._converged
+                    # In silent mode the image header is not shown, so name the file in the result line
+                    result_label = f"{file_df['file_name']}: " if silent else ''
                     if result:
-                        self._log.info(f">> Astrometric calibration was {pass_str}")
+                        self._log.info(f"> Result: {result_label}{pass_str}")
                         converged_counter += 1
                     else:
-                        self._log.info(f">> Astrometric calibration has {fail_str}")
+                        self._log.warning(f"> Result: {result_label}{fail_str}")
                         # not_converged.append(file_df['input'])
                         with open(fail_fname, "a", encoding="utf8") as file:
                             file.write('{}\t{}\n'.format(self._telescope, file_df["input"]))
                     progress_counter += 1
 
+                N = len(files)
+                not_converged_counter = N - converged_counter
                 if multiple:
-                    self._log.info(">> Final report:")
-                    N = len(files)
-                    not_converged_counter = N - converged_counter
-                    self._log.info(f"   Processed: {N} file(s), "
+                    self._log.info(f"> Summary: {N} image(s), "
                                    f"{pass_str}: {converged_counter}, "
                                    f"{fail_str}: {not_converged_counter}")
-                    if not_converged_counter > 0:
-                        self._log.info(f"   FAILED calibrations are stored here: {fail_fname}")
-                        # self._log.info("   \n".join(not_converged))
+                if not_converged_counter > 0:
+                    self._log.warning(f"{' ':<4}Failed calibrations are listed in: {fail_fname}")
 
         EndTime = time.perf_counter()
         dt = EndTime - StartTime
         td = timedelta(seconds=dt)
 
-        if not silent:
-            self._log.info(f"Program execution time in hh:mm:ss: {td}")
+        self._log.info(f"Program execution time in hh:mm:ss: {td}")
         self._log.info('====>  Astrometric calibration finished <====')
 
     def run_calibration_single(self, file_src_path, file_df, progress, hdu_idx=0):
-        """Run astrometric calibration on a given dataset.
+        """Run astrometric calibration on a given data set.
 
-        Create the required folder and run full calibration procedure.
+        Create the required folder and run the full calibration procedure.
 
+        Parameters
+        ----------
+        file_src_path : str
+            Source path of the input file.
+        file_df : pandas.DataFrame
+            A DataFrame row containing information about the input file.
+        progress : str
+            Progress string for logging.
+        hdu_idx : int, optional
+            Index of the HDU to process, by default 0.
+
+        Returns
+        -------
+        None
         """
-
+        # Initialize variables
         report = {}
         obsparams = self._obsparams
         abs_file_path = file_df['input']
         file_name = file_df['file_name']
         fbase = file_name.replace('_red', '')
 
-        # Create needed folder
-        if self._verbose:
-            self._log.debug("  > Create folder")
+        # Create required folders
+        self._log.debug("  > Create folder")
         cal_path = Path(file_src_path, 'calibrated')
         if not cal_path.exists():
             cal_path.mkdir(exist_ok=True)
@@ -310,7 +324,8 @@ class CalibrateObsWCS(object):
         if not aux_path.exists():
             aux_path.mkdir(exist_ok=True)
 
-        self._log.info(f"==> Run astrometric calibration for {file_name} [{progress}] <==")
+        if not self._silent:
+            self._log.info(f"==> Image {progress}: {file_name}")
 
         # Set background file name and create folder
         bkg_fname_short = file_name.replace('_red', '_bkg')
@@ -329,37 +344,6 @@ class CalibrateObsWCS(object):
             if 'mask' in hdul or 'MASK' in hdul and obsparams['apply_mask']:
                 img_mask = hdul['MASK'].data.astype(bool)
 
-        # detect_mask = None
-        # if self._telescope in ['CTIO 0.9 meter telescope', 'CBNUO-JC']:
-        #     detect_mask = np.zeros(imgarr.shape)
-        #     ccd_mask_list = ccd_mask_dict[self._telescope]
-        #     for yx in ccd_mask_list:
-        #         detect_mask[yx[0]:yx[1], yx[2]:yx[3]] = 1
-        #     detect_mask = np.where(detect_mask == 1, True, False)
-        #
-        # if detect_mask is not None:
-        #     if img_mask is None:
-        #         img_mask = detect_mask
-        #     else:
-        #         img_mask |= detect_mask
-        #
-        # vignette_mask = None
-        # if hdr['FILTER'] in ['U'] and self._telescope == 'DK-1.54':
-        #
-        #     bin_x, bin_y = map(int, hdr['CCDSUM'].split())
-        #     vignette_mask = sext.create_vignette_mask(imgarr,
-        #                                               (2048, 2048),
-        #                                               0.9,
-        #                                               hdr[obsparams['cropsec']],
-        #                                               bin_x)
-        #
-        # if vignette_mask is not None:
-        #     if img_mask is None:
-        #         img_mask = vignette_mask
-        #     else:
-        #         img_mask |= vignette_mask
-
-        # Get the satellite ID
         sat_id, _ = self._obsTable.get_satellite_id(hdr[obsparams['object']])
         plt_path_final = plt_path / sat_id
         if not plt_path_final.exists():
@@ -369,7 +353,7 @@ class CalibrateObsWCS(object):
         wcsprm = WCS(hdr).wcs
 
         # Run checks on wcs and get an initial guess
-        self.check_image_wcs(wcsprm=wcsprm, hdr=hdr,
+        self.prepare_image_wcs(wcsprm=wcsprm, hdr=hdr,
                              obsparams=obsparams,
                              radius=self._radius)
         init_wcs = self._wcsprm
@@ -381,6 +365,7 @@ class CalibrateObsWCS(object):
                              src_cat_fname=self._src_cat_fname,
                              ref_cat_fname=self._ref_cat_fname,
                              image_mask=img_mask,
+                             image_shape=imgarr.shape,
                              bin_str=self._bin_str,
                              estimate_bkg=estimate_bkg,
                              ref_cat_mag_lim=self._config['REF_CATALOG_MAG_LIM'],
@@ -393,13 +378,30 @@ class CalibrateObsWCS(object):
         for key, value in self._config.items():
             config[key] = value
 
-        # Get detector saturation limit
-        sat_lim = config['saturation_limit']
+        # Get detector gain
+        if isinstance(obsparams['gain'], str) and obsparams['gain'] in hdr:
+            gain = hdr[obsparams['gain']]
+        elif isinstance(obsparams['gain'], float):
+            gain = obsparams['gain']
+        else:
+            gain = 1.  # assume gain = 1 if not found
+
+        # Check the image unit and convert if necessary. For version <= 0.4.1 the reduction was done in ADU.
+        # For backward compatibility we check this here and convert to electrons if needed.
+        config['bunit'] = 'adu'
+        if "BUNIT" in hdr and hdr["BUNIT"].lower() in ['adu', 'counts']:
+            # Convert image and saturation limit to electrons
+            imgarr = imgarr * gain
+            config['bunit'] = "electron"
+            config['estimate_bkg'] = True  # Force background estimation in electrons
+
+        # Get detector saturation limit and convert to electrons
+        sat_lim = config['saturation_limit'] * gain
         if isinstance(config['saturation_limit'], str) and config['saturation_limit'] in hdr:
             sat_lim = hdr[obsparams['saturation_limit']]
-        config['sat_lim'] = sat_lim
 
-        config['image_shape'] = imgarr.shape
+        # Set final saturation limit using scale factor
+        config['sat_lim'] = bc.SAT_LIM_FAC * sat_lim
 
         # Extract sources and create a source catalog
         extraction_result, state, _ = sext.get_src_and_cat_info(fbase, cat_path,
@@ -451,17 +453,20 @@ class CalibrateObsWCS(object):
         wcs_res = get_wcs.find_wcs(init_wcs, imgarr, match_radius)
         has_solution, best_wcsprm, dict_rms = wcs_res
 
-        # Check the result sate
-        status_str = bc.BCOLORS.PASS + "PASS" + bc.BCOLORS.ENDC
+        # Check the result state
         if not has_solution or best_wcsprm is None:
-            status_str = bc.BCOLORS.FAIL + "FAIL" + bc.BCOLORS.ENDC
+            wcs_summary = 'no solution found'
         else:
             # Move scaling to cdelt and out of the pc matrix
             best_wcsprm, scales = imtrans.translate_wcsprm(wcsprm=best_wcsprm)
             wcsprm = best_wcsprm
+            wcs_summary = (f"{dict_rms['matches']}/{dict_rms['n_src_total']} sources matched, "
+                           f"RMS {dict_rms['rms']:.2f} px")
+            if not dict_rms['converged']:
+                wcs_summary += ' (best available, not fully converged)'
 
         if not self._silent:
-            self._log.info("  ==> Calibration status: " + status_str)
+            self._log.info(f"> WCS solution: {wcs_summary}")
 
         # Get updated reference catalog positions
         ref_tbl_adjusted = imtrans.update_catalog_positions(ref_tbl, wcsprm, origin=0)
@@ -482,9 +487,9 @@ class CalibrateObsWCS(object):
             report["match_rms"] = dict_rms["rms"]
             report["std_x"] = dict_rms["std_x"]
             report["std_y"] = dict_rms["std_y"]
-            report["pix_scale"] = np.mean(abs(wcs_pixscale)) * 3600. if wcs_pixscale is not np.nan else np.nan
-            report["scale_x"] = abs(wcs_pixscale[0]) * 3600.
-            report["scale_y"] = abs(wcs_pixscale[1]) * 3600.
+            report["pix_scale"] = np.mean(wcs_pixscale) * 3600. if wcs_pixscale is not np.nan else np.nan
+            report["scale_x"] = wcs_pixscale[0] * 3600.
+            report["scale_y"] = wcs_pixscale[1] * 3600.
 
             # Save the result to the FITS-file
             self.write_wcs_to_hdr(original_filename=abs_file_path,
@@ -503,8 +508,7 @@ class CalibrateObsWCS(object):
                                            threshold=dict_rms["radius_px"])
             _, _, _, ref_positions_after, _, _, _ = matches
 
-            if not self._silent:
-                self._log.info("> Plot WCS calibration result")
+            self._log.debug("> Plot WCS calibration result")
 
             # Plot the final result
             config['match_radius_px'] = dict_rms["radius_px"]
@@ -536,14 +540,15 @@ class CalibrateObsWCS(object):
         self._converged = has_solution
         self._dic_rms = dict_rms
 
+        # Cleanup
         bc.clean_up(imgarr, dict_rms, has_solution,
                             src_tbl, ref_tbl, ref_catalog, _, src_cat_fname, ref_cat_fname,
                             kernel_fwhm, extraction_result, report,
                             state)
 
-    def check_image_wcs(self, wcsprm, hdr, obsparams,
+    def prepare_image_wcs(self, wcsprm, hdr, obsparams,
                         radius=-1.):
-        """Check the WCS coordinate system for a given image.
+        """Check and prepare the WCS coordinate system for a given image.
 
         The function also tries to handle additional or missing data from the header.
 
@@ -551,16 +556,21 @@ class CalibrateObsWCS(object):
         ----------
         wcsprm: WCS.wcs
             World coordinate system object describing translation between image and skycoord
-        hdr: header
-        obsparams
-        radius
-        """
+        hdr : astropy.io.fits.header.Header
+            FITS header of the image.
+        obsparams : dict
+            Dictionary containing the observation parameters.
+        radius : float, optional
+            Desired field of view radius in arcmin, by default -1.
 
+        Returns
+        -------
+        None
+        """
         # Initialize logging for this function
         log = self._log
 
-        if not self._silent:
-            log.info("> Gather header information")
+        log.debug("> Gather header information")
 
         # Check binning keyword
         if isinstance(obsparams['binning'][0], str) and isinstance(obsparams['binning'][1], str):
@@ -570,11 +580,8 @@ class CalibrateObsWCS(object):
             bin_x = int(obsparams['binning'][0])
             bin_y = int(obsparams['binning'][1])
 
+        # Update binning variable
         self._bin_str = f'{bin_x}x{bin_y}'
-
-        if self._telescope in ['DK-1.54', 'PlaneWave CDK24']:
-            wcs_rebinned = WCS(wcsprm.to_header()).slice((np.s_[::bin_x], np.s_[::bin_y]))
-            wcsprm = wcs_rebinned.wcs
 
         # Check axes keywords
         if "NAXIS1" not in hdr or "NAXIS2" not in hdr:
@@ -611,9 +618,11 @@ class CalibrateObsWCS(object):
                 dec_deg = coo.dec.deg
                 wcsprm.equinox = 2000.0
 
+        # Update header with WCS information
         wcs = WCS(wcsprm.to_header())
         hdr.update(wcs.to_header(), relax=True)
 
+        # Check RADECSYS and RADESYS keywords
         if 'RADECSYS' not in hdr:
             hdr['RADECSYS'] = 'FK5'
         else:
@@ -642,49 +651,25 @@ class CalibrateObsWCS(object):
         pixscale_x *= bin_x
         pixscale_y *= bin_y
 
+        # Set pixel scale and PC matrix
+        wcsprm.cdelt = [pixscale_x / 3600., pixscale_y / 3600.]
+        wcsprm.pc = [[1, 0], [0, 1]]
+
         # Estimate the size of the FoV in arcmin
         x_size = axis1 * pixscale_x / 60.  # arcmin
         y_size = axis2 * pixscale_y / 60.  # arcmin
-
-        # Test if the current pixel scale makes sense
-        wcs_pixscale = imtrans.get_wcs_pixelscale(wcsprm)
-
-        test_wcs1 = ((np.abs(wcs_pixscale[0])) < 1e-7 or (np.abs(wcs_pixscale[1])) < 1e-7 or
-                     (np.abs(wcs_pixscale[0])) > 5e-3 or (np.abs(wcs_pixscale[1])) > 5e-3)
-        if test_wcs1:
-            if not self._silent:
-                log.info("  Pixelscale appears unrealistic. We will use a guess instead.")
-                wcsprm.pc = [[1, 0], [0, 1]]
-                guess = pixscale_x / 3600.
-                wcsprm.cdelt = [guess, guess]
-
-        # Test if found pixel scale makes sense
-        test_wcs2 = (120. > x_size > 0.5) & \
-                    (120. > y_size > 0.5)
-
-        if test_wcs2:
-            wcs_pixscale = imtrans.get_wcs_pixelscale(wcsprm)
-
-            pixscale_x = pixscale_x / 60. / 60.  # pixel scale now in deg / pixel
-            pixscale_y = pixscale_y / 60. / 60.  # pixel scale now in deg / pixel
-
-            if wcs_pixscale[0] / pixscale_x < 0.1 or wcs_pixscale[0] / pixscale_x > 10 \
-                    or wcs_pixscale[1] / pixscale_y < 0.1 or wcs_pixscale[1] / pixscale_y > 10:
-                # Check if there is a huge difference in the scales
-                # if yes, then replace the wcs scale with the pixel scale information
-                wcsprm.cdelt = [pixscale_x, pixscale_y]
-                wcsprm.pc = [[1, 0], [0, 1]]
 
         # Set the central pixel to the image center pixel
         wcsprm.crpix = [axis1 // 2, axis2 // 2]
 
         # Check sky position
         if np.array_equal(wcsprm.crval, [0, 0]):
-            # If the sky position is not found check header for RA and DEC information
+            # If the sky position is not found use header RA and DEC
             wcsprm.crval = [ra_deg, dec_deg]
-
+        
+        # Set coordinate projection
         if np.array_equal(wcsprm.ctype, ["", ""]):
-           wcsprm.ctype = ['RA---TAN', 'DEC--TAN']  # this is a guess
+           wcsprm.ctype = ['RA---TAN', 'DEC--TAN']  
 
         # Recompile the WCS object
         wcs_n = WCS(wcsprm.to_header())
@@ -692,6 +677,7 @@ class CalibrateObsWCS(object):
         # Estimate the size of the FoV
         fov_radius = sext.compute_radius(wcs_n, axis1, axis2)
 
+        # Adjust FoV radius based on user input
         if radius > 0.:
             fov_radius = radius / 60.
         else:
@@ -699,12 +685,15 @@ class CalibrateObsWCS(object):
             if self._telescope in ['DDOTI 28-cm f/2.2', 'CTIO 0.9 meter telescope']:
                 fov_radius *= 2.
 
-        if not self._silent:
-            log.info(f"{' ':<2}{'Pointing (deg)':<24}: RA={wcsprm.crval[0]:.8g}, "
-                     f"DEC={wcsprm.crval[1]:.8g}")
-            log.info(f"{' ':<2}{'Pixel scale (deg/pixel)':<24}: "
-                     f"{wcsprm.cdelt[0]:.3g} x {wcsprm.cdelt[1]:.3g}")
-            log.info(f"{' ':<2}{'FoV radius (deg)':<24}: {fov_radius:.3g}")
+        log.debug(f"{' ':<4}{'Pointing (deg)':<24}: RA={wcsprm.crval[0]:.8g}, "
+                  f"DEC={wcsprm.crval[1]:.8g}")
+        log.debug(f"{' ':<4}{'Binning':<24}: {self._bin_str}")
+        log.debug(f"{' ':<4}{'Image size (pix)':<24}: {axis1} x {axis2}")
+        log.debug(f"{' ':<4}{'Image size (arcmin)':<24}: {x_size:.3g} x {y_size:.3g}")
+        log.debug(f"{' ':<4}{'Pixel scale (arcsec/pix)':<24}: {pixscale_x:.3g} x {pixscale_y:.3g}")
+        log.debug(f"{' ':<4}{'Pixel scale (deg/pixel)':<24}: "
+                  f"{wcsprm.cdelt[0]:.3g} x {wcsprm.cdelt[1]:.3g}")
+        log.debug(f"{' ':<4}{'FoV radius (deg)':<24}: {fov_radius:.3g}")
 
         self._wcsprm = wcs_n
         self._fov_radius = fov_radius
@@ -733,8 +722,7 @@ class CalibrateObsWCS(object):
         -------
         None
         """
-        if not self._silent:
-            self._log.info("> Update FITS file.")
+        self._log.debug("> Update FITS file.")
 
         with fits.open(original_filename) as hdul:
 
@@ -803,20 +791,25 @@ class CalibrateObsWCS(object):
 
         Parameters
         ----------
-        imgarr
-        src_pos
-        ref_pos
-        file_name
-        fig_path
-        wcsprm
-        cmap
-        config
+        imgarr : numpy.ndarray
+            2D array containing the image data.
+        src_pos : list of tuples
+            List of (x, y) positions of the observed sources.
+        ref_pos : list of tuples
+            List of (x, y) positions of the reference catalog sources.
+        file_name : str
+            Name of the input file.
+        fig_path : pathlib.Path
+            The Path to the directory where the figure will be saved.
+        wcsprm : astropy.wcs.WCS.wcs
+            World coordinate system object describing translation between image and sky coordinates.
+        cmap : str, optional
+            Colormap to use for the image, by default 'Greys'.
 
         Returns
         -------
-
+        None
         """
-
         # Load fits file
         bkg_fname = config['bkg_fname']
         with fits.open(f'{bkg_fname[0]}.fits') as hdul:
@@ -980,6 +973,15 @@ class CalibrateObsWCS(object):
 
         return ax
 
+    def _save_pdf_quietly(self, fname: str, fig_dpi):
+        """Save the current figure as PDF without matplotlib's INFO chatter, keeping the caller's log level"""
+        prev_level = self._log.level
+        self._log.setLevel(max(prev_level, logging.WARNING))
+        try:
+            plt.savefig(fname + '.pdf', format='pdf', dpi=fig_dpi)
+        finally:
+            self._log.setLevel(prev_level)
+
     def save_plot(self, fname: str):
         """Save plots"""
 
@@ -987,20 +989,16 @@ class CalibrateObsWCS(object):
         fig_dpi = self._config['FIG_DPI']
         if fig_type == 'png':
             plt.savefig(fname + '.png', format='png', dpi=fig_dpi)
-            os.system(f'mogrify -trim {fname}.png ')
+            subprocess.call(f'mogrify -trim {fname}.png ', shell=True)
         elif fig_type == 'pdf':
-            self._log.setLevel("warning".upper())
-            plt.savefig(fname + '.pdf', format='pdf', dpi=fig_dpi)
-            self._log.setLevel("info".upper())
-            os.system('pdfcrop ' + fname + '.pdf ' + fname + '.pdf')
+            self._save_pdf_quietly(fname, fig_dpi)
+            subprocess.call('pdfcrop ' + fname + '.pdf ' + fname + '.pdf', shell=True)
         else:
-            self._log.info(f"Figure will be saved as .png and.pdf")
+            self._log.debug("Figure will be saved as .png and .pdf")
             plt.savefig(fname + '.png', format='png', dpi=fig_dpi)
-            os.system(f'mogrify -trim {fname}.png ')
-            self._log.setLevel("warning".upper())
-            plt.savefig(fname + '.pdf', format='pdf', dpi=fig_dpi)
-            self._log.setLevel("info".upper())
-            os.system('pdfcrop ' + fname + '.pdf ' + fname + '.pdf')
+            subprocess.call(f'mogrify -trim {fname}.png ', shell=True)
+            self._save_pdf_quietly(fname, fig_dpi)
+            subprocess.call('pdfcrop ' + fname + '.pdf ' + fname + '.pdf', shell=True)
 
     @staticmethod
     def add_compass(ax: plt.Axes, image_shape, scale_arrow, theta_rad: float, color: str = 'black'):

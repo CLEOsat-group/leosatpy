@@ -4,8 +4,6 @@ astroquery
 ccdproc
 colorlog
 ephem
-fast-histogram
-geopy
 inputimeout
 lmfit
 matplotlib
@@ -15,10 +13,10 @@ packaging
 pandas
 photutils
 pyorbital
-PyQt5
 python-dateutil
 requests
 scikit-image
 scikit-learn
 scipy
 setuptools
+fast_histogram

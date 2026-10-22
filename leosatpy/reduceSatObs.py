@@ -27,6 +27,8 @@ import collections
 import gc
 import logging
 import os
+import shutil
+from dataclasses import dataclass, field
 
 import re
 import sys
@@ -34,14 +36,16 @@ import time
 from copy import deepcopy
 from datetime import datetime
 from datetime import timedelta
+from datetime import timezone
 from pathlib import Path
+from typing import Any, Optional
 
 import ccdproc
 
 import numpy as np
 import pandas as pd
 
-import photutils
+# import photutils
 
 from astropy import units as u
 from astropy.io import fits
@@ -96,6 +100,72 @@ _log_level = _log.level
 # -----------------------------------------------------------------------------
 
 
+@dataclass
+class CalibrationPrepResult:
+    ok: bool
+    dataset_failed: bool
+    status: str
+    reason: str = ""
+    severity: str = "info"
+    dataset_path: Optional[Path] = None
+    binning: Optional[str] = None
+    selected_source: Optional[Path] = None
+    master_output: Optional[Path] = None
+    failed_products: list[dict[str, Any]] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    searched_sources: list[Path] = field(default_factory=list)
+    calib_state: Optional[dict[str, Any]] = None
+    master_darks: Optional[dict[str, Any]] = None
+
+
+class CalibrationInternalError(RuntimeError):
+    pass
+
+
+class MasterBuildError(RuntimeError):
+    pass
+
+
+ALLOWED_RESULT_STATUSES = {
+    'ok',
+    'dataset_failed_missing_requested_bias',
+    'dataset_failed_missing_requested_flat',
+    'dataset_failed_no_bias_or_dark',
+    'dataset_failed_master_build_error',
+    'dataset_failed_validation_error',
+    'dataset_failed_internal_error',
+}
+
+ALLOWED_MASTER_STATUSES = {
+    'loaded_existing_science_date_master',
+    'adopted_from_fallback_master',
+    'overwritten_by_adopted_fallback_master',
+    'created_from_raw',
+    'overwritten_from_raw',
+    'skipped_by_preference',
+    'skipped_optional_unavailable_bias_fallback',
+    'skipped_unavailable_dark_baseline',
+    'failed_build',
+    'failed_validation',
+}
+
+FAILURE_STATUS_TEXT = {
+    'dataset_failed_missing_requested_bias': 'no usable master bias',
+    'dataset_failed_missing_requested_flat': 'no usable master flat',
+    'dataset_failed_no_bias_or_dark': 'neither a usable bias nor a usable dark',
+    'dataset_failed_master_build_error': 'building a master calibration failed',
+    'dataset_failed_validation_error': 'calibration check failed',
+    'dataset_failed_internal_error': 'internal error (run with -v for details)',
+}
+
+EXCEPTION_RESULT_STATUSES = {
+    MasterBuildError: 'dataset_failed_master_build_error',
+    CalibrationInternalError: 'dataset_failed_internal_error',
+}
+
+
+# -----------------------------------------------------------------------------
+
 class ReduceSatObs(object):
     """ Class to reduce satellite observations from different telescopes."""
 
@@ -127,15 +197,13 @@ class ReduceSatObs(object):
         self._log_level = log_level
         self._root_dir = bc.ROOT_DIR
         self._master_calib_path = None
-        self._master_bias_dict = {}
-        self._master_dark_dict = {}
-        self._master_flat_dict = {}
+        self._master_bias_info = {}
+        self._master_dark_info = {}
+        self._master_flat_info = {}
         self._dark_exptimes = []
+        self._selected_calibration_source_folder = None
         self._force_reduction = args.force_reduction
-        # self._make_mbias = False
-        # self._make_mdark = False
-        # self._make_mflat = False
-        # self._make_light = False
+
         self._ccd_mask_fname = None
         self._instrument = None
         self._telescope = None
@@ -150,11 +218,15 @@ class ReduceSatObs(object):
         self._obsTable = None
         self._bin_str = None
         self._binxy = [1, 1]
+        self._calib_state = None  # calibration availability; set by find_and_create_calibrations
+        self._master_darks = None  # loaded master darks for science reduction; assigned from CalibrationPrepResult
+        self._reduction_failures = []
+        self._failure_log_path = None
 
         # Run full reduction
-        self.run_full_reduction(silent=silent, verbose=verbose)
+        self.run_full_reduction(silent=silent)
 
-    def run_full_reduction(self, silent=False, verbose=False):
+    def run_full_reduction(self, silent=False):
         """Run full-reduction routine on the input path.
 
         Prepare science files, find calibration files,
@@ -162,14 +234,14 @@ class ReduceSatObs(object):
         and run reduction for a given set of data.
         """
         starttime = time.perf_counter()
-        self._log.info('====> Science image reduction init <====')
+        self._log.info(f"{'=' * 80}")
+        self._log.info(f"INITIALIZING IMAGE REDUCTION")
+        self._log.info(f"{'=' * 80}")
 
         if not silent:
-            self._log.info("> Search input and prepare data")
-        if verbose:
-            self._log.debug("  > Check input argument(s)")
+            self._log.info("> Check input argument(s) and search for data")
 
-        # Prepare dataset from input argument
+        # Initialise data set from input argument
         ds = dataset.DataSet(input_args=self._input_path,
                              prog_typ='reduceSatObs',
                              prog_sub_typ=['light'],
@@ -186,39 +258,132 @@ class ReduceSatObs(object):
         # Set variables for use
         inst_list = ds.instruments_list
         inst_data = ds.instruments
+        if not silent:
+            self._log.info('')
 
-        n_inst = len(inst_list)
-        for i in range(n_inst):
-            inst = inst_list[i]
+        # Loop over instruments and run reduction for each instrument
+        for i, inst in enumerate(inst_list):
+            if not silent:
+                self._log.info(f"{'=' * 80}")
+                self._log.info(f"INSTRUMENT: {inst}")
+                self._log.info(f"TELESCOPE: {inst_data[inst]['telescope']}")
+                self._log.info(f"{'=' * 80}")
             self._instrument = inst
             self._telescope = inst_data[inst]['telescope']
             self._obsparams = inst_data[inst]['obsparams']
+
+            # Get valid science observations from data set
             ds.get_valid_sci_observations(inst, prog_typ="reduceSatObs")
-            obsfile_list = ds.valid_sci_obs
-            self._dataset_object = obsfile_list
+            obsfiles_grouped = ds.valid_sci_obs
+            self._dataset_object = obsfiles_grouped
+            n_groups = sum(1 for _ in obsfiles_grouped)
 
             # Loop over groups and run reduction for each group
-            for src_path, files in obsfile_list:
+            group_index = 0
+            for src_path, files in obsfiles_grouped:
                 if not silent:
-                    self._log.info('====> Science image reduction run <====')
-                    self._log.info(f"> Reduce {len(files)} datasets from instrument {inst} "
-                                   f"at the {self._telescope} "
-                                   "telescope in folder:")
-                    self._log.info(f"  {src_path}")
-
-                # Reduce the individual dataset
+                    # self._log.info(f"{' ':<2}{'=' * 78}")
+                    self._log.info(f"> Current Data Set: {group_index + 1}/{n_groups}")
+                    # self._log.info(f"{' ':<2}{'=' * 78}")
+                    self._log.info(f"  Folder: {src_path}")
+                    self._log.info(f"  Number of images: {len(files)}")
+                # Reduce the individual data set
                 self.run_single_reduction(src_path, files)
+
+                if not silent:
+                    self._log.info(f"  ====> Reduction [{group_index + 1}/{n_groups}] finished <====")
+                    self._log.info(f"{'=' * 80}")
+                group_index += 1
 
         endtime = time.perf_counter()
         dt = endtime - starttime
         td = timedelta(seconds=dt)
 
-        if not silent:
-            self._log.info(f"Program execution time: {td}")
-        self._log.info('====> Science image reduction finished <====')
+        self._log.info(f"Program execution time: {td}")
+        if self._reduction_failures:
+            self._log.warning(f"Skipped dataset/binning combinations: {len(self._reduction_failures)}")
+            self._log.warning(f"Details in: {self._failure_log_path}")
+        self._log.info('====> IMAGE REDUCTION FINISHED <====')
+
+    @staticmethod
+    def _make_failure_result(status, reason, dataset_path=None, binning=None,
+                             selected_source=None, master_output=None,
+                             failed_products=None, warnings=None,
+                             searched_sources=None, severity='error'):
+        if status not in ALLOWED_RESULT_STATUSES:
+            raise CalibrationInternalError(f'Unsupported controlled failure status: {status}')
+        return CalibrationPrepResult(
+            ok=False,
+            dataset_failed=True,
+            status=status,
+            reason=str(reason),
+            severity=severity,
+            dataset_path=Path(dataset_path).resolve() if dataset_path else None,
+            binning=binning,
+            selected_source=Path(selected_source).resolve() if selected_source else None,
+            master_output=Path(master_output).resolve() if master_output else None,
+            failed_products=list(failed_products or []),
+            warnings=list(warnings or []),
+            searched_sources=[Path(p).resolve() for p in (searched_sources or [])],
+            calib_state=None,
+            master_darks=None,
+        )
+
+    def _result_from_exception(self, exc, dataset_path=None, binning=None,
+                               selected_source=None, master_output=None,
+                               searched_sources=None):
+        if isinstance(exc, MasterBuildError):
+            status = 'dataset_failed_master_build_error'
+        else:
+            status = 'dataset_failed_internal_error'
+        return self._make_failure_result(
+            status=status,
+            reason=f'{type(exc).__name__}: {exc}',
+            dataset_path=dataset_path,
+            binning=binning,
+            selected_source=selected_source,
+            master_output=master_output,
+            searched_sources=searched_sources,
+        )
+
+    def _record_reduction_failure(self, result):
+        if not isinstance(result, CalibrationPrepResult):
+            raise CalibrationInternalError('Failure recorder requires CalibrationPrepResult input.')
+
+        record = {
+            'dataset_path': str(result.dataset_path) if result.dataset_path else '',
+            'binning': result.binning or '',
+            'filters': ','.join(sorted((result.calib_state or {}).get('flat', {}).keys())),
+            'status': result.status,
+            'reason': result.reason,
+            'failed_products': '; '.join(sorted(
+                f"{item.get('product', 'unknown')}:{item.get('reason', '')}" for item in result.failed_products
+            )),
+            'searched_sources': '; '.join(str(p) for p in result.searched_sources),
+            'selected_source': str(result.selected_source) if result.selected_source else '',
+            'master_output': str(result.master_output) if result.master_output else '',
+        }
+        self._reduction_failures.append(record)
+
+        if self._failure_log_path is None:
+            timestamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')
+            self._failure_log_path = Path(self._red_path or self._sci_root_path,
+                                          f'fails_reduceSatObs_{timestamp}.log').resolve()
+
+        header = ('dataset_path\tbinning\tfilters\tstatus\treason\tfailed_products\t'
+                  'searched_sources\tselected_source\tmaster_output\n')
+        file_exists = self._failure_log_path.exists()
+        with open(self._failure_log_path, 'a', encoding='utf-8') as fh:
+            if not file_exists:
+                fh.write(header)
+            fh.write(
+                f"{record['dataset_path']}\t{record['binning']}\t{record['filters']}\t{record['status']}\t"
+                f"{record['reason']}\t{record['failed_products']}\t{record['searched_sources']}\t"
+                f"{record['selected_source']}\t{record['master_output']}\n"
+            )
 
     def run_single_reduction(self, sci_src_path, fits_files_dict):
-        """Run the full reduction process on a given dataset.
+        """Run the full reduction process on a given data set.
 
         This method creates the necessary folder structure, copies science and
         calibration files, and runs the entire data reduction procedure.
@@ -250,11 +415,16 @@ class ReduceSatObs(object):
         tmp_path = Path(f"{sci_src_path}/atmp/")
 
         # Remove old temp folder and make a new one
-        os.system(f"rm -rf {tmp_path}")
+        if tmp_path.name == 'atmp' and tmp_path != tmp_path.anchor:
+            shutil.rmtree(tmp_path, ignore_errors=True)
         tmp_path.mkdir(exist_ok=True)
 
         # Get the file suffix
-        suffix = np.unique(fits_files_dict['suffix'].values[0])[0]
+        unique_suffixes = np.unique(fits_files_dict['suffix'].values)
+        if len(unique_suffixes) > 1:
+            self._log.warning(f"{' ':<2}Multiple file suffixes found {list(unique_suffixes)}; "
+                              f"using '{unique_suffixes[0]}'.")
+        suffix = unique_suffixes[0]
 
         # Update needed variables
         self._sci_root_path = sci_src_path
@@ -264,278 +434,232 @@ class ReduceSatObs(object):
 
         # Copy the found science files to the tmp folder
         new_file_paths = []
-        verbose = 'v' if self.verbose else ''
         if not self.silent:
-            self._log.info("> Copy raw science images.")
+            self._log.info(f"> Register ``SCIENCE`` images")
+            # self._log.info(f"{' ':<2}{'-' * 15}{' Register ``SCIENCE`` images '}{'-' * 15}")
+            self._log.info(f"{' ':<2}> Create copy of raw images in temporary folder.")
 
-        for row_index, row in fits_files_dict.iterrows():
+        fits_df = pd.DataFrame(fits_files_dict)
+        for row_index, row in fits_df.iterrows():
             abs_file_path = row['input']
             file_name = row['file_name']
             file_name_suffix = row['suffix']
 
             # Copy science files
-            os.system(f"cp -r{verbose} {abs_file_path} {tmp_path}")
+            shutil.copy2(abs_file_path, tmp_path)
             new_fname = os.path.join(tmp_path, file_name + file_name_suffix)
             new_file_paths.append(new_fname)
+            if not self.silent:
+                bc.print_progress_bar(row_index + 1, len(fits_df), length=77,
+                                      color=bc.BCOLORS.OKGREEN, prefix=' ' * 2)
 
-        # Prepare the science files
+        # Prepare/Normalize the science files to get metadata
         if not self.silent:
-            self._log.info(f"> Prepare {len(new_file_paths)} ``SCIENCE`` files for reduction.")
+            # Add a new line after the progress bar
+            sys.stdout.write('\n')
+            self._log.info(f"{' ':<2}> Perform header normalization and index images for reduction.")
+
         obs_date, filters, binnings = self.prepare_fits_files(new_file_paths,
                                                               self._telescope,
-                                                              self._obsparams, 'science')
+                                                              self._obsparams,
+                                                              'science')
         # print(obs_date, filters, binnings)
+        if not self.silent:
+            # Extract names for clean printing
+            filter_names = ", ".join([f[0] for f in filters])
+            binning_names = ", ".join([f"{b[0]}x{b[1]}" for b in binnings])
+
+            # Determine singular/plural labels
+            filter_label = "Filter" if len(filters) == 1 else "Filters"
+            binning_label = "Binning" if len(binnings) == 1 else "Binnings"
+
+            self._log.info(f"{' ':<2}{'-' * 78}")
+            self._log.info(f"{' ':<2}Summary:")
+            self._log.info(f"{' ':<2}{'-' * 78}")
+            self._log.info(f"{' ':<2}{'Observation date':<20}: {obs_date}")
+            self._log.info(f"{' ':<2}{binning_label:<20}: {binning_names}")
+            self._log.info(f"{' ':<2}{filter_label:<20}: {filter_names}")
+            self._log.info(f"{' ':<2}{'-' * 78}")
 
         # Loop over binnings and prepare the calibration files for each binning
         for binxy in binnings:
-
             self._binxy = binxy
+            self._bin_str = f"{binxy[0]}x{binxy[1]}"
+            if not self.silent:
+                self._log.info("")
+                self._log.info(f"{'-' * 45}")
+                self._log.info(f"  PROCESSING BINNING: {self._bin_str}")
+                self._log.info(f"{'-' * 45}")
 
             # Find and prepare calibration files
-            if not self.silent:
-                self._log.info(f"> Find calibration files for binning: {binxy[0]}x{binxy[1]}.")
-            self.find_calibrations(self._telescope, self._obsparams, obs_date, filters, binxy)
+            self._calib_state = None
+            self._master_darks = None
+            try:
+                result = self.find_and_create_calibrations(self._telescope,
+                                                           self._obsparams,
+                                                           filters,
+                                                           binxy,
+                                                           obs_date=obs_date)
+            except (CalibrationInternalError, MasterBuildError) as exc:
+                result = self._result_from_exception(exc,
+                                                     dataset_path=self._sci_root_path,
+                                                     binning=self._bin_str)
+            except Exception as exc:
+                result = self._result_from_exception(
+                    CalibrationInternalError(str(exc)),
+                    dataset_path=self._sci_root_path,
+                    binning=self._bin_str,
+                )
 
-            # Run ccdproc to create reduced science images
+            if not isinstance(result, CalibrationPrepResult):
+                result = self._make_failure_result(
+                    status='dataset_failed_internal_error',
+                    reason='Calibration preparation did not return CalibrationPrepResult.',
+                    dataset_path=self._sci_root_path,
+                    binning=self._bin_str,
+                )
+
+            # In silent mode the dataset header is not shown, so name the folder in the result line
+            result_label = f"binning {self._bin_str}" + (f", {self._sci_root_path}" if self.silent else '')
+            if not result.ok:
+                self._record_reduction_failure(result)
+                products = ', '.join(sorted({str(item.get('reason', '')) for item in result.failed_products}))
+                self._log.warning(
+                    f"> Skipped science reduction ({result_label}): "
+                    f"{FAILURE_STATUS_TEXT.get(result.status, result.status)}"
+                    + (f" [{products}]" if products else '')
+                )
+                self._log.debug(f"{' ':<4}Failure details: {result.reason}")
+                continue
+
+            self._calib_state = result.calib_state
+            self._master_darks = result.master_darks
+
+            # Run the CCD processing on the science images
             self.run_ccdproc(self._obsparams, filters, binxy)
+            self._log.info(f"> Science reduction done ({result_label})")
 
         # Clean temporary folder
-        if not self.silent:
-            self._log.info("> Cleaning up")
-        os.system(f"rm -rf {tmp_path}")
+        self._log.debug(f"{' ':<2}> Cleaning up")
+        if tmp_path.name == 'atmp' and tmp_path != tmp_path.anchor:
+            shutil.rmtree(tmp_path, ignore_errors=True)
 
-    def check_closest_exposure(self, ic_all,
-                               obsparams, tolerance=0.5):
-        """
-        Find the closest matching dark exposure times for science images.
-
-        This function checks the exposure times of light and flat field images
-        in the dataset and finds the closest matching dark exposure time within
-        a specified tolerance. It returns a list of exposure times for each image type,
-        paired with the nearest matching dark exposure time.
-
-        Parameters
-        ----------
-        ic_all : ImageFileCollection
-            Collection of FITS files including science (light) and flat field images,
-            as well as available dark frames.
-        obsparams : dict
-            Dictionary containing observational parameters, specifically requiring
-            the 'exptime' key that indicates the exposure time header keyword.
-        tolerance : float, optional
-            Maximum allowable difference between the image and dark exposure times
-            to be considered a match. Defaults to 0.5 seconds.
-
-        Returns
-        -------
-        exptimes_list : list of dict
-            List of two dictionaries. Each dictionary corresponds to an image type
-            (light and flat). Each entry in the dictionary has the image exposure
-            time as the key and a list containing the closest dark exposure time
-            and a boolean indicating whether a suitable dark frame was found within
-            the tolerance.
-        exptimes : list of float
-            List of unique exposure times found in the light and flat images.
-
-        """
-        dark_exposures = np.array(list(self._dark_exptimes))
-        exptimes_list = [{}, {}]
-
-        if not list(dark_exposures):
-            return exptimes_list
-
-        exptime_check_img_types = [bc.IMAGETYP_LIGHT, bc.IMAGETYP_FLAT]
-        exptimes = []
-
-        for i in range(len(exptime_check_img_types)):
-            # Filter data
-            dfilter = {'imagetyp': f'{exptime_check_img_types[i]}'}
-            ic_exptimes = ic_all.filter(regex_match=False, **dfilter)
-
-            if ic_exptimes.summary is not None:
-                # Get unique exposure times
-                expt = list(np.unique(ic_exptimes.summary[obsparams['exptime'].lower()]))
-                exptimes += expt
-                for t in expt:
-                    abs_diff = np.abs(dark_exposures - t)
-                    idx = np.argmin(abs_diff)
-                    closest_dark_exposure = dark_exposures[idx]
-                    has_nearest = True
-                    if np.abs(closest_dark_exposure - t) > tolerance:
-                        continue
-                    exptimes_list[i].update({t: [closest_dark_exposure, has_nearest]})
-                del ic_exptimes
-
-        del ic_all
-
-        return exptimes_list, exptimes
 
     def run_ccdproc(self, obsparams, filters, binnings):
-        """Run ccdproc on dataset.
+        """Run ccdproc on the prepared data set.
+
+        Consumes the calib_state and master_darks map prepared by
+        ``find_and_create_calibrations``.  Does NOT re-discover, re-create, or
+        re-stage any calibration products, and does NOT mutate ``self._config``
+        to reflect ephemeral availability.
+
+        Behaviour:
+           * If ``self._master_darks['sci_dark']`` has an entry for a science
+             frame's exposure time → apply dark (only when DARK_CORRECT=True).
+           * Else if master bias is available and BIAS_CORRECT=True → bias-only
+             fallback.
+           * Else → no thermal/bias correction; header flags record reality.
 
         Parameters
         ----------
         obsparams : dict
             A Dictionary containing telescope and observational parameters.
         filters : list
-            A list with filter identified in the dataset.
+            A list with filter identified in the data set.
         binnings : tuple
-            Binning of the current dataset, typically specified as "XxY" (e.g., "2x2").
-
+            Binning of the current data set, typically specified as "XxY" (e.g., "2x2").
         """
+
+        # Calibration file preparation must have run first
+        if self._calib_state is None or self._master_darks is None:
+            raise RuntimeError(
+                'run_ccdproc called before find_and_create_calibrations.'
+            )
+
+        # Initialize ImageFileCollection
+        ic_all = ImageFileCollection(location=self._tmp_path)
         _bin_str = f'{binnings[0]}x{binnings[1]}'
         self._bin_str = _bin_str
 
-        # Get master_calib files
-        dbias = self._master_bias_dict
-        ddark = self._master_dark_dict
-        dflat = self._master_flat_dict
-
-        # Reload files in temp folder
-        ic_all = ImageFileCollection(location=self._tmp_path)
-
-        # Get the number of amplifiers and trim, and overscan sections
         has_multiple_amps = obsparams['multiple_amps']
 
-        # Get science and flat exposure times
-        exptimes_list, img_exptimes = self.check_closest_exposure(ic_all=ic_all,
-                                                                  obsparams=obsparams,
-                                                                  tolerance=1)
+        # Extract gain / readnoise from staged science frames
+        gain, readnoise = self._extract_gain_readnoise(ic_all)
+
+        # Load master bias
+        calib_state = self._calib_state
+        ccd_master_bias = None
+        if self._config['BIAS_CORRECT'] and calib_state['bias'].get('available'):
+            master_bias_path = calib_state['bias'].get('master_path')
+            if master_bias_path is not None:
+                self._log.debug(f"{' ':<4}Loading master bias: {os.path.basename(str(master_bias_path))}")
+                ccd_master_bias = self.convert_fits_to_ccd(str(master_bias_path), single=True)
+                if (readnoise is None
+                        and ccd_master_bias is not None
+                        and 'ron' in ccd_master_bias.header):
+                    readnoise = ccd_master_bias.header['ron']
+
+        # Load master darks
+        master_darks = self._master_darks  # {'sci_dark': {...}, 'flat_dark': {...}}
+        sci_dark_count = len(master_darks['sci_dark'])
+        flat_dark_count = len(master_darks['flat_dark'])
+
+        self._log.debug(f"{' ':<4}Science-reduction darks: {sci_dark_count} sci_dark exposure(s), "
+                        f"{flat_dark_count} flat_dark exposure(s)")
 
         # Process files by filter
         for filt in filters:
-            img_count_by_filter = len(ic_all.files_filtered(imagetyp=bc.IMAGETYP_LIGHT,
-                                                            filter=filt[0]))
-            if img_count_by_filter == 0:
+            filt_name = filt[0]
+            sci_img_count_by_filter = len(
+                ic_all.files_filtered(imagetyp=bc.IMAGETYP_LIGHT, filter=filt_name)
+            )
+            if sci_img_count_by_filter == 0:
                 continue
 
             if not self.silent:
-                self._log.info(f"> Process filter {filt[0]}, binning {_bin_str}.")
+                self._log.info(f"> Reduce {sci_img_count_by_filter} science image(s) in filter {filt_name}")
 
-            # Get gain and readout noise
-            gain = None
-            if 'gain' in ic_all.summary.keys():
-                gain = np.array(ic_all.summary['gain'].data)
-                gain = list(np.unique(gain[gain.nonzero()]))[0]
-            readnoise = None
-            if 'ron' in ic_all.summary.keys():
-                readnoise = np.array(ic_all.summary['ron'].data)
-                readnoise = list(np.unique(readnoise[readnoise.nonzero()]))[0]
-
-            # Create master bias file for each filter. Only executed once per dataset
-            ccd_master_bias = None
-            if self._config['BIAS_CORRECT']:
-                master_bias = dbias[0]
-                create_bias = dbias[1]
-                if create_bias:
-                    ccd_master_bias = self.create_master_bias(files_list=ic_all,
-                                                              obsparams=obsparams,
-                                                              mbias_fname=master_bias,
-                                                              multiple_amps=has_multiple_amps,
-                                                              gain=gain,
-                                                              readnoise=readnoise,
-                                                              error=self._config['EST_UNCERTAINTY'],
-                                                              method=self._config['COMBINE_METHOD_BIAS'])
-                else:
-                    if not self.silent:
-                        self._log.info(f'  Loading existing master bias file: {os.path.basename(master_bias)}')
-
-                    ccd_master_bias = self.convert_fits_to_ccd(master_bias, single=True)
-                    readnoise = ccd_master_bias.header['ron']
-
-            # Create master dark file for each exposure time. Only executed once per dataset
-            ccd_master_dark = {'sci_dark': {}, 'flat_dark': {}}
-            if self._config['DARK_CORRECT']:
-                for i in range(2):
-                    exptimes = exptimes_list[i]
-                    for dexpt in img_exptimes:
-
-                        if dexpt not in exptimes:
-                            continue
-                        dark_exptime = exptimes[dexpt][0]
-                        has_nearest = exptimes[dexpt][1]
-                        master_dark = ddark[dark_exptime][0]
-                        create_dark = ddark[dark_exptime][1]
-                        bias_corr = False
-                        mbias = None
-                        if create_dark:
-                            if not has_nearest:
-                                bias_corr = True
-                                mbias = ccd_master_bias
-                            ccd_mdark = self.create_master_dark(files_list=ic_all, obsparams=obsparams,
-                                                                mdark_fname=master_dark,
-                                                                exptime=dark_exptime,
-                                                                mbias=mbias,
-                                                                multiple_amps=has_multiple_amps,
-                                                                gain=gain, readnoise=readnoise,
-                                                                error=self._config['EST_UNCERTAINTY'],
-                                                                method=self._config['COMBINE_METHOD_DARK'])
-                        else:
-                            if not self.silent:
-                                self._log.info(f'  Loading existing master dark file: {os.path.basename(master_dark)}')
-                            ccd_mdark = self.convert_fits_to_ccd(master_dark, single=True)
-                            bias_corr = ccd_mdark.header['biascorr'] if 'biascorr' in ccd_mdark.header else False
-                        if i == 0:
-                            ccd_master_dark['sci_dark'][dexpt] = ccd_mdark, bias_corr, has_nearest
-                        else:
-                            ccd_master_dark['flat_dark'][dexpt] = ccd_mdark, bias_corr, has_nearest
-                            self._config['FLATDARK_CORRECT'] = True
-
-            if not ccd_master_dark['sci_dark']:
-                ccd_master_dark['sci_dark'] = None, None, None
-                self._config['DARK_CORRECT'] = False
-
-            if not ccd_master_dark['flat_dark']:
-                ccd_master_dark['flat_dark'] = None, None, None
-                self._config['FLATDARK_CORRECT'] = False
-
-            # Create master flat file for each filter. Only executed once per dataset
+            # Load master flat
             ccd_master_flat = {}
             if self._config['FLAT_CORRECT']:
-                master_flat = dflat[filt[0]][0]
-                create_flat = dflat[filt[0]][1]
-                if create_flat:
-                    ccd_master_flat[filt[0]] = self.create_master_flat(files_list=ic_all,
-                                                                       obsparams=obsparams,
-                                                                       mflat_fname=master_flat,
-                                                                       flat_filter=filt[0],
-                                                                       mbias=ccd_master_bias,
-                                                                       mdark=ccd_master_dark['flat_dark'],
-                                                                       multiple_amps=has_multiple_amps,
-                                                                       gain=gain, readnoise=readnoise,
-                                                                       error=self._config['EST_UNCERTAINTY'],
-                                                                       method=self._config['COMBINE_METHOD_FLAT'])
-                else:
-                    if not self.silent:
-                        self._log.info(f'  Loading existing master flat file: {os.path.basename(master_flat)}')
-                    ccd_master_flat[filt[0]] = self.convert_fits_to_ccd(master_flat, single=True)
-            if not ccd_master_flat or not ccd_master_flat[filt[0]]:
+                flat_state = calib_state['flat'].get(filt_name, {})
+                flat_path = flat_state.get('master_path')
+                if flat_path is not None and flat_state.get('available'):
+                    self._log.debug(f"{' ':<4}Loading master flat: {os.path.basename(str(flat_path))}")
+                    loaded = self.convert_fits_to_ccd(str(flat_path), single=True)
+                    if loaded:
+                        ccd_master_flat[filt_name] = loaded
+
+            if not ccd_master_flat:
                 ccd_master_flat = None
                 self._ccd_mask_fname = None
 
             # Reduce science images
-            self.ccdproc_sci_images(files_list=ic_all,
-                                    obsparams=obsparams,
-                                    image_filter=filt[0],
-                                    master_bias=ccd_master_bias,
-                                    master_dark=ccd_master_dark['sci_dark'],
-                                    master_flat=ccd_master_flat,
-                                    gain=gain, readnoise=readnoise,
-                                    multiple_amps=has_multiple_amps,
-                                    cosmic=self._config['CORRECT_COSMIC'],
-                                    error=self._config['EST_UNCERTAINTY'])
+            self.ccdproc_sci_images(
+                files_list=ic_all,
+                obsparams=obsparams,
+                image_filter=filt_name,
+                master_bias=ccd_master_bias,
+                master_dark=master_darks['sci_dark'],
+                master_flat=ccd_master_flat,
+                gain=gain,
+                readnoise=readnoise,
+                multiple_amps=has_multiple_amps,
+                cosmic=self._config['CORRECT_COSMIC'],
+            )
+
         del ic_all
 
         gc.collect()
 
     def ccdproc_sci_images(self, files_list,
                            obsparams, image_filter=None,
-                           master_bias= None,
-                           master_dark= None,
-                           master_flat= None,
+                           master_bias=None,
+                           master_dark=None,
+                           master_flat=None,
                            multiple_amps=False,
                            gain=None, readnoise=None,
-                           error=False, cosmic=False,
+                           cosmic=False,
                            mbox=15, rbox=15, gbox=11,
                            cleantype="medmask",
                            cosmic_method='lacosmic',
@@ -569,14 +693,11 @@ class ReduceSatObs(object):
             If True, processes each amplifier separately for multi-amp detectors.
             Defaults to False.
         gain : float or None, optional
-            Gain of the detector in electrons per ADU. Required if `error=True`.
+            Gain of the detector in electrons per ADU.
             Defaults to None.
         readnoise : float or None, optional
-            Readout noise of the detector in electrons. Required if `error=True`.
+            Readout noise of the detector in electrons.
             Defaults to None.
-        error : bool, optional
-            If True, generates an uncertainty map alongside the processed image.
-            Requires `gain` and `readnoise`. Defaults to False.
         cosmic : bool, optional
             If True, applies cosmic ray cleaning. Defaults to False.
         mbox : int, optional
@@ -613,14 +734,12 @@ class ReduceSatObs(object):
 
         """
         # Check inputs
-        if error and (gain is None or readnoise is None):
-            self._log.warning('You need to provide "gain" and "readnoise" to compute the error!')
-            error = False
         if gain is not None and not isinstance(gain, u.Quantity):
             gain = gain * u.Unit("electron") / u.Unit("adu")
         if readnoise is not None and not isinstance(readnoise, u.Quantity):
             readnoise = readnoise * u.Unit("electron")
 
+        # Create default filter if none provided, add additional filters if given, and get file list
         dfilter = {'imagetyp': bc.IMAGETYP_LIGHT,
                    'binning': self._bin_str} if dfilter is None else dfilter
         if dfilter is not None and key_filter is not None and image_filter is not None:
@@ -629,9 +748,10 @@ class ReduceSatObs(object):
                                         key_find=key_find, invert_find=invert_find,
                                         abspath=False)
 
-        mbias_ccd = None
+        mbias_ccd = master_bias
         mflat_ccd = None
 
+        # Get ccd mask file if exists
         ccd_mask_fname = os.path.join(self._master_calib_path,
                                       'mask_from_ccdmask_%s_%s.fits' % (image_filter,
                                                                         self._bin_str))
@@ -645,22 +765,28 @@ class ReduceSatObs(object):
         else:
             self._ccd_mask_fname = None
 
-        for filename in files_list:
-            if not self.silent:
-                self._log.info(f"  >>> ccdproc is processing: {filename}")
+        # Loop over files and process them individually
+        files_list = list(files_list)
+        n_files = len(files_list)
+        for file_index, filename in enumerate(files_list):
+            self._log.debug(f"{' ':<4}Reducing: {filename}")
+            if not self.silent and not self.verbose:
+                bc.print_progress_bar(file_index + 1, n_files, length=77,
+                                      color=bc.BCOLORS.OKGREEN, prefix=' ' * 2)
 
             # Read image into a CCD object
             fname = os.path.join(self._tmp_path, filename)
             try:
                 ccd = CCDData.read(fname, unit=u.Unit("adu"))
             except (Exception,):
-                if not self.silent:
-                    self._log.warning(f"{' ':<6}Failed to load FITS file. Skipping file.")
+                self._log.warning(f"{' ':<4}Failed to load {filename}. Skipping file.")
                 continue
 
+            # Extract header info and exposure time
             ccd_hdr = ccd.header
-            ccd_expt = ccd_hdr['exptime']
+            ccd_expt = float(ccd_hdr['exptime'])
 
+            # Determine if the ccd is cropped
             ccd_is_cropped = False
             crop_key = obsparams['cropsec']
             if (not multiple_amps
@@ -672,20 +798,11 @@ class ReduceSatObs(object):
             # Process the ccd, trim image and subtract overscan if needed
             ccd = self.process_ccd(img_ccd=ccd, obsparams=obsparams, multiple_amps=multiple_amps)
 
-            # Create an uncertainty map
-            if error:
-                ccd = ccdproc.create_deviation(ccd, gain=gain,
-                                               readnoise=readnoise,
-                                               disregard_nan=True)
             # Gain correct
+            gain_corrected = False
             if gain is not None and self._config['CORRECT_GAIN']:
                 ccd = ccdproc.gain_correct(ccd, gain)
-
-            # Cosmic ray correction
-            if cosmic and gain is not None and self._config['CORRECT_GAIN']:
-                ccd = self.clean_cosmic_ray(ccd, ccd_mask_fname,
-                                            mbox=mbox, rbox=rbox, gbox=gbox, sigclip=sigclip,
-                                            cleantype=cleantype, cosmic_method=cosmic_method)
+                gain_corrected = True
 
             # Mask bad pixel
             ccd_mask = None
@@ -705,67 +822,70 @@ class ReduceSatObs(object):
 
                 ccd_mask = ccd_mask.data
 
+            # Add ccd mask to ccd object
             ccd.mask = ccd_mask
 
             # Bias or dark frame subtract
             dark_corrected = False
-            if master_dark is not None and self._config['DARK_CORRECT']:
-                mdark = master_dark[ccd_expt][0]
-                is_nearest = master_dark[ccd_expt][2]
-                scale = False
-                if not is_nearest:
-                    scale = True
-                    mbias = master_bias
-                    if mbias is not None and self._config['BIAS_CORRECT']:
-                        if isinstance(mbias, str):
-                            mbias = self.convert_fits_to_ccd(mbias, single=True)
-                        if mbias_ccd is None:
-                            mbias_ccd = mbias
+            bias_corrected = False
+            flat_corrected = False
 
-                        if ccd_is_cropped:
-                            mbias = self.crop_image(img_ccd=mbias,
-                                                    hdr=ccd_hdr,
-                                                    crop_section_unbinned=ccd_hdr[crop_key])
-                        ccd, mbias = check_shape(ccd, mbias)
-                        ccd = ccdproc.subtract_bias(ccd, mbias)
+            if master_dark is not None and self._config['DARK_CORRECT'] and ccd_expt in master_dark:
+                mdark, dark_is_pure, is_nearest = master_dark[ccd_expt]
+                # 1. If Dark is "Pure" (Bias-subtracted), we MUST bias-subtract the Science frame now
+                if dark_is_pure and self._config['BIAS_CORRECT']:
+                    if isinstance(mbias_ccd, str):
+                        mbias_ccd = self.convert_fits_to_ccd(mbias_ccd, single=True)
 
+                    temp_mbias = mbias_ccd
+                    if ccd_is_cropped:
+                        temp_mbias = self.crop_image(img_ccd=temp_mbias, hdr=ccd_hdr,
+                                                     crop_section_unbinned=ccd_hdr[crop_key])
+
+                    ccd, temp_mbias = check_shape(ccd, temp_mbias)
+                    ccd = ccdproc.subtract_bias(ccd, temp_mbias)
+                    bias_corrected = True
+                    add_key_to_hdr(ccd.header, 'MBIAS', get_filename(mbias_ccd))
+
+                # 2. Apply Master Dark
                 if isinstance(mdark, str):
                     mdark = self.convert_fits_to_ccd(mdark, single=True)
 
-                # ccd, mdark = check_shape(ccd, mdark_ccd)
                 if ccd_is_cropped:
-                    mdark = self.crop_image(img_ccd=mdark,
-                                            hdr=ccd_hdr,
+                    mdark = self.crop_image(img_ccd=mdark, hdr=ccd_hdr,
                                             crop_section_unbinned=ccd_hdr[crop_key])
+
                 ccd, mdark = check_shape(ccd, mdark)
-                ccd = ccdproc.subtract_dark(ccd, mdark,
-                                            exposure_time='exptime',
+
+                # Only ever downscale (scale=True if not an exact match)
+                ccd = ccdproc.subtract_dark(ccd, mdark, exposure_time='exptime',
                                             exposure_unit=u.Unit("second"),
-                                            scale=scale)
+                                            scale=not is_nearest)
+
                 add_key_to_hdr(ccd.header, 'MDARK', get_filename(mdark))
                 dark_corrected = True
 
-            # Bias subtraction
-            bias_corrected = False
-            if master_bias is not None and self._config['BIAS_CORRECT'] and not dark_corrected:
-                mbias = master_bias
-                if isinstance(master_bias, str):
-                    mbias = self.convert_fits_to_ccd(master_bias, single=True)
-                if mbias_ccd is None:
-                    mbias_ccd = mbias
+                if not dark_is_pure and is_nearest:
+                    # An impure dark still carries the bias pedestal, so subtracting it at a
+                    # matching exposure also removes the science bias. Record that for provenance
+                    # (no separate master bias / MBIAS keyword was applied).
+                    bias_corrected = True
 
+            # 3. Fallback: Standard Bias Subtraction if no dark was applied
+            if not dark_corrected and mbias_ccd is not None and self._config['BIAS_CORRECT']:
+                if isinstance(mbias_ccd, str):
+                    mbias_ccd = self.convert_fits_to_ccd(mbias_ccd, single=True)
+
+                temp_mbias = mbias_ccd
                 if ccd_is_cropped:
-                    mbias = self.crop_image(img_ccd=mbias,
-                                            hdr=ccd_hdr,
-                                            crop_section_unbinned=ccd_hdr[crop_key])
+                    temp_mbias = self.crop_image(img_ccd=temp_mbias, hdr=ccd_hdr,
+                                                 crop_section_unbinned=ccd_hdr[crop_key])
 
-                ccd, mbias = check_shape(ccd, mbias)
-                ccd = ccdproc.subtract_bias(ccd, mbias)
-                add_key_to_hdr(ccd.header, 'MBIAS', get_filename(mbias))
+                ccd, temp_mbias = check_shape(ccd, temp_mbias)
+                ccd = ccdproc.subtract_bias(ccd, temp_mbias)
                 bias_corrected = True
+                add_key_to_hdr(ccd.header, 'MBIAS', get_filename(mbias_ccd))
 
-            # Flat correction
-            flat_corrected = False
             if master_flat is not None and self._config['FLAT_CORRECT']:
                 mflat = master_flat[image_filter]
                 if isinstance(mflat, str):
@@ -777,9 +897,11 @@ class ReduceSatObs(object):
                     mflat = self.crop_image(img_ccd=mflat,
                                             hdr=ccd_hdr,
                                             crop_section_unbinned=ccd_hdr[crop_key])
+                # Check shape
                 ccd, mflat = check_shape(ccd, mflat)
-
+                # Flat correction
                 ccd = ccdproc.flat_correct(ccd, mflat)
+                # Add master flat file name to header
                 add_key_to_hdr(ccd.header, 'MFLAT', get_filename(mflat))
                 flat_corrected = True
 
@@ -795,22 +917,32 @@ class ReduceSatObs(object):
                                                crop_section_unbinned=ccd_hdr[crop_key])
                 ccd.mask = ccd_mask
 
-            # Store results
+            # Cosmic ray correction
+            if cosmic and gain is not None and self._config['CORRECT_GAIN']:
+                ccd = self.clean_cosmic_ray(ccd, ccd_mask_fname,
+                                            mbox=mbox, rbox=rbox, gbox=gbox, sigclip=sigclip,
+                                            cleantype=cleantype, cosmic_method=cosmic_method)
+
+            # Update header information and save the reduced file
             fbase = Path(filename).stem
             suffix = Path(filename).suffix
             filename = f'{fbase}_red{suffix}'
             filename = join_path(filename, self._red_path)
 
             ccd.header['FILENAME'] = os.path.basename(filename)
+            ccd.header['bias_cor'] = 'T' if bias_corrected else 'F'
+            ccd.header['dark_cor'] = 'T' if dark_corrected else 'F'
+            ccd.header['flat_cor'] = 'T' if flat_corrected else 'F'
             ccd.header['combined'] = True
+            ccd.header['CGAIN'] = True if gain_corrected else False
             ccd.header = ammend_hdr(ccd.header)
 
             # Change to float32 to keep the file size under control
             ccd.data = ccd.data.astype('float32')
 
-            ccd.uncertainty = None
-            hdr = ccd.header
-            ccd.write(filename, overwrite=True)
+            ccd.uncertainty = None  # Remove uncertainty to save space
+            hdr = ccd.header  # Get header for updating the observation data table
+            ccd.write(filename, overwrite=True)  # Save the reduced file
 
             # Make sure that the RA and DEC are consistent and rounded to the same decimal
             # Reformat ra and dec if the values are in degree to avoid float <-> str conversion errors
@@ -820,17 +952,21 @@ class ReduceSatObs(object):
                 hdr[obsparams['dec']] = round(hdr[obsparams['dec']],
                                               bc.ROUND_DECIMAL)
 
-            # Update result table
+            # Update the result table
             hdr_dict = {}
             for k in obsparams['obs_keywords']:
-                hdr_dict.setdefault(k.upper(), ccd.header.get(k))
+                hdr_dict.setdefault(k.upper(), hdr.get(k))
             hdr_dict['bias_cor'] = 'T' if bias_corrected else 'F'
             hdr_dict['dark_cor'] = 'T' if dark_corrected else 'F'
             hdr_dict['flat_cor'] = 'T' if flat_corrected else 'F'
+            hdr_dict['gain_cor'] = 'T' if gain_corrected else 'F'
 
             self._obsTable.update_obs_table(fbase, hdr_dict, obsparams)
 
             del ccd
+        if not self.silent and not self.verbose and n_files:
+            # Add a new line after the progress bar
+            sys.stdout.write('\n')
         del files_list
         gc.collect()
 
@@ -880,7 +1016,7 @@ class ReduceSatObs(object):
         ctypes = ['lacosmic', 'median']
         if ctype not in ctypes:
             self._log.warning('> Cosmic ray type "%s" NOT available [%s]' % (ctype, ' | '.join(ctypes)))
-            return
+            return ccd
 
         ccd_mask_fname = ccd_mask_fname if os.path.exists(ccd_mask_fname) else None
 
@@ -900,7 +1036,7 @@ class ReduceSatObs(object):
 
     def create_master_flat(self, files_list, obsparams, mflat_fname, flat_filter=None,
                            multiple_amps=False, mbias=None, mdark=None,
-                           gain=None, method='average', readnoise=None, error=False,
+                           gain=None, method='average', readnoise=None,
                            key_filter='filter', dfilter=None,
                            key_find='find', invert_find=False, sjoin=','):
         """Create a master flat field frame.
@@ -928,17 +1064,14 @@ class ReduceSatObs(object):
             If provided, applies dark correction to the individual flat frames.
             Defaults to None.
         gain : float or None, optional
-            Detector gain in electrons per ADU. Required if `error=True`.
+            Detector gain in electrons per ADU.
             Defaults to None.
         method : {'average', 'median'}, optional
             Method to combine the individual flat frames: 'average' computes the mean,
             while 'median' computes the median. Defaults to 'average'.
         readnoise : float or None, optional
-            Detector readout noise in electrons. Required if `error=True`.
+            Detector readout noise in electrons.
             Defaults to None.
-        error : bool, optional
-            If True, generates an uncertainty map with the master flat frame, requiring
-            `gain` and `readnoise`. Defaults to False.
         key_filter : str, optional
             Keyword used to identify the filter in the FITS headers of the flat frames.
             Defaults to 'filter'.
@@ -958,23 +1091,21 @@ class ReduceSatObs(object):
         Returns
         -------
         master_flat : CCDData
-            Combined master flat field frame as a CCDData object, with optional uncertainty
-            map if `error=True`.
+            Combined master flat field frame as a CCDData object.
 
         """
         # Check inputs
-        if error and (gain is None or readnoise is None):
-            self._log.warning('You need to provide "gain" and "readnoise" to compute the error!')
-            error = False
         if gain is not None and not isinstance(gain, u.Quantity):
             gain = gain * u.Unit("electron") / u.Unit("adu")
         if readnoise is not None and not isinstance(readnoise, u.Quantity):
             readnoise = readnoise * u.Unit("electron")
+
+        # Prepare file filter
         dfilter = {'imagetyp': bc.IMAGETYP_FLAT,
                    'binning': self._bin_str} if dfilter is None else dfilter
         if dfilter is not None and key_filter is not None and flat_filter is not None:
             dfilter = add_keys_to_dict(dfilter, {key_filter: flat_filter})
-
+        # Filter files
         files_list = self.get_file_list(files_list, dfilter,
                                         key_find=key_find, invert_find=invert_find,
                                         abspath=False)
@@ -989,7 +1120,7 @@ class ReduceSatObs(object):
             # Read image to a ccd object
             fname = os.path.join(self._tmp_path, filename)
             ccd = CCDData.read(fname, unit=u.Unit("adu"))
-            ccd_expt = ccd.header['exptime']
+            ccd_expt = float(ccd.header['exptime'])
 
             # Trim image and update header
             ccd = self.process_ccd(img_ccd=ccd,
@@ -1002,45 +1133,51 @@ class ReduceSatObs(object):
                                       hdr=ccd.header,
                                       crop_section_unbinned=ccd.header[crop_key])
 
-            # Create an uncertainty map
-            if error:
-                ccd = ccdproc.create_deviation(ccd, gain=gain,
-                                               readnoise=readnoise)
             # Gain correct
             if gain is not None and self._config['CORRECT_GAIN']:
                 ccd = ccdproc.gain_correct(ccd, gain)
 
             dark_corrected = False
-            if mdark is not None and self._config['FLATDARK_CORRECT']:
-                mdark_ccd = mdark[ccd_expt][0]
-                is_nearest = mdark[ccd_expt][2]
-                scale = False
-                if not is_nearest:
-                    scale = True
-                    if mbias is not None and self._config['BIAS_CORRECT']:
-                        if isinstance(mbias, str):
-                            mbias = self.convert_fits_to_ccd(mbias, single=True)
-                        if crop_key is not None and not multiple_amps:
-                            mbias = self.crop_image(img_ccd=mbias,
-                                                    hdr=ccd.header,
-                                                    crop_section_unbinned=ccd.header[crop_key])
-                        if mbias_ccd is None:
-                            mbias_ccd = mbias
-                        ccd = ccdproc.subtract_bias(ccd, mbias)
+            if mdark is not None and self._config['FLATDARK_CORRECT'] and ccd_expt in mdark:
+                mdark_ccd, dark_is_pure, is_nearest = mdark[ccd_expt]
 
+                # 1. If Dark is "Pure" (Bias-subtracted), we MUST bias-subtract the Flat now
+                if dark_is_pure and self._config['BIAS_CORRECT']:
+                    if isinstance(mbias, str):
+                        mbias = self.convert_fits_to_ccd(mbias, single=True)
+
+                    temp_mbias = mbias
+                    if crop_key is not None and not multiple_amps:
+                        temp_mbias = self.crop_image(img_ccd=temp_mbias,
+                                                     hdr=ccd.header,
+                                                     crop_section_unbinned=ccd.header[crop_key])
+
+                    if mbias_ccd is None:
+                        mbias_ccd = temp_mbias
+
+                    ccd, temp_mbias = check_shape(ccd, temp_mbias)
+                    ccd = ccdproc.subtract_bias(ccd, temp_mbias)
+
+                # 2. Prepare and apply Dark
                 if isinstance(mdark_ccd, str):
                     mdark_ccd = self.convert_fits_to_ccd(mdark_ccd, single=True)
+
                 if crop_key is not None and not multiple_amps:
                     mdark_ccd = self.crop_image(img_ccd=mdark_ccd,
                                                 hdr=ccd.header,
                                                 crop_section_unbinned=ccd.header[crop_key])
+
+                scale_required = not is_nearest
+                ccd, mdark_ccd = check_shape(ccd, mdark_ccd)
                 ccd = ccdproc.subtract_dark(ccd, mdark_ccd,
                                             exposure_time='exptime',
                                             exposure_unit=u.Unit("second"),
-                                            scale=scale)
+                                            scale=scale_required)
+
                 add_key_to_hdr(ccd.header, 'MDARK', get_filename(mdark_ccd))
                 dark_corrected = True
 
+            # 3. Fallback: Bias subtraction only if no dark was applied
             if mbias is not None and self._config['BIAS_CORRECT'] and not dark_corrected:
                 if isinstance(mbias, str):
                     mbias = self.convert_fits_to_ccd(mbias, single=True)
@@ -1055,6 +1192,7 @@ class ReduceSatObs(object):
                 # Check shape
                 ccd, mbias = check_shape(ccd, mbias)
                 ccd = ccdproc.subtract_bias(ccd, mbias)
+                add_key_to_hdr(ccd.header, 'MBIAS', get_filename(mbias_ccd))
 
             # Append the result to a file list for combining
             lflat.append(ccd)
@@ -1062,15 +1200,13 @@ class ReduceSatObs(object):
             del ccd
 
         if not self.silent:
-            self._log.info(f'  Creating master flat file: {os.path.basename(mflat_fname)}')
+            self._log.info(f'    Creating master flat file: {os.path.basename(mflat_fname)}')
 
         # Combine flat ccds
         combine = ccdproc.combine(lflat, method=method,
                                   mem_limit=self._config['MEM_LIMIT_COMBINE'],
                                   scale=inv_median,
-                                  minmax_clip=True,
-                                  minmax_clip_min=0.9,
-                                  minmax_clip_max=1.05,
+                                  minmax_clip=False,
                                   sigma_clip=True, sigma_clip_low_thresh=3,
                                   sigma_clip_high_thresh=3,
                                   sigma_clip_func=np.ma.median,
@@ -1089,7 +1225,7 @@ class ReduceSatObs(object):
                                   ccd_mask_fname, vignette=self._config['VIGNETTE_FRAC'])
         self._ccd_mask_fname = ccd_mask_fname
 
-        # Update fits header
+        # Update the FITS header
         if gain is not None and 'GAIN' not in combine.header:
             combine.header.set('GAIN', gain.value, gain.unit)
         if readnoise is not None and 'RON' not in combine.header:
@@ -1119,7 +1255,7 @@ class ReduceSatObs(object):
     def create_master_dark(self, files_list, obsparams, mdark_fname,
                            exptime=None, mbias=None,
                            multiple_amps=False,
-                           gain=None, method='average', readnoise=None, error=False,
+                           gain=None, method='average', readnoise=None,
                            dfilter=None,
                            key_find='find', invert_find=False, sjoin=','):
         """Create a master dark frame.
@@ -1143,17 +1279,14 @@ class ReduceSatObs(object):
             If True, handles data from detectors with multiple amplifiers by processing
             each amplifier's data separately before combining. Defaults to False.
         gain : float or None, optional
-            Detector gain in electrons per ADU. Required if `error=True`.
+            Detector gain in electrons per ADU.
             Defaults to None.
         method : {'average', 'median'}, optional
             Method used to combine the individual dark frames: 'average' computes the mean,
             while 'median' computes the median. Defaults to 'average'.
         readnoise : float or None, optional
-            Detector readout noise in electrons. Required if `error=True`.
+            Detector readout noise in electrons.
             Defaults to None.
-        error : bool, optional
-            If True, generates an uncertainty map with the master dark frame, requiring
-            `gain` and `readnoise`. Defaults to False.
         dfilter : dict or None, optional
             Dictionary to filter the files in `files_list` based on specific criteria,
             such as selecting only frames with a particular exposure time. Defaults to None.
@@ -1170,17 +1303,13 @@ class ReduceSatObs(object):
         Returns
         -------
         master_dark : CCDData
-            Combined master dark frame as a CCDData object, with optional uncertainty
-            map if `error=True`.
+            Combined master dark frame as a CCDData object.
 
         """
         if not self.silent:
-            self._log.info(f'  Creating master dark file: {os.path.basename(mdark_fname)}')
+            self._log.info(f'    Creating master dark file: {os.path.basename(mdark_fname)}')
 
         # Check inputs
-        if error and (gain is None or readnoise is None):
-            self._log.warning('You need to provide "gain" and "readnoise" to compute the error!')
-            error = False
         if gain is not None and not isinstance(gain, u.Quantity):
             gain = gain * u.Unit("electron") / u.Unit("adu")
         if readnoise is not None and not isinstance(readnoise, u.Quantity):
@@ -1212,10 +1341,6 @@ class ReduceSatObs(object):
                                       hdr=ccd.header,
                                       crop_section_unbinned=ccd.header[crop_key])
 
-            # Create an uncertainty map
-            if error:
-                ccd = ccdproc.create_deviation(ccd, gain=gain,
-                                               readnoise=readnoise)
             # Gain correct
             if gain is not None and self._config['CORRECT_GAIN']:
                 ccd = ccdproc.gain_correct(ccd, gain)
@@ -1228,7 +1353,7 @@ class ReduceSatObs(object):
                     mbias = self.crop_image(img_ccd=mbias,
                                             hdr=ccd.header,
                                             crop_section_unbinned=ccd.header[crop_key])
-
+                ccd, mbias = check_shape(ccd, mbias)
                 ccd = ccdproc.subtract_bias(ccd, mbias)
 
             # Append the result to a file list for combining
@@ -1239,8 +1364,8 @@ class ReduceSatObs(object):
         combine = ccdproc.combine(ldark, method=method,
                                   mem_limit=self._config['MEM_LIMIT_COMBINE'],
                                   sigma_clip=True,
-                                  sigma_clip_low_thresh=5,
-                                  sigma_clip_high_thresh=5,
+                                  sigma_clip_low_thresh=3,
+                                  sigma_clip_high_thresh=3,
                                   sigma_clip_func=np.ma.median,
                                   sigma_clip_dev_func=mad_std,
                                   dtype='float32')
@@ -1251,8 +1376,8 @@ class ReduceSatObs(object):
         if readnoise is not None and 'RON' not in combine.header:
             combine.header.set('RON', readnoise.value, readnoise.unit)
         combine.header['combined'] = True
-        combine.header['BIASCORR'] = True if mbias is not None else False
-        combine.header['CGAIN'] = True if gain is not None and self._config['CORRECT_GAIN'] else False
+        combine.header['BIASCORR'] = bool(mbias is not None and self._config['BIAS_CORRECT'])
+        combine.header['CGAIN'] = bool(gain is not None and self._config['CORRECT_GAIN'])
         combine.header['IMAGETYP'] = 'DARK'
         combine.header['CMETHOD'] = method
 
@@ -1277,7 +1402,7 @@ class ReduceSatObs(object):
 
     def create_master_bias(self, files_list, obsparams, mbias_fname,
                            multiple_amps=False,
-                           gain=None, method='average', readnoise=None, error=False,
+                           gain=None, method='average', readnoise=None,
                            dfilter=None, key_find='find', invert_find=False, sjoin=','):
         """Create a master bias frame.
 
@@ -1293,20 +1418,17 @@ class ReduceSatObs(object):
             the master bias frame is not saved. Defaults to None.
         multiple_amps : bool, optional
             If True, indicates that the detector has multiple amplifiers, and the function
-            will handle each amplifier’s data separately before combining. Defaults to False.
+            will handle each amplifier’s data separately. Defaults to False.
         gain : float or None, optional
             Detector gain in electrons per ADU. If provided, used to scale the bias
-            frames accordingly. Required if `error=True`. Defaults to None.
+            frames accordingly. Defaults to None.
         method : {'average', 'median'}, optional
             Method used to combine the individual bias frames. Options are 'average'
             to compute the mean, or 'median' to compute the median. Defaults to 'average'.
         readnoise : float or None, optional
             Detector readout noise in electrons. If None, readout noise is estimated
-            from the standard deviation of a bias frame. Required if `error=True`.
+            from the standard deviation of a bias frame.
             Defaults to None.
-        error : bool, optional
-            If True, generates an uncertainty map with the master bias frame. Requires
-            both `gain` and `readnoise` to be provided. Defaults to False.
         dfilter : dict or None, optional
             Dictionary specifying filtering criteria for selecting bias files based
             on their metadata or header values. Defaults to None.
@@ -1323,25 +1445,21 @@ class ReduceSatObs(object):
         Returns
         -------
         master_bias : CCDData
-            Combined master bias frame as a CCDData object, with an optional uncertainty
-            map if `error=True`.
+            Combined master bias frame as a CCDData object.
 
         """
         if not self.silent:
-            self._log.info(f'  Creating master bias file: {os.path.basename(mbias_fname)}')
+            self._log.info(f'    Creating master bias file: {os.path.basename(mbias_fname)}')
 
         # Check inputs
-        if error and (gain is None or readnoise is None):
-            self._log.warning('You need to provide "gain" and "readnoise" to compute the error!')
-            error = False
         if gain is not None and not isinstance(gain, u.Quantity):
             gain = gain * u.Unit("electron") / u.Unit("adu")
         if readnoise is not None and not isinstance(readnoise, u.Quantity):
             readnoise = readnoise * u.Unit("electron")
 
-        dfilter = {'imagetyp': bc.IMAGETYP_BIAS,
-                   'binning': self._bin_str} if dfilter is None else dfilter
-
+        if dfilter is None:
+            dfilter = {'imagetyp': bc.IMAGETYP_BIAS,
+                       'binning': self._bin_str}
         # Get the list with files
         files_list = self.get_file_list(files_list, dfilter,
                                         key_find=key_find, invert_find=invert_find,
@@ -1365,10 +1483,6 @@ class ReduceSatObs(object):
                                       hdr=ccd.header,
                                       crop_section_unbinned=ccd.header[crop_key])
 
-            # Create an uncertainty map
-            if error:
-                ccd = ccdproc.create_deviation(ccd, gain=gain,
-                                               readnoise=readnoise)
             # Gain correct
             if gain is not None and self._config['CORRECT_GAIN']:
                 ccd = ccdproc.gain_correct(ccd, gain)
@@ -1383,8 +1497,8 @@ class ReduceSatObs(object):
                                   sigma_clip=True,
                                   sigma_clip_low_thresh=3,
                                   sigma_clip_high_thresh=3,
-                                  # sigma_clip_func=np.ma.median,
-                                  # sigma_clip_dev_func=mad_std,
+                                  sigma_clip_func=np.ma.median,
+                                  sigma_clip_dev_func=mad_std,
                                   dtype='float32')
 
         # Update fits header
@@ -1503,7 +1617,7 @@ class ReduceSatObs(object):
 
             # Log message if not in silent mode
             if not silent:
-                self._log.info(f'  Creating bad pixel map file: {os.path.basename(ccd_mask_fname)}')
+                self._log.info(f'    Creating bad pixel map file: {os.path.basename(ccd_mask_fname)}')
 
             # Convert mask to CCDData and set header
             mask_as_ccd = CCDData(data=ccd_mask, unit=u.dimensionless_unscaled)
@@ -1551,15 +1665,15 @@ class ReduceSatObs(object):
                 oscan_arr = nccd[oscan_slice]
                 nccd = ccdproc.subtract_overscan(nccd,
                                                  overscan=oscan_arr,
-                                                 add_keyword={'oscan_cor': True},
                                                  median=True, overscan_axis=None)
+                nccd.header['oscan_cor'] = True
 
             trim_key = obsparams['trimsec']
             if trim_key is not None:
                 trim_section = hdr[trim_key]
                 trim_slice = self.parse_section(trim_section)
-                nccd = ccdproc.trim_image(nccd[trim_slice],
-                                          add_keyword={'trimmed': True})
+                nccd = ccdproc.trim_image(nccd[trim_slice])
+                nccd.header['trimmed'] = True
         else:
             # Get the list of amplifiers from the header
             amp_list = hdr[obsparams['amplist']].split()
@@ -1654,8 +1768,8 @@ class ReduceSatObs(object):
             crop_slice_y, crop_slice_X = self.parse_section(crop_section_unbinned, bin_x, bin_y)
             crop_slice_y = slice(crop_slice_y.start, crop_slice_y.stop - 1)
             crop_slice_X = slice(crop_slice_X.start, crop_slice_X.stop - 1)
-            nccd = ccdproc.trim_image(nccd[crop_slice_y, crop_slice_X],
-                                      add_keyword={'cropped': True})
+            nccd = ccdproc.trim_image(nccd[crop_slice_y, crop_slice_X])
+            nccd.header['cropped'] = True
         del img_ccd
 
         return nccd
@@ -1692,43 +1806,168 @@ class ReduceSatObs(object):
             if os.path.exists(fn):
                 hdr = fits.getheader(fn)
             else:
-                self._log.warning(f'>>> File "{os.path.basename(fn)}" NOT found')
+                self._log.warning(f'File "{os.path.basename(fn)}" NOT found')
                 continue
             if key_unit is not None and key_unit in hdr:
                 try:
-                    fits_unit = eval('u.%s' % hdr[key_unit])
+                    fits_unit = u.Unit(hdr[key_unit])
                 except (Exception,):
                     pass
             if fits_unit is None:
                 if key_unit is not None:
-                    sys.exit('>>> Units NOT found in header ("%s") of image "%s". '
-                             'Specify one in "unit" variable' % (
-                                 key_unit, os.path.basename(fn)))
+                    raise RuntimeError(
+                        'Units NOT found in header ("%s") of image "%s". '
+                        'Specify one in "unit" variable' % (
+                            key_unit, os.path.basename(fn)))
                 else:
-                    self._log.warning('>>> "key_unit" not specified')
-            self._log.setLevel("warning".upper())
-            # ccd = CCDData.read(f, unit=fits_unit)
-            ccd = CCDData.read(fn)
-            self._log.setLevel("info".upper())
+                    self._log.debug('"key_unit" not specified')
+            # Silence astropy's INFO chatter during the read, then restore the caller's level
+            prev_level = self._log.level
+            self._log.setLevel(max(prev_level, logging.WARNING))
+            try:
+                ccd = CCDData.read(fn)
+            finally:
+                self._log.setLevel(prev_level)
             if key_file is not None and key_file not in ccd.header:
                 ccd.header[key_file] = os.path.basename(fn)
             lccd.append(ccd)
             del ccd
         if len(lccd) == 0:
-            self._log.warning('>>> NO files found!')
-            return
+            self._log.warning('No files found!')
+            return []
         if single and len(lccd) == 1:
             lccd = lccd[0]
         return lccd
 
-    def find_calibrations(self, telescope, obsparams,
-                          date, filters,
-                          binnings):
+    def _check_calibration_files_exist(self, search_path, suffix, obsparams, binnings, filters, inst=None):
         """
-        Find calibration files and create master calibration file names.
+        Check if calibration files exist in the specified path.
+
+        Parameters
+        ----------
+        search_path : Path
+            Path to search for calibration files.
+        suffix : str
+            File suffix (e.g., '.fits', '.fit').
+        obsparams : dict
+            Dictionary with telescope configuration.
+        binnings : tuple
+            A tuple containing the binning factor in x, and y direction.
+        filters : list
+            The list of filters used in the data set.
+        inst : str, optional
+            Instrument identifier for DDOTI telescope.
+
+        Returns
+        -------
+        bool
+            True if calibration files (bias, dark, or flat) are found, False otherwise.
+
+        """
+        # Find all FITS files in the search path
+        fits_files = list(Path(search_path).rglob(f"*{suffix}"))
+        fits_files = [f for f in fits_files if '/atmp/' not in str(f)
+                      and 'reduced' not in str(f)
+                      and 'master_calibs' not in str(f)
+                      and not f.name.startswith('.')]
+
+        if not fits_files:
+            return False
+
+        try:
+            # Create an image file collection to check for calibration types
+            ic = ImageFileCollection(filenames=fits_files)
+
+            if ic.summary is None or len(ic.summary) == 0:
+                return False
+
+            # Check for bias files
+            if self._config.get('BIAS_CORRECT', False):
+                dfilter, _, regexp = self.create_dfilter(inst, obsparams, 'bias')
+                bias_files = self.get_file_list(ic, dfilter, key_find='find', regexp=regexp,
+                                                invert_find=False, dkeys=None)
+                if bias_files is not None and len(bias_files) > 0:
+                    return True
+
+            # Check for dark files
+            if self._config.get('DARK_CORRECT', False):
+                dfilter, _, regexp = self.create_dfilter(inst, obsparams, 'dark')
+                dark_files = self.get_file_list(ic, dfilter, key_find='find', regexp=regexp,
+                                                invert_find=False, dkeys=None)
+                if dark_files is not None and len(dark_files) > 0:
+                    return True
+
+            # Check for flat files
+            if self._config.get('FLAT_CORRECT', False):
+                dfilter, _, regexp = self.create_dfilter(inst, obsparams, 'flat')
+                for filt in filters:
+                    dfilter[obsparams['filter'].lower()] = filt[1]
+                    flat_files = self.get_file_list(ic, dfilter, key_find='find', regexp=regexp,
+                                                    invert_find=False, dkeys=None)
+                    if flat_files is not None and len(flat_files) > 0:
+                        return True
+
+            del ic
+            return False
+
+        except Exception as e:
+            self._log.debug(f"{' ':<4}> Error checking calibration files in {search_path}: {e}")
+            return False
+
+    @staticmethod
+    def _parse_obs_date_from_text(text):
+        """Parse YYYY-MM-DD or YYYYMMDD date tokens from text."""
+        if text is None:
+            return None
+
+        token_match = re.search(r'(\d{4}-\d{2}-\d{2}|\d{8})', str(text))
+        if token_match is None:
+            return None
+
+        token = token_match.group(1)
+        fmt = '%Y-%m-%d' if '-' in token else '%Y%m%d'
+        try:
+            return datetime.strptime(token, fmt).date()
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _build_master_bias_path(out_path, suffix, binning_ext, telescope, instrument=None):
+        master_bias = f"master_bias_{binning_ext}{suffix}"
+        if telescope == 'DDOTI 28-cm f/2.2':
+            master_bias = f"master_bias_{instrument}_{binning_ext}{suffix}"
+        return Path(join_path(master_bias, out_path))
+
+    @staticmethod
+    def _build_master_dark_glob(suffix, binning_ext, telescope, instrument=None):
+        if telescope == 'DDOTI 28-cm f/2.2':
+            return f"master_dark_{instrument}_{binning_ext}_*{suffix}"
+        return f"master_dark_{binning_ext}_*{suffix}"
+
+    @staticmethod
+    def _build_master_flat_path(out_path, suffix, filter_name, binning_ext, telescope, instrument=None):
+        master_flat = f"master_flat_{filter_name}_{binning_ext}{suffix}"
+        if telescope == 'DDOTI 28-cm f/2.2':
+            master_flat = f"master_flat_{instrument}_{filter_name}_{binning_ext}{suffix}"
+        return Path(join_path(master_flat, out_path))
+
+    @staticmethod
+    def _build_master_dark_path(out_path, suffix, dark_exposure, binning_ext, telescope, instrument=None):
+        exposure_token = str(dark_exposure).replace('.', 'p')
+        master_dark = f"master_dark_{binning_ext}_{exposure_token}{suffix}"
+        if telescope == 'DDOTI 28-cm f/2.2':
+            master_dark = f"master_dark_{instrument}_{binning_ext}_{exposure_token}{suffix}"
+        return Path(join_path(master_dark, out_path))
+
+    def find_and_create_calibrations(self, telescope, obsparams,
+                                     filters, binnings, obs_date=None):
+        """ Find calibration files and create master calibration files if required.
 
         This method is used to search for the bias, dark and flat files, if they are required,
         copies them to the tmp reduction folder and applies the appropriate reduction method.
+        It first looks for calibration files in the date folder of the science data,
+        if it finds them it uses those, otherwise it expands the search to a date range around the observation night.
+        If no calibration files are found in the date range, raise an error.
 
         Parameters
         ----------
@@ -1736,165 +1975,1720 @@ class ReduceSatObs(object):
             Telescope identifier.
         obsparams : dict
             Dictionary with telescope configuration.
-        date : datetime.date
-            Observation date.
         filters : list
-            The list of filters used in the dataset.
+            The list of filters used in the data set.
         binnings : tuple
             A tuple containing the binning factor in x, and y direction.
-
+        obs_date : datetime.date or None
+            Observation date derived from science headers, used as fallback if path-based date
+            resolution fails.
         """
-        sci_root_path = self._sci_root_path
-        tmp_path = self._tmp_path
+
+        sci_root_path = Path(self._sci_root_path).resolve()
         suffix = self._suffix
-        sci_bin_str = f'{binnings[0]}x{binnings[1]}'
+        sci_bin_str = self._bin_str if self._bin_str else f'{binnings[0]}x{binnings[1]}'
 
         inst = None
         if self._telescope == 'DDOTI 28-cm f/2.2':
             inst = self._instrument
 
-        # Create a range of days before and after the observation night to search for calibrations
-        dt_list = list(range(-1 * self._config['TIMEDELTA_DAYS'], self._config['TIMEDELTA_DAYS']))
-        date_range = np.array([str(date + timedelta(days=i)) for i in dt_list])
+        if not self.silent:
+            self._log.info("> Prepare calibrations")
 
-        # Get base folder for search for calib files
-        # fixme: this is not working as intended
-        #  The idea is to search for calibration files in the sci folder and if no suitable
-        #  calib files are found search for other dates.
-        #  For this to work i will have to redo this part.
-        #
-        # search YYYY-MM-DD, and YYYYMMDD
-        dsplit = str(date).replace('-', '')
-        str_comp = re.compile(f'({str(date)}|{dsplit}).?/')
-        match = re.search(str_comp, sci_root_path)
+        # Resolve date
+        self._log.debug(f"{' ':<2}> Resolve science dataset context")
+        try:
+            resolved_date, date_route, same_night_path, parent_search_root = self._resolve_date_context(
+                sci_root_path,
+                obs_date=obs_date,
+            )
+        except Exception as exc:
+            return self._make_failure_result(
+                status='dataset_failed_validation_error',
+                reason=f'Observation date resolution failed: {exc}',
+                dataset_path=sci_root_path,
+                binning=sci_bin_str,
+            )
 
-        search_base_path = None
-        if match is not None:
-            search_base_path = Path(sci_root_path[:match.end()])
+        # Derive dataset date root and master output directory
+        dataset_date_root, date_root_route = self._derive_dataset_date_root(sci_root_path, same_night_path)
+        master_out = dataset_date_root / 'master_calibs'
+        master_out.mkdir(exist_ok=True, parents=True)
+
+        try:
+            requirement = self._build_science_calibration_requirement(obsparams=obsparams,
+                                                                      filters=filters,
+                                                                      obs_date=resolved_date,
+                                                                      master_out=master_out)
+        except Exception as exc:
+            return self._make_failure_result(
+                status='dataset_failed_validation_error',
+                reason=f'Science calibration requirement build failed: {exc}',
+                dataset_path=sci_root_path,
+                binning=sci_bin_str,
+                master_output=master_out,
+            )
+
+        # Initialize calibration state from user preferences
+        calib_state = self._build_calib_state_template(requirement)
+        prefs = requirement['user_preferences']
+        self._log.debug(f"{' ':<4}User correction preferences: " + ', '.join(
+            f"{flag_name}={prefs.get(flag_name)}"
+            for flag_name in ['BIAS_CORRECT', 'FLAT_CORRECT', 'DARK_CORRECT',
+                              'FLATDARK_CORRECT', 'ALLOW_DARK_SCALING', 'DARK_TOLERANCE']))
+        self._log.debug(f"{' ':<4}Date resolution route : {date_route}")
+        self._log.debug(f"{' ':<4}Dataset date root     : {dataset_date_root}  [{date_root_route}]")
+        self._log.debug(f"{' ':<4}Date-resolved path    : {same_night_path}")
+        self._log.debug(f"{' ':<4}Master output root    : {master_out}")
+        self._log.debug(f"{' ':<4}Science exposures     : {requirement['science_exposure_times']}")
+        self._log.debug(f"{' ':<4}Science filters       : {[f[0] for f in requirement['filters']]}")
+
+        # Probe same-night candidate
+        selected_probe = None  # type: Optional[dict]
+        fallback_deltas = []
+        same_night_candidate = Path(dataset_date_root)
+
+        self._log.debug(f"{' ':<2}> Evaluate same-night calibration candidate")
+
+        same_night_probe = self._probe_candidate(search_path=same_night_candidate,
+                                                 resolved_date=resolved_date,
+                                                 master_out=master_out,
+                                                 requirement=requirement,
+                                                 obsparams=obsparams,
+                                                 filters=requirement['filters'],
+                                                 binnings=binnings,
+                                                 suffix=suffix,
+                                                 inst=inst,
+                                                 sci_bin_str=sci_bin_str)
+        probe_log = [same_night_probe]
+
+        if same_night_probe['complete']:
+            selected_probe = same_night_probe
+            self._log.debug(f"{' ':<4}Fallback search       : skipped; same-night candidate complete")
         else:
-            for d in date_range:
-                dsplit = str(d).replace('-', '')
-                str_comp = re.compile(f'({str(d)}|{dsplit}).?/')
-                match = re.search(str_comp, sci_root_path)
-                if match is not None:
-                    search_base_path = Path(sci_root_path[:match.end()])
+            if not self.silent:
+                self._log.info(f"{' ':<4}Same-night calibrations incomplete; searching "
+                               f"±{self._config['TIMEDELTA_DAYS']} days under {parent_search_root}")
+
+            fallback_candidates, fallback_deltas = self._collect_fallback_candidates(parent_search_root, resolved_date)
+            fallback_candidates = [
+                p for p in fallback_candidates
+                if p.resolve() != Path(dataset_date_root).resolve()
+            ]
+
+            self._log.debug(f"{' ':<4}Fallback candidates   : {len(fallback_candidates)}")
+            self._log.debug(f"{' ':<4}Fallback source order : {[str(p) for p in fallback_candidates]}")
+
+            for i, cpath in enumerate(fallback_candidates, start=1):
+                self._log.debug(f"{' ':<2}> Evaluate fallback candidate {i}/{len(fallback_candidates)}")
+
+                probe = self._probe_candidate(search_path=cpath,
+                                              resolved_date=resolved_date,
+                                              master_out=master_out,
+                                              requirement=requirement,
+                                              obsparams=obsparams,
+                                              filters=requirement['filters'],
+                                              binnings=binnings,
+                                              suffix=suffix,
+                                              inst=inst,
+                                              sci_bin_str=sci_bin_str)
+                probe_log.append(probe)
+                if probe['complete']:
+                    selected_probe = probe
                     break
+                self._log.debug(f"{' ':<4}Candidate result      : incomplete; trying next fallback candidate")
 
-        # Create a master calibration folder
-        calib_out = Path(f"{search_base_path}/master_calibs/")
-        calib_out.mkdir(exist_ok=True)
-        self._master_calib_path = calib_out
+        if selected_probe is None:
+            unresolved_union = sorted({item for p in probe_log for item in p['unresolved']})
+            searched = [p['search_path'] for p in probe_log]
+            fallback_range = [int(d) for d in fallback_deltas]
+            msg = (
+                f"Calibration preparation failed for binning {sci_bin_str}. "
+                f"Unresolved calibration types: {unresolved_union}. "
+                f"Searched candidate folders: {[str(p) for p in searched]}. "
+                f"Date resolution route: {date_route}. "
+                f"Fallback day offsets used: {fallback_range}. "
+                f"Master output root: {master_out}."
+            )
+            failure_items = []
+            for token in unresolved_union:
+                product = 'flat' if token.startswith(('flat:', 'flat-baseline:')) else token
+                failure_items.append({'product': product, 'reason': token})
+            if any(str(item['reason']).startswith(('dark-baseline:', 'flat-baseline:')) for item in failure_items):
+                status = 'dataset_failed_no_bias_or_dark'
+            elif any(i['product'] == 'flat' for i in failure_items):
+                status = 'dataset_failed_missing_requested_flat'
+            else:
+                status = 'dataset_failed_missing_requested_bias'
+            return self._make_failure_result(
+                status=status,
+                reason=msg,
+                dataset_path=sci_root_path,
+                binning=sci_bin_str,
+                master_output=master_out,
+                failed_products=failure_items,
+                searched_sources=searched,
+            )
 
-        # Find all images
-        fits_list = Path(search_base_path).rglob(f"*{suffix}")
-        fits_list = [f for f in fits_list if '/atmp/' not in str(f) and not f.name.startswith('.')]
+        # Select calibration source
+        selected_search_path = Path(selected_probe['search_path']).resolve()
+        selected_stage_plan = selected_probe.get('stage_plan', {'bias': [], 'dark': [], 'flat': {}})
+        selected_adoption_plan = selected_probe.get('adoption_plan', {'bias': None, 'dark': {}, 'flat': {}})
+        adoption_needed = bool(
+            selected_adoption_plan.get('bias')
+            or selected_adoption_plan.get('dark')
+            or selected_adoption_plan.get('flat')
+        )
+        raw_staging_needed = bool(
+            selected_stage_plan.get('bias')
+            or selected_stage_plan.get('dark')
+            or any(selected_stage_plan.get('flat', {}).values())
+        )
+        is_same_night_candidate = selected_search_path == Path(dataset_date_root).resolve()
+        if is_same_night_candidate:
+            candidate_role = 'same-night candidate'
+        elif adoption_needed and raw_staging_needed:
+            candidate_role = 'fallback mixed master adoption/raw creation'
+        elif adoption_needed:
+            candidate_role = 'fallback master adoption'
+        elif raw_staging_needed:
+            candidate_role = 'fallback raw creation'
+        else:
+            candidate_role = 'fallback candidate already satisfied'
+        self._log.debug(f"{' ':<2}> Select calibration source")
+        self._log.debug(f"{' ':<4}Selected candidate root : {selected_probe['search_path']}")
+        self._log.debug(f"{' ':<4}Candidate role          : {candidate_role}")
+        self._master_calib_path = master_out
+        self._selected_calibration_source_folder = str(selected_search_path)
 
-        # Create an image file collection from the file list
-        ic_all = ImageFileCollection(filenames=fits_list)
+        # Merge winning probe's calib_state_preview into the live
+        # calib_state — the only place it is set from the probe
+        preview = selected_probe['calib_state_preview']
+        calib_state['bias'].update(preview['bias'])
+        for filt_name, filt_data in preview['flat'].items():
+            if filt_name in calib_state['flat']:
+                calib_state['flat'][filt_name].update(filt_data)
+            else:
+                calib_state['flat'][filt_name] = filt_data
+        # Dark entries: replace entirely (probe has the authoritative availability result)
+        calib_state['dark']['science'].update(preview['dark']['science'])
+        calib_state['dark']['flat'].update(preview['dark']['flat'])
+        self._log.debug(f"{' ':<4}Calibration state after selection — "
+                        f"bias.available={calib_state['bias']['available']}, "
+                        f"flat={[(f, v['available']) for f, v in calib_state['flat'].items()]}, "
+                        f"sci_darks={[(k, v['available']) for k, v in calib_state['dark']['science'].items()]}")
 
-        # Find master calibration files and check if the file exists
-        dbias, ddark, dflat, dark_exptimes = self.create_master_fnames(ic_all,
-                                                                       obsparams, filters,
-                                                                       sci_bin_str)
-
-        # Set variables
-        self._master_bias_dict = dbias
-        self._master_dark_dict = ddark
-        self._master_flat_dict = dflat
+        # Resolve master calibration filenames
+        dbias = selected_probe['master_bias_info']
+        ddark = selected_probe['master_dark_info']
+        dflat = selected_probe['master_flat_info']
+        dark_exptimes = sorted(ddark.keys())
+        self._master_bias_info = dbias
+        self._master_dark_info = ddark
+        self._master_flat_info = dflat
         self._dark_exptimes = dark_exptimes
+        def _format_target(value):
+            path, create = value
+            action = 'create' if create else 'load/use'
+            return f'{Path(path).name} [{action}]'
 
-        # Filter available files according to their image typ
-        create_bias = dbias[1]
-        if create_bias:
+        if dbias:
+            bias_summary = _format_target(dbias)
+        elif requirement['user_preferences']['BIAS_CORRECT']:
+            bias_summary = 'unavailable (science darks used)'
+        else:
+            bias_summary = 'not requested'
+        dark_summary = ', '.join(
+            f'{float(exp):g}s={_format_target(info)}'
+            for exp, info in sorted(ddark.items())
+        ) if ddark else 'none'
+        flat_summary = ', '.join(
+            f'{filt}={_format_target(info)}'
+            for filt, info in sorted(dflat.items())
+        ) if dflat else 'none'
+        self._log.debug(f"{' ':<4}Bias targets : {bias_summary}")
+        self._log.debug(f"{' ':<4}Dark targets : {dark_summary}")
+        self._log.debug(f"{' ':<4}Flat targets : {flat_summary}")
 
-            # Create filter
-            dfilter, add_filters, regexp = self.create_dfilter(inst, obsparams, 'bias')
-            # Filter for bias files
-            bias_files = self.filter_calib_files(fits_list, obsparams,
-                                                 dfilter, add_filters,
-                                                 binnings, date, regexp=regexp)
+        # Adopt fallback masters before raw staging
+        if adoption_needed:
+            self._log.debug(f"{' ':<2}> Apply fallback-master adoption plan")
+            self._adopt_fallback_master_products(adoption_plan=selected_adoption_plan,
+                                                 requirement=requirement,
+                                                 calib_state=calib_state)
 
-            # Copy bias files if no master_bias is available
-            if list(bias_files) and self._config['BIAS_CORRECT']:
-                new_bias_path = []
-                if not self.silent:
-                    self._log.info("> Copy raw bias images.")
-                for bfile in bias_files:
-                    os.system(f"cp -r {bfile} {tmp_path}")
-                    file_name = Path(bfile).stem
-                    new_bias_path.append(os.path.join(tmp_path, file_name + suffix))
-
-                # Prepare bias files
-                if not self.silent:
-                    self._log.info(f"> Preparing {len(new_bias_path)} ``BIAS`` files for reduction.")
-                self.prepare_fits_files(new_bias_path, telescope, obsparams, 'bias')
+        # Stage and prepare raw calibration files
+        self._log.debug(f"{' ':<2}> Stage raw calibration files if needed")
+        staged_seen = set()
+        # Use calib_state (not self._config) to decide what needs staging
+        if calib_state['bias']['requested']:
+            if not dbias:
+                self._log.debug(f"{' ':<4}Bias raw staging skipped: no bias available")
+            elif dbias[1]:
+                self._stage_and_prepare(selected_stage_plan.get('bias', []), 'bias', staged_seen,
+                                        telescope, obsparams)
             else:
-                self._config['BIAS_CORRECT'] = False
-            del bias_files
+                self._log.debug(f"{' ':<4}Bias raw staging skipped: master already available")
 
-        create_dark = np.any(np.array([v[1] for _, v in ddark.items()])) if ddark else False
-        if create_dark:
-            dfilter, add_filters, regexp = self.create_dfilter(inst, obsparams, 'dark')
-            # Filter for dark files
-            dark_files = self.filter_calib_files(fits_list, obsparams,
-                                                 dfilter, add_filters,
-                                                 binnings, date, regexp=regexp)
-
-            # Copy dark files if no master_dark is available
-            if list(dark_files) and self._config['DARK_CORRECT']:
-                new_dark_path = []
-                if not self.silent:
-                    self._log.info("> Copy raw dark images.")
-                for dfile in dark_files:
-                    os.system(f"cp -r {dfile} {tmp_path}")
-                    file_name = Path(dfile).stem
-                    new_dark_path.append(os.path.join(tmp_path, file_name + suffix))
-
-                # Prepare dark files
-                if not self.silent:
-                    self._log.info(f"> Preparing {len(new_dark_path)} ``DARK`` files for reduction.")
-                self.prepare_fits_files(new_dark_path, telescope, obsparams, 'dark')
+        if requirement['user_preferences']['DARK_CORRECT']:
+            create_dark = np.any(np.array([v[1] for _, v in ddark.items()])) if ddark else False
+            if create_dark:
+                self._stage_and_prepare(selected_stage_plan.get('dark', []), 'dark', staged_seen,
+                                        telescope, obsparams)
             else:
-                self._config['DARK_CORRECT'] = False
-            del dark_files
+                self._log.debug(f"{' ':<4}Dark raw staging skipped: masters already available")
 
-        # Create_flat = np.any(np.array([v[1] for _, v in dflat.items()]))
-        # print(create_flat)
         for filt in filters:
-            create_flat = dflat[filt[0]][1]
-            if create_flat:
-                dfilter, add_filters, regexp = self.create_dfilter(inst, obsparams, 'flat')
-                dfilter[obsparams['filter'].lower()] = filt[1]
-                flat_files = self.filter_calib_files(fits_list, obsparams,
-                                                     dfilter, add_filters,
-                                                     binnings, date, regexp=regexp)
+            filt_name = filt[0]
+            if not calib_state['flat'].get(filt_name, {}).get('requested', False):
+                continue
+            if filt_name in dflat and dflat[filt_name][1]:
+                flat_stage_map = selected_stage_plan.get('flat', {})
+                self._stage_and_prepare(flat_stage_map.get(filt_name, []), 'flat', staged_seen,
+                                        telescope, obsparams, label=f'flat ({filt_name})')
+            else:
+                self._log.debug(f"{' ':<4}Flat raw staging skipped for {filt_name}: master already available")
 
-                # Copy flat files if no master_flat is available
-                if list(flat_files) and self._config['FLAT_CORRECT']:
-                    new_flat_path = []
-                    if not self.silent:
-                        self._log.info("> Copy raw flat images.")
-                    for ffile in flat_files:
-                        os.system(f"cp -r {ffile} {tmp_path}")
-                        file_name = Path(ffile).stem
-                        new_flat_path.append(os.path.join(tmp_path, file_name + suffix))
+        # Create or load master products
+        self._log.debug(f"{' ':<2}> Build master calibration files")
+        try:
+            master_darks = self._build_master_products(requirement=requirement,
+                                                       calib_state=calib_state,
+                                                       obsparams=obsparams,
+                                                       filters=requirement['filters'])
+        except MasterBuildError:
+            raise
+        except Exception as exc:
+            raise MasterBuildError(str(exc)) from exc
 
-                    # Prepare the flat files
-                    if not self.silent:
-                        self._log.info(f"> Preparing {len(new_flat_path)} ``FLAT`` files in"
-                                       f" {filt[0]} band for reduction.")
-                    self.prepare_fits_files(new_flat_path, telescope, obsparams, 'flat')
+        # Validate master products
+        self._log.debug(f"{' ':<2}> Validate master calibration outputs")
+        fatal_missing, optional_missing = self._validate_master_products(requirement=requirement,
+                                                                         calib_state=calib_state,
+                                                                         master_out=master_out)
+        if fatal_missing:
+            searched = [p['search_path'] for p in probe_log]
+            reason = (
+                f"Calibration validation failed. Missing hard products: {fatal_missing}. "
+                f"Optional unavailable: {optional_missing}. "
+                f"Master output root: {master_out}. "
+                f"Date resolution route: {date_route}. "
+                f"Fallback offsets: {[int(d) for d in fallback_deltas]}. "
+                f"Searched folders: {[str(p) for p in searched]}."
+            )
+            failed_products = []
+            for item in fatal_missing:
+                product = 'flat' if str(item).startswith('flat:') else str(item).split(':', 1)[0]
+                failed_products.append({'product': product, 'reason': str(item)})
+            return self._make_failure_result(
+                status='dataset_failed_validation_error',
+                reason=reason,
+                dataset_path=sci_root_path,
+                binning=sci_bin_str,
+                selected_source=selected_search_path,
+                master_output=master_out,
+                failed_products=failed_products,
+                searched_sources=searched,
+            )
 
-                del flat_files
-
-        # self._make_mbias = create_bias
-        # self._make_mdark = create_dark
-        # self._make_mflat = create_flat
+        # Controlled gate: correction baseline unavailable (no usable bias + no science master dark)
+        if requirement['user_preferences']['DARK_CORRECT']:
+            bias_available = bool(calib_state['bias'].get('available'))
+            dark_available = bool(master_darks and master_darks.get('sci_dark'))
+            if not bias_available and not dark_available:
+                return self._make_failure_result(
+                    status='dataset_failed_no_bias_or_dark',
+                    reason='No usable science bias or science dark available.',
+                    dataset_path=sci_root_path,
+                    binning=sci_bin_str,
+                    selected_source=selected_search_path,
+                    master_output=master_out,
+                    searched_sources=[p['search_path'] for p in probe_log],
+                )
 
         self._obsparams = obsparams
 
-        del fits_list, ic_all
-        gc.collect()
+        if not self.silent:
+            self._log_calibration_summary(requirement=requirement,
+                                          calib_state=calib_state,
+                                          source=None if is_same_night_candidate else selected_search_path)
+
+        return CalibrationPrepResult(
+            ok=True,
+            dataset_failed=False,
+            status='ok',
+            dataset_path=sci_root_path,
+            binning=sci_bin_str,
+            selected_source=selected_search_path,
+            master_output=master_out,
+            searched_sources=[Path(p['search_path']).resolve() for p in probe_log],
+            calib_state=calib_state,
+            master_darks=master_darks,
+        )
+
+    def _log_calibration_summary(self, requirement, calib_state, source=None):
+        """Log a compact per-binning overview of the calibrations used for science reduction.
+
+        ``source`` is the fallback folder the calibrations came from, or None for same-night.
+        """
+        status_words = {
+            'loaded_existing_science_date_master': 'loaded',
+            'adopted_from_fallback_master': 'adopted',
+            'overwritten_by_adopted_fallback_master': 'adopted',
+            'created_from_raw': 'created',
+            'overwritten_from_raw': 're-created',
+        }
+        prefs = requirement['user_preferences']
+
+        def _darks_line(entries):
+            parts = []
+            for target, info in sorted(entries.items()):
+                if not info.get('available'):
+                    parts.append(f"{target:g}s missing" + (' (bias only)' if info.get('fallback') == 'bias' else ''))
+                    continue
+                text = f"{target:g}s {status_words.get(info.get('master_status'), 'loaded')}"
+                actual = info.get('actual_exposure')
+                if not info.get('is_exact') and actual is not None and float(actual) != float(target):
+                    text += f" (scaled from {float(actual):g}s)"
+                parts.append(text)
+            return ', '.join(parts) if parts else 'none'
+
+        bias = calib_state['bias']
+        if not prefs['BIAS_CORRECT']:
+            bias_line = 'off'
+        elif bias.get('master_status') == 'skipped_unavailable_dark_baseline':
+            bias_line = 'none (science darks used instead)'
+        else:
+            bias_name = Path(bias['master_path']).name if bias.get('master_path') else ''
+            bias_line = f"{status_words.get(bias.get('master_status'), 'loaded'):<10} {bias_name}".rstrip()
+
+        dark_line = _darks_line(calib_state['dark']['science']) if prefs['DARK_CORRECT'] else 'off'
+
+        if prefs['FLAT_CORRECT']:
+            flat_line = ', '.join(
+                f"{filt} {status_words.get(info.get('master_status'), 'loaded')}"
+                for filt, info in sorted(calib_state['flat'].items())
+            ) or 'none'
+        else:
+            flat_line = 'off'
+
+        source_text = 'same-night' if source is None else f'fallback {Path(source).name}'
+        self._log.info(f"> Calibrations (binning {self._bin_str}) — source: {source_text}")
+        self._log.info(f"{' ':<4}Bias      : {bias_line}")
+        self._log.info(f"{' ':<4}Darks     : {dark_line}")
+        if prefs['FLATDARK_CORRECT']:
+            self._log.info(f"{' ':<4}Flat-darks: {_darks_line(calib_state['dark']['flat'])}")
+        self._log.info(f"{' ':<4}Flats     : {flat_line}")
+
+    def _list_fits(self, search_path, suffix):
+        fits_files = list(Path(search_path).rglob(f"*{suffix}"))
+        result = [f for f in fits_files if '/atmp/' not in str(f)
+                  and 'reduced' not in str(f)
+                  and 'master_calibs' not in str(f)
+                  and not f.name.startswith('.')]
+        self._log.debug(f"{' ':<4}[list_fits] {search_path}: {len(result)} FITS file(s) found")
+        return result
+
+    def _resolve_date_context(self, sci_root_path, obs_date=None):
+        sci_root_path = Path(sci_root_path).resolve()
+        self._log.debug(f"{' ':<4}[date_ctx] Trying folder-name date from: {sci_root_path.name}")
+        folder_date = self._parse_obs_date_from_text(sci_root_path.name)
+        if folder_date is not None:
+            self._log.debug(f"{' ':<4}[date_ctx] Resolved via folder name: {folder_date}")
+            return folder_date, 'science_root_folder_name', sci_root_path, sci_root_path.parent
+
+        for idx in range(len(sci_root_path.parts) - 1, -1, -1):
+            part = sci_root_path.parts[idx]
+            route_date = self._parse_obs_date_from_text(part)
+            if route_date is not None:
+                date_folder = Path(*sci_root_path.parts[:idx + 1])
+                self._log.debug(
+                    f"{' ':<4}[date_ctx] Resolved via path segment: {route_date}, date folder: {date_folder}")
+                return route_date, 'nearest_date_segment_in_science_path', date_folder, date_folder.parent
+
+        if obs_date is not None:
+            candidate = self._find_date_folder_candidate(sci_root_path.parent, obs_date)
+            if candidate is not None:
+                self._log.debug(f"{' ':<4}[date_ctx] Using obs_date folder fallback: {candidate}")
+                return obs_date, 'science_header_date_folder_search', candidate, candidate.parent
+            self._log.debug(f"{' ':<4}[date_ctx] Using obs_date fallback: {obs_date}")
+            return obs_date, 'configured_date_range_fallback', sci_root_path, sci_root_path.parent
+
+        raise RuntimeError(
+            'Could not resolve observation date from science path and no obs_date fallback was provided.')
+
+    @staticmethod
+    def _looks_like_date_root(folder_path):
+        folder_path = Path(folder_path)
+        try:
+            child_dirs = [d for d in folder_path.iterdir() if d.is_dir()]
+        except (OSError, PermissionError):
+            return False
+
+        child_names = {d.name.lower() for d in child_dirs}
+        calib_markers = {'bias', 'biases', 'dark', 'darks', 'flat', 'flats', 'sci', 'master_calibs'}
+        if child_names.intersection(calib_markers):
+            return True
+
+        # DATE/TARGET/raw layout support.
+        for child in child_dirs:
+            try:
+                if (child / 'raw').is_dir():
+                    return True
+            except (OSError, PermissionError):
+                continue
+
+        return False
+
+    @staticmethod
+    def _find_date_folder_candidate(search_root, target_date):
+        search_root = Path(search_root).resolve()
+        # Date-root-only policy: do not probe arbitrary nested folders.
+        # Search the current root and direct child date roots while walking up ancestors.
+        for anchor in [search_root, *search_root.parents]:
+            if ReduceSatObs._parse_obs_date_from_text(anchor.name) == target_date \
+                    and ReduceSatObs._looks_like_date_root(anchor):
+                return anchor.resolve()
+
+            try:
+                child_dirs = [d for d in anchor.iterdir() if d.is_dir()]
+            except (OSError, PermissionError):
+                continue
+
+            direct_date_roots = [d.resolve() for d in child_dirs
+                                 if ReduceSatObs._parse_obs_date_from_text(d.name) == target_date
+                                 and ReduceSatObs._looks_like_date_root(d)]
+            if direct_date_roots:
+                return sorted(direct_date_roots, key=str)[0]
+
+        return None
+
+    def _collect_fallback_candidates(self, parent_root, base_date):
+        parent_root = Path(parent_root).resolve()
+        dt_days = self._config['TIMEDELTA_DAYS']
+        deltas = list(range(-1 * dt_days, dt_days + 1))
+        deltas = [d for d in sorted(deltas, key=lambda x: (abs(x), x)) if d != 0]
+
+        target_dates = {base_date + timedelta(days=d): d for d in deltas}
+        by_date = {d: set() for d in target_dates.keys()}
+
+        direct_child_dirs = [d for d in parent_root.iterdir() if d.is_dir()]
+        for folder in direct_child_dirs:
+            dval = self._parse_obs_date_from_text(folder.name)
+            if dval in by_date:
+                by_date[dval].add(str(folder))
+
+        ordered = []
+        for delta in deltas:
+            date_key = base_date + timedelta(days=delta)
+            for item in sorted(by_date.get(date_key, set())):
+                ordered.append(Path(item).resolve())
+
+        self._log.debug(f"{' ':<4}[fallback] {len(ordered)} date-root fallback candidate(s) found under {parent_root}")
+        return ordered, deltas
+
+    def _build_science_calibration_requirement(self, obsparams, filters, obs_date, master_out):
+        """Build requirement model from science data and user config.
+        
+        This requirement model is created once per binning pass and represents:
+        - observation parameters
+        - science data characteristics
+        - user correction preferences
+        - correction policy settings (tolerance, scaling)
+        
+        Note: user_preferences are NEVER overwritten during probing/build.
+        Actual availability is tracked separately in calib_state.
+        """
+        ic_all = ImageFileCollection(location=self._tmp_path)
+        ic_science = ic_all.filter(imagetyp=bc.IMAGETYP_LIGHT, binning=self._bin_str)
+        if ic_science.summary is None or len(ic_science.summary) == 0:
+            raise RuntimeError(f'No normalized science files found for binning {self._bin_str}.')
+
+        science_filters = []
+        for filt in filters:
+            n_files = len(ic_all.files_filtered(imagetyp=bc.IMAGETYP_LIGHT,
+                                                filter=filt[0],
+                                                binning=self._bin_str))
+            if n_files > 0:
+                science_filters.append(filt)
+
+        science_exptimes = np.unique(ic_science.summary[obsparams['exptime'].lower()]).astype(float).tolist()
+        science_files = list(self.get_file_list(ic_all,
+                                                {'imagetyp': bc.IMAGETYP_LIGHT,
+                                                 'binning': self._bin_str},
+                                                abspath=True))
+        representative_science_file = self._resolve_representative_science_file(science_files,
+                                                                                ic_science)
+
+        science_shape = self._derive_processed_science_shape(representative_science_file, obsparams)
+
+        # Build user-preferences snapshot from config
+        user_preferences = {
+            'BIAS_CORRECT': bool(self._config.get('BIAS_CORRECT', False)),
+            'FLAT_CORRECT': bool(self._config.get('FLAT_CORRECT', False)),
+            'DARK_CORRECT': bool(self._config.get('DARK_CORRECT', False)),
+            'FLATDARK_CORRECT': bool(self._config.get('FLATDARK_CORRECT', False)),
+            'ALLOW_DARK_SCALING': bool(self._config.get('ALLOW_DARK_SCALING', False)),
+            'DARK_TOLERANCE': float(self._config.get('DARK_TOLERANCE', 0)),
+        }
+
+        return {
+            'observation_date': obs_date,
+            'instrument': self._instrument,
+            'telescope': self._telescope,
+            'suffix': self._suffix,
+            'binning': tuple(self._binxy),
+            'binning_str': self._bin_str,
+            'filters': science_filters,
+            'science_exposure_times': sorted(science_exptimes),
+            'science_image_shape': science_shape,
+            'user_preferences': user_preferences,
+            'force_reduction': bool(self._force_reduction),
+            'master_output_root': Path(master_out).resolve(),
+        }
+
+    @staticmethod
+    def _build_calib_state_template(requirement):
+        """Initialize the calibration state (calib_state).
+        
+        calib_state tracks what is actually available/created at runtime,
+        separate from user correction preferences. This model is updated during
+        probing/build but user_preferences are never mutated.
+        """
+        user_preferences = requirement['user_preferences']
+        filters = requirement['filters']
+
+        # Initialize calib_state per user preferences
+        calib_state = {
+            'bias': {
+                'requested': user_preferences['BIAS_CORRECT'],
+                'available': False,
+                'created': False,
+                'master_path': None,
+                'blocking': user_preferences['BIAS_CORRECT'],
+                'master_status': 'skipped_by_preference' if not user_preferences['BIAS_CORRECT'] else None,
+            },
+            'flat': {
+                filt[0]: {
+                    'requested': user_preferences['FLAT_CORRECT'],
+                    'available': False,
+                    'created': False,
+                    'master_path': None,
+                    'blocking': user_preferences['FLAT_CORRECT'],
+                    'master_status': 'skipped_by_preference' if not user_preferences['FLAT_CORRECT'] else None,
+                }
+                for filt in filters
+            },
+            'dark': {
+                'science': {
+                    # Will be populated: exposure -> {requested, available, created, blocking=False, fallback}
+                },
+                'flat': {
+                    # Will be populated: exposure -> {requested, available, created, blocking=False, fallback}
+                },
+            },
+            'warnings': [],
+        }
+
+        # Initialize science dark entries for all science exposure times
+        if user_preferences['DARK_CORRECT']:
+            for exp in requirement['science_exposure_times']:
+                calib_state['dark']['science'][float(exp)] = {
+                    'requested': True,
+                    'available': False,
+                    'created': False,
+                    'blocking': False,  # Non-blocking optional product
+                    'fallback': 'bias',  # Fallback to bias if missing
+                    'actual_exposure': None,
+                    'is_exact': False,
+                    'master_status': None,
+                }
+        else:
+            # Even if not requested, track for diagnostic purposes
+            for exp in requirement['science_exposure_times']:
+                calib_state['dark']['science'][float(exp)] = {
+                    'requested': False,
+                    'available': False,
+                    'created': False,
+                    'blocking': False,
+                    'fallback': None,
+                    'actual_exposure': None,
+                    'is_exact': False,
+                    'master_status': 'skipped_by_preference',
+                }
+
+        # Flat-dark entries will be populated during flat probing
+        if user_preferences['FLATDARK_CORRECT']:
+            # Placeholder for flat-darks (will be populated when flat exposure times are known)
+            pass
+
+        return calib_state
+
+    def _derive_processed_science_shape(self, science_file, obsparams):
+        ccd = CCDData.read(science_file, unit=u.Unit('adu'))
+        ccd = self.process_ccd(img_ccd=ccd,
+                               obsparams=obsparams,
+                               multiple_amps=obsparams['multiple_amps'])
+        crop_key = obsparams['cropsec']
+        if crop_key is not None and not obsparams['multiple_amps'] and crop_key in ccd.header:
+            ccd = self.crop_image(img_ccd=ccd,
+                                  hdr=ccd.header,
+                                  crop_section_unbinned=ccd.header[crop_key])
+        return tuple(ccd.data.shape)
+
+    def _normalize_ifc_file_entry(self, file_entry):
+        if file_entry is None:
+            return None
+
+        if isinstance(file_entry, bytes):
+            file_entry = file_entry.decode('utf-8', errors='ignore')
+
+        candidate = Path(str(file_entry).strip())
+        if candidate.name.startswith("b'") and candidate.name.endswith("'"):
+            candidate = Path(candidate.name[2:-1])
+
+        if not candidate.is_absolute():
+            candidate = Path(self._tmp_path, candidate)
+
+        return candidate.resolve()
+
+    def _resolve_representative_science_file(self, science_files, ic_science):
+        for file_entry in science_files:
+            candidate = self._normalize_ifc_file_entry(file_entry)
+            if candidate is not None and candidate.exists():
+                return candidate
+
+        if 'file' in ic_science.summary.colnames:
+            for file_entry in ic_science.summary['file']:
+                candidate = self._normalize_ifc_file_entry(file_entry)
+                if candidate is not None and candidate.exists():
+                    return candidate
+
+        # Final bounded fallback: scan only inside tmp for a matching science file.
+        tmp_root = Path(self._tmp_path)
+        for file_path in sorted(tmp_root.glob(f"*{self._suffix}")):
+            try:
+                with fits.open(file_path, mode='readonly', ignore_missing_end=True) as hdul:
+                    hdul.verify('fix')
+                    hdr = hdul[0].header
+                    imagetyp = str(self._get_header_value(hdr, 'IMAGETYP', '')).strip().upper()
+                    if imagetyp != bc.IMAGETYP_LIGHT.upper():
+                        continue
+                    binning = str(self._get_header_value(hdr, 'BINNING', '')).strip()
+                    if binning == self._bin_str:
+                        return file_path.resolve()
+            except Exception:
+                continue
+
+        raise RuntimeError(
+            f"No representative science file could be resolved for binning {self._bin_str} in {self._tmp_path}."
+        )
+
+    @staticmethod
+    def _get_header_value(header, key, default=None):
+        if key in header:
+            return header[key]
+        if key.upper() in header:
+            return header[key.upper()]
+        if key.lower() in header:
+            return header[key.lower()]
+        return default
+
+    def _read_fits_exposure(self, file_path, obsparams):
+        with fits.open(file_path, mode='readonly', ignore_missing_end=True) as hdul:
+            hdul.verify('fix')
+            exptime = self._get_header_value(hdul[0].header, obsparams['exptime'])
+        return None if exptime is None else float(exptime)
+
+    def _group_files_by_exposure(self, file_paths, obsparams):
+        grouped = collections.defaultdict(list)
+        for file_path in file_paths:
+            exptime = self._read_fits_exposure(file_path, obsparams)
+            if exptime is None:
+                continue
+            grouped[float(exptime)].append(file_path)
+        return {k: sorted(v) for k, v in grouped.items()}
+
+    def _is_master_usable(self, master_path, expected_shape):
+        master_path = Path(master_path)
+        if not master_path.exists():
+            return False
+        try:
+            with fits.open(master_path, mode='readonly', ignore_missing_end=True) as hdul:
+                hdul.verify('fix')
+                if hdul[0].data is None:
+                    return False
+                if expected_shape is not None and tuple(hdul[0].data.shape) != tuple(expected_shape):
+                    return False
+        except Exception as exc:
+            self._log.debug(f"{' ':<4}[master] rejecting unreadable master {master_path}: {exc}")
+            return False
+        return True
+
+    @staticmethod
+    def _derive_candidate_master_root(search_path):
+        return (Path(search_path) / 'master_calibs').resolve()
+
+    @staticmethod
+    def _is_same_master_root(left_root, right_root):
+        try:
+            return Path(left_root).resolve() == Path(right_root).resolve()
+        except Exception:
+            return False
+
+    def _scan_existing_dark_masters(self, master_root, requirement, obsparams, inst=None):
+        usable = {}
+        dark_glob = self._build_master_dark_glob(requirement['suffix'],
+                                                 requirement['binning_str'],
+                                                 requirement['telescope'],
+                                                 inst)
+        for dark_path in Path(master_root).glob(dark_glob):
+            if not self._is_master_usable(dark_path, requirement['science_image_shape']):
+                continue
+            try:
+                exptime = self._read_fits_exposure(dark_path, obsparams)
+            except Exception:
+                continue
+            if exptime is not None:
+                usable[float(exptime)] = Path(dark_path)
+        return usable
+
+    @staticmethod
+    def _select_exposure_matches(required_exposures, available_exposures, tolerance, allow_scaling):
+        # Policy note: a match within DARK_TOLERANCE is intentionally treated as exact
+        # (is_exact=True, scale_required=False) — i.e. a near dark is subtracted WITHOUT
+        # scaling. Only matches outside tolerance are scaled, and only when allow_scaling.
+        # 'is_exact' therefore means "usable without scaling", not "identical exposure".
+        matches = {}
+        available = sorted({float(v) for v in available_exposures})
+        for target in sorted({float(v) for v in required_exposures}):
+            if not available:
+                matches[target] = None
+                continue
+            diffs = sorted([(abs(exp - target), exp) for exp in available], key=lambda item: (item[0], item[1]))
+            diff, selected = diffs[0]
+            if diff <= tolerance:
+                matches[target] = {
+                    'actual_exposure': float(selected),
+                    'is_exact': True,
+                    'scale_required': False,
+                }
+            elif allow_scaling:
+                matches[target] = {
+                    'actual_exposure': float(selected),
+                    'is_exact': False,
+                    'scale_required': True,
+                }
+            else:
+                matches[target] = None
+        return matches
+
+    @staticmethod
+    def _dark_needs_bias_removal(info):
+        """Return True if this dark must be bias-subtracted (made "pure") before use.
+
+        A dark is used *scaled* whenever its exposure does not match the target within
+        tolerance (``is_exact`` is False). Scaling multiplies the whole frame, so an
+        impure dark's bias pedestal would be scaled together with the thermal signal and
+        corrupt the subtraction — the dark must therefore be bias-free first. An
+        exact/unscaled dark may remain impure, because its bias cancels in the science
+        subtraction. The direction of the mismatch is irrelevant: both scale-up
+        (``actual < target``) and scale-down (``actual > target``) require a bias-free
+        dark. (Valid scaling additionally presupposes that a master bias is available;
+        without one a scaled subtraction cannot be made bias-correct.)
+        """
+        return bool(
+            info.get('available')
+            and info.get('actual_exposure') is not None
+            and not info.get('is_exact', True)
+        )
+
+    def _probe_candidate(self, search_path, resolved_date, master_out, requirement,
+                         obsparams, filters, binnings, suffix, inst=None,
+                         sci_bin_str=None):
+        search_path = Path(search_path).resolve()
+        science_master_root = Path(master_out).resolve()
+        candidate_master_root = self._derive_candidate_master_root(search_path)
+        fallback_master_allowed = not self._is_same_master_root(science_master_root, candidate_master_root)
+
+        self._log.debug(f"{' ':<4}Candidate probe       : {search_path}")
+
+        stage_plan = {'bias': [], 'dark': [], 'flat': {}}
+        adoption_plan = {'bias': None, 'dark': {}, 'flat': {}}
+        optional_unavailable = []
+        has_any_calib = None
+        fits_list = None
+        raw_screen_reasons = []
+
+        def ensure_raw_calib_screen(reason):
+            """Run the coarse raw-calib screen only when raw creation is actually considered."""
+            nonlocal has_any_calib, fits_list, raw_screen_reasons
+            if reason and reason not in raw_screen_reasons:
+                raw_screen_reasons.append(reason)
+            if has_any_calib is None:
+                has_any_calib = self._check_calibration_files_exist(search_path, suffix, obsparams,
+                                                                    binnings, filters, inst)
+                fits_list = self._list_fits(search_path, suffix) if has_any_calib else []
+            return has_any_calib, fits_list
+
+        flat_status = {}
+        dark_status = {'science': {}, 'flat': {}}
+
+        force_make = requirement['force_reduction']
+        expected_shape = requirement['science_image_shape']
+        allowed_available_status = {
+            'science_date_master_usable',
+            'fallback_master_adoptable',
+            'raw_creatable',
+        }
+
+        master_bias_path = self._build_master_bias_path(science_master_root, suffix, sci_bin_str,
+                                                        self._telescope, inst)
+        if requirement['user_preferences']['BIAS_CORRECT']:
+            local_exists = Path(master_bias_path).exists()
+            local_usable = self._is_master_usable(master_bias_path, expected_shape)
+            if local_usable and not force_make:
+                bias_status = {'status': 'science_date_master_usable', 'path': master_bias_path,
+                               'source': master_bias_path}
+            elif local_usable and force_make:
+                bias_status = {'status': 'science_date_master_forced_stale', 'path': master_bias_path,
+                               'source': master_bias_path}
+            elif local_exists:
+                bias_status = {'status': 'science_date_master_rejected_unsuitable', 'path': master_bias_path,
+                               'source': master_bias_path}
+            else:
+                bias_status = {'status': 'science_date_master_missing', 'path': master_bias_path, 'source': None}
+
+            if bias_status['status'] not in allowed_available_status and fallback_master_allowed:
+                fallback_bias = self._build_master_bias_path(candidate_master_root, suffix, sci_bin_str,
+                                                             self._telescope, inst)
+                fallback_exists = Path(fallback_bias).exists()
+                fallback_usable = self._is_master_usable(fallback_bias, expected_shape)
+                if fallback_usable:
+                    bias_status = {'status': 'fallback_master_adoptable', 'path': master_bias_path,
+                                   'source': fallback_bias}
+                    adoption_plan['bias'] = {
+                        'source_path': Path(fallback_bias),
+                        'target_path': Path(master_bias_path),
+                    }
+                elif fallback_exists:
+                    bias_status = {'status': 'fallback_master_rejected_unsuitable', 'path': master_bias_path,
+                                   'source': fallback_bias}
+                else:
+                    bias_status = {'status': 'fallback_master_missing', 'path': master_bias_path, 'source': None}
+
+            if bias_status['status'] not in allowed_available_status:
+                raw_available, raw_fits_list = ensure_raw_calib_screen('bias')
+                if raw_available and raw_fits_list:
+                    dfilter, add_filters, regexp = self.create_dfilter(inst, obsparams, 'bias')
+                    bias_files = list(self.filter_calib_files(raw_fits_list, obsparams, dfilter, add_filters,
+                                                              binnings, resolved_date, regexp=regexp))
+                    if bias_files:
+                        stage_plan['bias'] = bias_files
+                        bias_status = {'status': 'raw_creatable', 'path': master_bias_path, 'source': None}
+                    else:
+                        bias_status = {'status': 'unavailable', 'path': master_bias_path, 'source': None}
+                else:
+                    bias_status = {'status': 'unavailable', 'path': master_bias_path, 'source': None}
+        else:
+            bias_status = {'status': 'not_requested', 'path': master_bias_path, 'source': None}
+
+        flat_raw_exposure_requirements = {}
+        if requirement['user_preferences']['FLAT_CORRECT']:
+            for filt in filters:
+                filt_name = filt[0]
+                master_flat_path = self._build_master_flat_path(science_master_root, suffix, filt_name, sci_bin_str,
+                                                                self._telescope, inst)
+                local_exists = Path(master_flat_path).exists()
+                local_usable = self._is_master_usable(master_flat_path, expected_shape)
+                if local_usable and not force_make:
+                    flat_status[filt_name] = {'status': 'science_date_master_usable', 'path': master_flat_path,
+                                              'source': master_flat_path, 'exposures': []}
+                elif local_usable and force_make:
+                    flat_status[filt_name] = {'status': 'science_date_master_forced_stale', 'path': master_flat_path,
+                                              'source': master_flat_path, 'exposures': []}
+                elif local_exists:
+                    flat_status[filt_name] = {'status': 'science_date_master_rejected_unsuitable',
+                                              'path': master_flat_path, 'source': master_flat_path, 'exposures': []}
+                else:
+                    flat_status[filt_name] = {'status': 'science_date_master_missing', 'path': master_flat_path,
+                                              'source': None, 'exposures': []}
+
+                if flat_status[filt_name]['status'] not in allowed_available_status and fallback_master_allowed:
+                    fallback_flat = self._build_master_flat_path(candidate_master_root, suffix, filt_name, sci_bin_str,
+                                                                 self._telescope, inst)
+                    fallback_exists = Path(fallback_flat).exists()
+                    fallback_usable = self._is_master_usable(fallback_flat, expected_shape)
+                    if fallback_usable:
+                        flat_status[filt_name] = {'status': 'fallback_master_adoptable', 'path': master_flat_path,
+                                                  'source': fallback_flat, 'exposures': []}
+                        adoption_plan['flat'][filt_name] = {
+                            'source_path': Path(fallback_flat),
+                            'target_path': Path(master_flat_path),
+                        }
+                    elif fallback_exists:
+                        flat_status[filt_name] = {'status': 'fallback_master_rejected_unsuitable',
+                                                  'path': master_flat_path, 'source': fallback_flat, 'exposures': []}
+                    else:
+                        flat_status[filt_name] = {'status': 'fallback_master_missing', 'path': master_flat_path,
+                                                  'source': None, 'exposures': []}
+
+                if flat_status[filt_name]['status'] not in allowed_available_status:
+                    raw_available, raw_fits_list = ensure_raw_calib_screen(f'flat:{filt_name}')
+                    if raw_available and raw_fits_list:
+                        dfilter, add_filters, regexp = self.create_dfilter(inst, obsparams, 'flat')
+                        dfilter[obsparams['filter'].lower()] = filt[1]
+                        flat_files = list(self.filter_calib_files(raw_fits_list, obsparams, dfilter, add_filters,
+                                                                  binnings, resolved_date, regexp=regexp))
+                        if flat_files:
+                            stage_plan['flat'][filt_name] = flat_files
+                            flat_raw_exposure_requirements[filt_name] = sorted(
+                                self._group_files_by_exposure(flat_files, obsparams).keys()
+                            )
+                            flat_status[filt_name] = {
+                                'status': 'raw_creatable',
+                                'path': master_flat_path,
+                                'source': None,
+                                'exposures': flat_raw_exposure_requirements[filt_name],
+                            }
+                        else:
+                            flat_status[filt_name] = {'status': 'unavailable', 'path': master_flat_path,
+                                                      'source': None, 'exposures': []}
+                    else:
+                        flat_status[filt_name] = {'status': 'unavailable', 'path': master_flat_path,
+                                                  'source': None, 'exposures': []}
+        else:
+            for filt in filters:
+                filt_name = filt[0]
+                master_flat_path = self._build_master_flat_path(science_master_root, suffix, filt_name, sci_bin_str,
+                                                                self._telescope, inst)
+                flat_status[filt_name] = {'status': 'not_requested', 'path': master_flat_path, 'source': None,
+                                          'exposures': []}
+
+        science_dark_requirements = requirement['science_exposure_times'] if requirement['user_preferences'][
+            'DARK_CORRECT'] else []
+        flat_dark_requirements = sorted({float(exp)
+                                         for _, exps in flat_raw_exposure_requirements.items()
+                                         for exp in exps})
+
+        dark_products = {}
+        dark_required = bool(
+            requirement['user_preferences']['DARK_CORRECT'] or requirement['user_preferences']['FLATDARK_CORRECT'])
+        if dark_required:
+            local_dark_masters = {} if force_make else self._scan_existing_dark_masters(science_master_root,
+                                                                                        requirement,
+                                                                                        obsparams,
+                                                                                        inst=inst)
+            all_targets = science_dark_requirements + flat_dark_requirements
+            local_matches = self._select_exposure_matches(required_exposures=all_targets,
+                                                          available_exposures=local_dark_masters.keys(),
+                                                          tolerance=requirement['user_preferences']['DARK_TOLERANCE'],
+                                                          allow_scaling=requirement['user_preferences'][
+                                                              'ALLOW_DARK_SCALING'])
+
+            unresolved_targets = [t for t, m in local_matches.items() if m is None]
+            fallback_dark_masters = {}
+            fallback_matches = {}
+            if fallback_master_allowed and unresolved_targets:
+                fallback_dark_masters = self._scan_existing_dark_masters(candidate_master_root,
+                                                                         requirement,
+                                                                         obsparams,
+                                                                         inst=inst)
+                fallback_matches = self._select_exposure_matches(required_exposures=unresolved_targets,
+                                                                 available_exposures=fallback_dark_masters.keys(),
+                                                                 tolerance=requirement['user_preferences'][
+                                                                     'DARK_TOLERANCE'],
+                                                                 allow_scaling=requirement['user_preferences'][
+                                                                     'ALLOW_DARK_SCALING'])
+
+            unresolved_targets = [t for t in unresolved_targets if fallback_matches.get(t) is None]
+            raw_dark_groups = {}
+            raw_dark_matches = {}
+            if unresolved_targets:
+                raw_available, raw_fits_list = ensure_raw_calib_screen('dark')
+            else:
+                raw_available, raw_fits_list = False, []
+            if unresolved_targets and raw_available and raw_fits_list:
+                dfilter, add_filters, regexp = self.create_dfilter(inst, obsparams, 'dark')
+                raw_dark_files = list(self.filter_calib_files(raw_fits_list, obsparams, dfilter, add_filters,
+                                                              binnings, resolved_date, regexp=regexp))
+                raw_dark_groups = self._group_files_by_exposure(raw_dark_files, obsparams)
+                raw_dark_matches = self._select_exposure_matches(required_exposures=unresolved_targets,
+                                                                 available_exposures=raw_dark_groups.keys(),
+                                                                 tolerance=requirement['user_preferences'][
+                                                                     'DARK_TOLERANCE'],
+                                                                 allow_scaling=requirement['user_preferences'][
+                                                                     'ALLOW_DARK_SCALING'])
+
+            bias_available_for_fallback = bias_status['status'] in allowed_available_status
+            for consumer, targets in [('science', science_dark_requirements), ('flat', flat_dark_requirements)]:
+                for target in sorted(set(float(v) for v in targets)):
+                    match = local_matches.get(target)
+                    status = 'science_date_master_usable' if match is not None else None
+                    source_master = local_dark_masters.get(
+                        float(match['actual_exposure'])) if match is not None else None
+
+                    if status is None and fallback_master_allowed:
+                        match = fallback_matches.get(target)
+                        if match is not None:
+                            status = 'fallback_master_adoptable'
+                            source_master = fallback_dark_masters.get(float(match['actual_exposure']))
+
+                    if status is None:
+                        match = raw_dark_matches.get(target)
+                        if match is not None:
+                            status = 'raw_creatable'
+
+                    if status is None:
+                        status = 'optional_unavailable_bias_fallback' if bias_available_for_fallback else 'unavailable'
+                        dark_status[consumer][target] = {
+                            'status': status,
+                            'target_exposure': float(target),
+                            'actual_exposure': None,
+                            'is_exact': False,
+                            'source': None,
+                            'requested': True,
+                            'wanted': True,
+                            'available': False,
+                            'blocking': False,
+                            'fallback': 'bias' if bias_available_for_fallback else 'none',
+                            'master_status': 'skipped_optional_unavailable_bias_fallback'
+                            if bias_available_for_fallback else None,
+                        }
+                        if status == 'optional_unavailable_bias_fallback':
+                            optional_unavailable.append(f'{consumer}-dark:{target:g}')
+                        continue
+
+                    actual_exp = float(match['actual_exposure'])
+                    target_dark_path = self._build_master_dark_path(science_master_root, suffix, actual_exp,
+                                                                    sci_bin_str, self._telescope, inst)
+                    dark_status[consumer][target] = {
+                        'status': status,
+                        'target_exposure': float(target),
+                        'actual_exposure': actual_exp,
+                        'is_exact': bool(match['is_exact']),
+                        'source': 'science_master' if status == 'science_date_master_usable' else (
+                            'fallback_master' if status == 'fallback_master_adoptable' else 'raw_candidate'
+                        ),
+                        'requested': True,
+                        'wanted': True,
+                        'available': True,
+                        'blocking': False,
+                        'fallback': 'none',
+                        'master_status': None,
+                    }
+                    if status == 'fallback_master_adoptable' and source_master is not None:
+                        adoption_plan['dark'][actual_exp] = {
+                            'source_path': Path(source_master),
+                            'target_path': Path(target_dark_path),
+                        }
+                    if status == 'raw_creatable':
+                        stage_plan['dark'].extend(raw_dark_groups.get(actual_exp, []))
+                    dark_products[actual_exp] = {
+                        'path': Path(target_dark_path),
+                        'create': status == 'raw_creatable',
+                    }
+
+            stage_plan['dark'] = sorted(set(stage_plan['dark']))
+
+        product_blocking = []
+        if requirement['user_preferences']['FLAT_CORRECT']:
+            for filt in filters:
+                filt_name = filt[0]
+                if flat_status[filt_name]['status'] == 'unavailable':
+                    product_blocking.append(f'flat:{filt_name}')
+                elif flat_status[filt_name]['status'] == 'raw_creatable':
+                    # A flat built from raw frames needs a bias or unscaled flat-darks for every
+                    # flat exposure; otherwise the bias level stays in the flat.
+                    bias_usable = bias_status['status'] in allowed_available_status
+                    flat_darks_cover = requirement['user_preferences']['FLATDARK_CORRECT'] and all(
+                        dark_status['flat'].get(float(exp), {}).get('status') in allowed_available_status
+                        and dark_status['flat'].get(float(exp), {}).get('is_exact')
+                        for exp in flat_status[filt_name]['exposures']
+                    )
+                    if not bias_usable and not flat_darks_cover:
+                        product_blocking.append(f'flat-baseline:{filt_name}')
+
+        if requirement['user_preferences']['BIAS_CORRECT'] and bias_status['status'] == 'unavailable':
+            # Darks can only replace the bias when used unscaled: scaling an impure
+            # dark would scale its bias pedestal too (see _dark_needs_bias_removal).
+            all_sci_dark_covered = bool(science_dark_requirements) and all(
+                dark_status['science'].get(float(exp), {}).get('status') in allowed_available_status
+                and dark_status['science'].get(float(exp), {}).get('is_exact')
+                for exp in science_dark_requirements
+            )
+            if not all_sci_dark_covered:
+                product_blocking.append('bias')
+
+        # Darks are used when no bias is available.
+        if requirement['user_preferences']['DARK_CORRECT'] and not bias_status['status'] in allowed_available_status:
+            missing_science_dark_targets = [
+                float(exp) for exp in science_dark_requirements
+                if dark_status['science'].get(float(exp), {}).get('status') == 'unavailable'
+            ]
+            if missing_science_dark_targets:
+                product_blocking.extend(
+                    [f'dark-baseline:{exp:g}' for exp in sorted(set(missing_science_dark_targets))]
+                )
+
+        complete = len(product_blocking) == 0
+        unresolved = list(product_blocking)
+
+        # If None = no bias will be used, else path to bias master (existing or to be created)
+        use_bias = bias_status['status'] in allowed_available_status
+        master_bias_info = [Path(master_bias_path),
+                            bias_status['status'] == 'raw_creatable'] if use_bias else None
+        master_flat_info = {}
+        for filt in filters:
+            filt_name = filt[0]
+            status_info = flat_status[filt_name]
+            master_flat_info[filt_name] = [Path(status_info['path']),
+                                           status_info['status'] == 'raw_creatable']
+        master_dark_info = {exp: [info['path'], bool(info['create'])] for exp, info in sorted(dark_products.items())}
+
+        calib_state_preview = {
+            'bias': {
+                'requested': requirement['user_preferences']['BIAS_CORRECT'],
+                'available': use_bias,
+                'created': False,
+                'master_path': Path(master_bias_path) if use_bias else None,
+                'blocking': requirement['user_preferences']['BIAS_CORRECT'] and use_bias,
+                'probe_status': bias_status['status'],
+                'master_status': 'skipped_by_preference' if not requirement['user_preferences'][
+                    'BIAS_CORRECT'] else None,
+            },
+            'flat': {
+                filt[0]: {
+                    'requested': requirement['user_preferences']['FLAT_CORRECT'],
+                    'available': flat_status[filt[0]]['status'] in allowed_available_status,
+                    'created': False,
+                    'master_path': Path(flat_status[filt[0]]['path']),
+                    'blocking': requirement['user_preferences']['FLAT_CORRECT'],
+                    'probe_status': flat_status[filt[0]]['status'],
+                    'master_status': 'skipped_by_preference' if not requirement['user_preferences'][
+                        'FLAT_CORRECT'] else None,
+                }
+                for filt in filters
+            },
+            'dark': {
+                'science': {k: dict(v) for k, v in dark_status['science'].items()},
+                'flat': {k: dict(v) for k, v in dark_status['flat'].items()},
+            },
+            'warnings': [],
+        }
+
+        science_master_items = []
+        if bias_status.get('status') == 'science_date_master_usable':
+            science_master_items.append('bias')
+        science_master_items.extend(
+            f'flat:{filt_name}'
+            for filt_name in sorted(flat_status.keys())
+            if flat_status[filt_name].get('status') == 'science_date_master_usable'
+        )
+        science_master_dark_exposures = set()
+        for consumer_status in dark_status.values():
+            for dark_info in consumer_status.values():
+                if dark_info.get('status') == 'science_date_master_usable':
+                    actual_exposure = dark_info.get('actual_exposure')
+                    if actual_exposure is not None:
+                        science_master_dark_exposures.add(float(actual_exposure))
+        science_master_items.extend(
+            f'dark:{actual_exp:g}s'
+            for actual_exp in sorted(science_master_dark_exposures)
+        )
+        if science_master_items:
+            self._log.debug(
+                f"{' ':<6}Science-date master check: PASS "
+                f"(usable master_calibs found: {', '.join(science_master_items)})"
+            )
+            self._log.debug(f"{' ':<6}Science-date master root : {science_master_root}")
+            self._log.debug(f"{' ':<6}Science-date master action: use in place; no adoption/copy needed")
+
+        adoption_items = []
+        if adoption_plan.get('bias'):
+            adoption_items.append('bias')
+        adoption_items.extend(
+            f'flat:{filt_name}' for filt_name in sorted(adoption_plan.get('flat', {}).keys())
+        )
+        adoption_items.extend(
+            f'dark:{float(actual_exp):g}s'
+            for actual_exp in sorted(adoption_plan.get('dark', {}).keys(), key=lambda value: float(value))
+        )
+        if adoption_items:
+            self._log.debug(
+                f"{' ':<6}Fallback master check: PASS "
+                f"(usable master_calibs found: {', '.join(adoption_items)})"
+            )
+            self._log.debug(f"{' ':<6}Fallback master root : {candidate_master_root}")
+            self._log.debug(f"{' ':<6}Fallback master action: adopt/copy to {science_master_root}")
+
+        if has_any_calib is not None:
+            raw_screen_label = 'present' if has_any_calib else 'none found'
+            raw_reason_text = ', '.join(raw_screen_reasons) if raw_screen_reasons else 'unspecified raw creation need'
+            self._log.debug(
+                f"{' ':<6}Raw-calib screen: {raw_screen_label} "
+                f"(raw creation considered for: {raw_reason_text})"
+            )
+
+        self._log.debug(
+            f"{' ':<6}Probe result: {'COMPLETE' if complete else f'INCOMPLETE – unresolved hard products: {unresolved}'}")
+        return {
+            'search_path': Path(search_path),
+            'science_master_root': science_master_root,
+            'candidate_master_root': candidate_master_root,
+            'fits_list': fits_list or [],
+            'coarse': bool(has_any_calib),
+            'stage_plan': stage_plan,
+            'adoption_plan': adoption_plan,
+            'unresolved': unresolved,
+            'optional_unavailable': optional_unavailable,
+            'complete': complete,
+            'calib_state_preview': calib_state_preview,
+            'science_dark_requirements': science_dark_requirements,
+            'flat_dark_requirements': flat_dark_requirements,
+            'master_bias_info': master_bias_info,
+            'master_dark_info': master_dark_info,
+            'master_flat_info': master_flat_info,
+            'diagnostics': {
+                'bias_status': bias_status,
+                'flat_status': flat_status,
+            },
+        }
+
+    def _adopt_fallback_master_products(self, adoption_plan, requirement, calib_state):
+        if not adoption_plan:
+            return
+        if not (adoption_plan.get("bias") or adoption_plan.get("dark") or adoption_plan.get("flat")):
+            return
+
+
+        expected_shape = requirement['science_image_shape']
+        force_make = requirement['force_reduction']
+
+        def _copy_and_verify(source_path, target_path):
+            source_path = Path(source_path)
+            target_path = Path(target_path)
+            if not source_path.exists():
+                raise MasterBuildError(f'Fallback master missing for adoption: {source_path}')
+            target_path.parent.mkdir(exist_ok=True, parents=True)
+            if target_path.exists() and not force_make and self._is_master_usable(target_path, expected_shape):
+                return 'loaded_existing_science_date_master'
+            was_existing = target_path.exists()
+            try:
+                shutil.copy2(source_path, target_path)
+            except Exception as exc:
+                raise MasterBuildError(
+                    f'Failed to copy fallback master {source_path} -> {target_path}: {exc}'
+                ) from exc
+            if not self._is_master_usable(target_path, expected_shape):
+                raise MasterBuildError(f'Adopted master is unreadable/unsuitable: {target_path}')
+            if was_existing:
+                return 'overwritten_by_adopted_fallback_master'
+            return 'adopted_from_fallback_master'
+
+        bias_adoption = adoption_plan.get('bias')
+        if bias_adoption:
+            mat_status = _copy_and_verify(bias_adoption['source_path'], bias_adoption['target_path'])
+            calib_state['bias']['master_path'] = Path(bias_adoption['target_path'])
+            calib_state['bias']['created'] = False
+            calib_state['bias']['master_status'] = mat_status
+            self._log.debug(
+                f"{' ':<4}Adopted fallback bias master: {bias_adoption['source_path']} -> {bias_adoption['target_path']}"
+            )
+
+        for filt_name, mapping in adoption_plan.get('flat', {}).items():
+            mat_status = _copy_and_verify(mapping['source_path'], mapping['target_path'])
+            if filt_name in calib_state['flat']:
+                calib_state['flat'][filt_name]['master_path'] = Path(mapping['target_path'])
+                calib_state['flat'][filt_name]['created'] = False
+                calib_state['flat'][filt_name]['master_status'] = mat_status
+            self._log.debug(
+                f"{' ':<4}Adopted fallback flat master [{filt_name}]: {mapping['source_path']} -> {mapping['target_path']}"
+            )
+
+        for actual_exp, mapping in adoption_plan.get('dark', {}).items():
+            mat_status = _copy_and_verify(mapping['source_path'], mapping['target_path'])
+            for consumer in ('science', 'flat'):
+                for _, info in calib_state['dark'][consumer].items():
+                    if info.get('actual_exposure') == float(actual_exp):
+                        info['master_path'] = Path(mapping['target_path'])
+                        info['created'] = False
+                        info['master_status'] = mat_status
+            self._log.debug(
+                f"{' ':<4}Adopted fallback dark master [{actual_exp:g}s]: {mapping['source_path']} -> {mapping['target_path']}"
+            )
+
+    def _stage_and_prepare(self, file_list, imagetyp, seen, telescope, obsparams, label=None):
+        """Copy raw calibration files to tmp_path and prepare them.
+
+        Only stages files when needed (master doesn't exist or needs creation).
+        Tracks already-staged files to avoid duplicate processing.
+        """
+        if not file_list:
+            self._log.debug(f"{' ':<4}[stage:{imagetyp}] No files to stage (master already exists or none found)")
+            return
+        tmp_path = Path(self._tmp_path)
+        suffix = self._suffix
+        new_paths = []
+        if not self.silent:
+            self._log.info(f"{' ':<4}Copying {len(file_list)} raw {label or imagetyp} frame(s)")
+        self._log.debug(f"{' ':<4}[stage:{imagetyp}] Target folder: {tmp_path}")
+        for i, fpath in enumerate(file_list):
+            fpath_str = str(fpath)
+            if fpath_str in seen:
+                self._log.debug(f"{' ':<6}Already staged, skipping: {fpath_str}")
+                continue
+            seen.add(fpath_str)
+            shutil.copy2(fpath_str, tmp_path)
+            new_paths.append(os.path.join(tmp_path, Path(fpath_str).stem + suffix))
+            if not self.silent:
+                bc.print_progress_bar(i + 1, len(file_list), length=60,
+                                      color=bc.BCOLORS.OKGREEN, prefix=' ' * 2)
+        if not self.silent:
+            sys.stdout.write('\n')
+        if new_paths:
+            self._log.debug(f"{' ':<4}[stage:{imagetyp}] Normalising headers for {len(new_paths)} copied file(s)")
+            self.prepare_fits_files(new_paths, telescope, obsparams, imagetyp)
+        else:
+            self._log.debug(f"{' ':<4}[stage:{imagetyp}] All files were already staged, nothing new to prepare")
+
+    @staticmethod
+    def _derive_dataset_date_root(path, fallback):
+        p = Path(path).resolve()
+        parts = p.parts
+        for i, part in enumerate(parts):
+            if part.lower() == 'sci':
+                candidate = Path(*parts[:i])
+                return candidate.resolve(), 'science_segment_parent'
+        for i in range(len(parts) - 1, -1, -1):
+            if ReduceSatObs._parse_obs_date_from_text(parts[i]) is not None:
+                candidate = Path(*parts[:i + 1])
+                return candidate.resolve(), 'nearest_date_segment'
+        return Path(fallback).resolve(), 'same_night_path'
+
+    @staticmethod
+    def _extract_gain_readnoise(ic_all):
+        gain = None
+        readnoise = None
+
+        if 'gain' in ic_all.summary.keys():
+            g_vals = np.array(ic_all.summary['gain'].data)
+            g_valid = g_vals[g_vals.nonzero()]
+            if g_valid.size > 0:
+                gain = np.unique(g_valid)[0]
+
+        if 'ron' in ic_all.summary.keys():
+            r_vals = np.array(ic_all.summary['ron'].data)
+            r_valid = r_vals[r_vals.nonzero()]
+            if r_valid.size > 0:
+                readnoise = np.unique(r_valid)[0]
+
+        return gain, readnoise
+
+    def _build_master_products(self, requirement, calib_state, obsparams, filters):
+        """Create or load master calibration products.
+
+        Reads product availability from ``calib_state`` (the single runtime
+        truth) and writes back ``available``, ``created``, and ``master_path``
+        after each product is successfully created or loaded.
+
+        Key invariants:
+        1. Only darks with calib_state['dark'][consumer][exp]['available']=True
+           are built and entered into the master_darks map.
+        2. Missing/optional darks are absent from the master_darks map — not None.
+        3. FLATDARK_CORRECT is stored in calib_state, never in self._config.
+        4. The master_darks map is returned for the science-reduction handoff.
+        """
+        ic_all = ImageFileCollection(location=self._tmp_path)
+        if ic_all.summary is None or len(ic_all.summary) == 0:
+            raise RuntimeError('No files available in temporary directory for building master calibrations.')
+
+        gain, readnoise = self._extract_gain_readnoise(ic_all)
+        has_multiple_amps = obsparams['multiple_amps']
+        dbias = self._master_bias_info
+        ddark = self._master_dark_info
+        dflat = self._master_flat_info
+        dark_state = calib_state['dark']  # shorthand — reads/writes in-place
+
+        # Create or load master bias
+        ccd_master_bias = None
+        if requirement['user_preferences']['BIAS_CORRECT'] and not dbias:
+            # Bias requested but unavailable; the probe only allows this when the
+            # science darks cover every science exposure.
+            self._log.debug(f"{' ':<4}No master bias available; science darks are the correction baseline")
+            calib_state['bias']['available'] = False
+            calib_state['bias']['created'] = False
+            calib_state['bias']['master_path'] = None
+            calib_state['bias']['master_status'] = 'skipped_unavailable_dark_baseline'
+        elif requirement['user_preferences']['BIAS_CORRECT']:
+            master_bias = dbias[0]
+            create_bias = dbias[1]
+            try:
+                if create_bias:
+                    status = 'overwritten_from_raw' if Path(master_bias).exists() else 'created_from_raw'
+                    ccd_master_bias = self.create_master_bias(files_list=ic_all,
+                                                              obsparams=obsparams,
+                                                              mbias_fname=master_bias,
+                                                              multiple_amps=has_multiple_amps,
+                                                              gain=gain,
+                                                              readnoise=readnoise,
+                                                              method=self._config['COMBINE_METHOD_BIAS'])
+                else:
+                    # Keep an adoption status set by _adopt_fallback_master_products
+                    status = calib_state['bias'].get('master_status') or 'loaded_existing_science_date_master'
+                    self._log.debug(f"{' ':<4}Loading master bias file: {os.path.basename(master_bias)}")
+                    ccd_master_bias = self.convert_fits_to_ccd(master_bias, single=True)
+                if ccd_master_bias is None:
+                    raise RuntimeError(f'master bias could not be read: {master_bias}')
+            except Exception as exc:
+                calib_state['bias']['master_status'] = 'failed_build'
+                raise MasterBuildError(f'Bias build failed: {exc}') from exc
+            # Write back into calib_state
+            calib_state['bias']['available'] = ccd_master_bias is not None
+            calib_state['bias']['created'] = create_bias
+            calib_state['bias']['master_path'] = Path(master_bias)
+            calib_state['bias']['master_status'] = status
+
+        # Identify pure-dark exposures (need bias removal)
+        # A dark that will be SCALED (exposure mismatch beyond tolerance, in EITHER
+        # direction) must be bias-free before scaling; unscaled (exact) darks may stay
+        # impure since their bias cancels in the science subtraction. See
+        # _dark_needs_bias_removal. (C1 fix: previously only actual>target was flagged,
+        # so scale-up darks were subtracted with their bias pedestal scaled — incorrect.)
+        pure_dark_exposures = {
+            info['actual_exposure']
+            for consumer in ('science', 'flat')
+            for info in dark_state[consumer].values()
+            if self._dark_needs_bias_removal(info)
+        }
+
+        # Build only darks referenced by available entries
+        actual_dark_ccds = {}
+        dark_preexisting_targets = {}
+        for dark_exptime, dval in ddark.items():
+            master_dark = dval[0]
+            create_dark = dval[1]
+            dark_preexisting_targets[dark_exptime] = Path(master_dark).exists()
+            is_referenced = any(
+                info.get('available') and info.get('actual_exposure') == dark_exptime
+                for consumer in ('science', 'flat')
+                for info in dark_state[consumer].values()
+            )
+            if not is_referenced and dark_exptime not in pure_dark_exposures:
+                self._log.debug(f"{' ':<4}Dark {dark_exptime:g}s: not referenced, skipping")
+                continue
+            mbias_for_dark = ccd_master_bias if dark_exptime in pure_dark_exposures else None
+            if create_dark:
+                try:
+                    actual_dark_ccds[dark_exptime] = self.create_master_dark(
+                        files_list=ic_all, obsparams=obsparams,
+                        mdark_fname=master_dark, exptime=dark_exptime,
+                        mbias=mbias_for_dark, multiple_amps=has_multiple_amps,
+                        gain=gain, readnoise=readnoise,
+                        method=self._config['COMBINE_METHOD_DARK'])
+                except Exception as exc:
+                    raise MasterBuildError(
+                        f'Dark build failed for exposure {dark_exptime:g}s: {exc}'
+                    ) from exc
+            else:
+                self._log.debug(f"{' ':<4}Loading master dark file: {os.path.basename(master_dark)}")
+                try:
+                    actual_dark_ccds[dark_exptime] = self.convert_fits_to_ccd(master_dark, single=True)
+                except Exception as exc:
+                    raise MasterBuildError(
+                        f'Dark load failed for exposure {dark_exptime:g}s: {exc}'
+                    ) from exc
+
+        # Build master_darks map; write back into calib_state
+        master_darks = {'sci_dark': {}, 'flat_dark': {}}
+        consumer_to_key = {'science': 'sci_dark', 'flat': 'flat_dark'}
+        for consumer, dark_key in consumer_to_key.items():
+            for target, info in dark_state[consumer].items():
+                if not info.get('available'):
+                    self._log.debug(f"{' ':<4}Dark {consumer}:{target:g}: unavailable, not in master_darks")
+                    if info.get('fallback') == 'bias':
+                        info['master_status'] = 'skipped_optional_unavailable_bias_fallback'
+                    continue
+                actual_exp = info.get('actual_exposure')
+                if actual_exp is None or actual_exp not in actual_dark_ccds:
+                    self._log.warning(f"{' ':<4}Dark {consumer}:{target:g}: available but not built")
+                    # Downgrade availability in calib_state
+                    info['available'] = False
+                    continue
+                ccd_mdark = actual_dark_ccds[actual_exp]
+                bias_corr_in_dark = ccd_mdark.header.get('BIASCORR', False)
+                master_darks[dark_key][float(target)] = (ccd_mdark, bias_corr_in_dark, bool(info['is_exact']))
+                # Write back: built = True
+                info['created'] = ddark[actual_exp][1] if actual_exp in ddark else False
+                info['master_path'] = Path(ddark[actual_exp][0]) if actual_exp in ddark else None
+                if info['created']:
+                    info['master_status'] = (
+                        'overwritten_from_raw' if dark_preexisting_targets.get(actual_exp,
+                                                                               False) else 'created_from_raw'
+                    )
+                elif info.get('master_status') is None:
+                    info['master_status'] = 'loaded_existing_science_date_master'
+                self._log.debug(f"{' ':<4}Dark {consumer}:{target:g} → {actual_exp:g}s added to master_darks")
+
+        # Derive flat-dark availability into calib_state
+        # Do NOT touch self._config here.
+        # Store into calib_state so science reduction reads it from there.
+        flat_dark_available = bool(master_darks['flat_dark'])
+        calib_state['flat_dark_available'] = flat_dark_available
+        self._log.debug(f"{' ':<4}Flat-dark available: {flat_dark_available}")
+        if flat_dark_available:
+            self._log.debug(f"{' ':<6}Available flat-dark exposures: {sorted(master_darks['flat_dark'].keys())}")
+        unavailable = [t for t, i in dark_state['flat'].items() if not i.get('available')]
+        if unavailable:
+            self._log.debug(f"{' ':<6}Flat-darks requested but unavailable: {unavailable}")
+
+        # Create or load master flats with available-only dark map
+        for filt in filters:
+            filt_name = filt[0]
+            if filt_name not in dflat or not requirement['user_preferences']['FLAT_CORRECT']:
+                continue
+            master_flat = dflat[filt_name][0]
+            create_flat = dflat[filt_name][1]
+            if create_flat:
+                flat_status = 'overwritten_from_raw' if Path(master_flat).exists() else 'created_from_raw'
+                try:
+                    self.create_master_flat(files_list=ic_all, obsparams=obsparams,
+                                            mflat_fname=master_flat, flat_filter=filt_name,
+                                            mbias=ccd_master_bias,
+                                            mdark=master_darks['flat_dark'],
+                                            multiple_amps=has_multiple_amps,
+                                            gain=gain, readnoise=readnoise,
+                                            method=self._config['COMBINE_METHOD_FLAT'])
+                except Exception as exc:
+                    calib_state['flat'][filt_name]['master_status'] = 'failed_build'
+                    raise MasterBuildError(
+                        f'Flat build failed for filter {filt_name}: {exc}'
+                    ) from exc
+            else:
+                # Keep an adoption status set by _adopt_fallback_master_products
+                flat_status = (calib_state['flat'][filt_name].get('master_status')
+                               or 'loaded_existing_science_date_master')
+                self._log.debug(f"{' ':<4}Loading master flat file: {os.path.basename(master_flat)}")
+                try:
+                    self.convert_fits_to_ccd(master_flat, single=True)
+                except Exception as exc:
+                    calib_state['flat'][filt_name]['master_status'] = 'failed_build'
+                    raise MasterBuildError(
+                        f'Flat load failed for filter {filt_name}: {exc}'
+                    ) from exc
+            # Write back into calib_state
+            calib_state['flat'][filt_name]['available'] = True
+            calib_state['flat'][filt_name]['created'] = create_flat
+            calib_state['flat'][filt_name]['master_path'] = Path(master_flat)
+            calib_state['flat'][filt_name]['master_status'] = flat_status
+
+        return master_darks
+
+    def _validate_master_products(self, requirement, calib_state, master_out):
+        """Validation gate v2.
+
+        Reads exclusively from ``calib_state`` — the single runtime truth.
+
+        Fatal (hard) products:
+        - BIAS_CORRECT=True → no master bias file on disk after the master build
+        - FLAT_CORRECT=True → no master flat for a required science filter
+        - Any hard product path outside locked master_out
+
+        Optional (soft) products — logged, non-fatal:
+        - DARK_CORRECT=True and science dark entry has available=False
+        - FLATDARK_CORRECT=True and flat-dark entry has available=False
+        """
+        master_out = Path(master_out).resolve()
+        fatal_missing = []
+        optional_missing = []
+
+        dbias = self._master_bias_info
+        ddark = self._master_dark_info
+        dflat = self._master_flat_info
+
+        # Hard: bias — or, when no bias is used, a science dark for every exposure
+        if requirement['user_preferences']['BIAS_CORRECT'] and not dbias:
+            sci_darks = calib_state['dark']['science']
+            uncovered = [
+                float(exp) for exp in requirement['science_exposure_times']
+                if not sci_darks.get(float(exp), {}).get('available')
+            ]
+            if uncovered:
+                fatal_missing.extend(f'dark-baseline:{exp:g}' for exp in sorted(set(uncovered)))
+        elif requirement['user_preferences']['BIAS_CORRECT']:
+            bias_path = calib_state['bias'].get('master_path') or Path(dbias[0])
+            bias_path = Path(bias_path)
+            if not bias_path.exists():
+                fatal_missing.append('bias')
+            elif master_out not in [bias_path.parent, *bias_path.parents]:
+                fatal_missing.append(f'output-root-mismatch:bias:{bias_path}')
+
+        # Hard: flats
+        if requirement['user_preferences']['FLAT_CORRECT']:
+            for filt in requirement['filters']:
+                filt_name = filt[0]
+                flat_info = calib_state['flat'].get(filt_name, {})
+                flat_path = flat_info.get('master_path') or Path(dflat[filt_name][0])
+                flat_path = Path(flat_path)
+                if not flat_path.exists():
+                    fatal_missing.append(f'flat:{filt_name}')
+                elif master_out not in [flat_path.parent, *flat_path.parents]:
+                    fatal_missing.append(f'output-root-mismatch:flat:{filt_name}:{flat_path}')
+
+        # Soft: science darks
+        if requirement['user_preferences']['DARK_CORRECT']:
+            for target, info in calib_state['dark']['science'].items():
+                if not info.get('available'):
+                    optional_missing.append(f'science-dark:{target:g}')
+                else:
+                    actual = info.get('actual_exposure')
+                    if actual is not None and actual in ddark:
+                        dark_path = Path(ddark[actual][0])
+                        if not dark_path.exists():
+                            optional_missing.append(f'science-dark:{target:g}')
+
+        # Soft: flat-darks
+        if requirement['user_preferences']['FLATDARK_CORRECT']:
+            for target, info in calib_state['dark']['flat'].items():
+                if not info.get('available'):
+                    optional_missing.append(f'flat-dark:{target:g}')
+                else:
+                    actual = info.get('actual_exposure')
+                    if actual is not None and actual in ddark:
+                        dark_path = Path(ddark[actual][0])
+                        if not dark_path.exists():
+                            optional_missing.append(f'flat-dark:{target:g}')
+
+        # Output-root drift check for all built dark masters
+        for actual_exp, dval in ddark.items():
+            dark_path = Path(dval[0])
+            if dark_path.exists() and master_out not in [dark_path.parent, *dark_path.parents]:
+                fatal_missing.append(f'output-root-mismatch:dark:{dark_path}')
+
+        # Gate I: enforce master status vocabulary.
+        status_records = [('bias', calib_state.get('bias', {}).get('master_status'))]
+        for filt_name, item in calib_state.get('flat', {}).items():
+            status_records.append((f'flat:{filt_name}', item.get('master_status')))
+        for consumer in ('science', 'flat'):
+            for target, item in calib_state.get('dark', {}).get(consumer, {}).items():
+                status_records.append((f'dark:{consumer}:{target:g}', item.get('master_status')))
+
+        invalid_status = [
+            f'{label}:{status}'
+            for label, status in status_records
+            if status is not None and status not in ALLOWED_MASTER_STATUSES
+        ]
+        if invalid_status:
+            fatal_missing.extend([f'invalid-master-status:{item}' for item in invalid_status])
+
+        if fatal_missing:
+            return fatal_missing, optional_missing
+
+        self._log.debug(f"{' ':<4}Final validation result: PASS")
+        if optional_missing:
+            self._log.debug(f"{' ':<4}Optional unavailable products (non-fatal): {optional_missing}")
+        return [], optional_missing
+
 
     def filter_calib_files(self, fits_list, obsparams,
                            dfilter, add_filters,
@@ -1931,7 +3725,6 @@ class ReduceSatObs(object):
         files_filtered = [f for f in fits_list if '/atmp/' not in str(f)
                           and 'reduced' not in str(f)
                           and 'master_calibs' not in str(f)]
-
 
         # Create an image file collection from the file list
         ic_all = ImageFileCollection(filenames=files_filtered)
@@ -2003,85 +3796,6 @@ class ReduceSatObs(object):
 
         return files
 
-    def create_master_fnames(self, ic_all, obsparams, filters, binning_ext):
-        """ Create file names for master-bias, dark, and flat.
-
-        Parameters
-        ----------
-        ic_all: 
-            Image file collection
-        obsparams:
-            Dictionary with telescope configuration.
-        filters:
-            List of filters used in the dataset.
-        binning_ext:
-            String with binning used in science image.
-
-        Returns
-        -------
-
-        """
-        # Create names for master calibration files
-        ddark = {}
-        dflat = {}
-        dark_exptimes = []
-        out_path = self._master_calib_path
-        suffix = self._suffix
-
-        # Create name master bias
-        master_bias = 'master_bias_%s%s' % (binning_ext, suffix)
-        if self._telescope == 'DDOTI 28-cm f/2.2':
-            master_bias = 'master_bias_%s_%s%s' % (self._instrument, binning_ext, suffix)
-        mbias_path = join_path(master_bias, out_path)
-
-        dbias = [mbias_path, False]
-        if self._config['BIAS_CORRECT']:
-            create_mbias = False if os.path.exists(mbias_path) and not self._force_reduction else True
-            dbias = [mbias_path, create_mbias]
-
-        # Create master dark names
-        if self._config['DARK_CORRECT']:
-            image_typ = obsparams['imagetyp_dark']
-            regex_match = False
-            if obsparams['add_imagetyp_keys'] and 'dark' in obsparams['add_imagetyp']:
-                image_typ = f"{obsparams['imagetyp_dark']}|" \
-                            f"{obsparams['add_imagetyp']['dark']['imagetyp']}"
-                regex_match = True
-            ic_filtered = ic_all.filter(regex_match=regex_match,
-                                        imagetyp=image_typ)
-            if ic_filtered.summary is not None:
-
-                dark_exptimes = list(np.unique(ic_filtered.summary[obsparams['exptime'].lower()]))
-
-                for dexpt in dark_exptimes:
-                    master_dark = 'master_dark_%s_%s%s' % (binning_ext,
-                                                           str.replace(str(dexpt), '.', 'p'),
-                                                           suffix)
-                    if self._telescope == 'DDOTI 28-cm f/2.2':
-                        master_dark = 'master_dark_%s_%s_%s%s' % (self._instrument, binning_ext,
-                                                                  str.replace(str(dexpt), '.', 'p'),
-                                                                  suffix)
-                    mdark_path = join_path(master_dark, out_path)
-                    create_mdark = False if os.path.exists(mdark_path) and not self._force_reduction else True
-                    ddark[dexpt] = [mdark_path, create_mdark]
-            else:
-                self._config['DARK_CORRECT'] = False
-
-        for filt in filters:
-            # Create master flat names
-            if self._config['FLAT_CORRECT']:
-                master_flat = 'master_flat_%s_%s%s' % (filt[0], binning_ext, suffix)
-                if self._telescope == 'DDOTI 28-cm f/2.2':
-                    master_flat = 'master_flat_%s_%s_%s%s' % (self._instrument,
-                                                              filt[0], binning_ext, suffix)
-                mflat_path = join_path(master_flat, out_path)
-                create_mflat = False if os.path.exists(mflat_path) and not self._force_reduction else True
-                dflat[filt[0]] = [mflat_path, create_mflat]
-
-        del ic_all, obsparams
-
-        return dbias, ddark, dflat, dark_exptimes
-
     def get_file_list(self, file_list, dfilter=None, regexp=False, key_find='find',
                       invert_find=False, dkeys=None, abspath=False):
         """Wrapper for filter_img_file_collection.
@@ -2108,7 +3822,7 @@ class ReduceSatObs(object):
         binnings = []
 
         file_counter = 0
-        for file_path in file_names:
+        for row_index, file_path in enumerate(file_names):
             fname = Path(file_path).stem
             fname_suffix = Path(file_path).suffix
             if self.verbose:
@@ -2120,9 +3834,13 @@ class ReduceSatObs(object):
             prim_hdr = hdul[0].header
             new_hdr = prim_hdr.copy()
 
-            # Get observation date from header
-            match = re.search(r'\d{4}-\d{2}-\d{2}', prim_hdr[obsparams['date_keyword']])
-            date = datetime.strptime(match.group(), '%Y-%m-%d').date()
+            # Get observation date from header (accepts YYYY-MM-DD or YYYYMMDD)
+            date_raw = prim_hdr.get(obsparams['date_keyword'])
+            date = self._parse_obs_date_from_text(date_raw)
+            if date is None:
+                raise RuntimeError(
+                    f'Could not parse observation date from header keyword '
+                    f'"{obsparams["date_keyword"]}" (value: {date_raw!r}) in {Path(file_path).name}.')
             if date not in dates:
                 dates.append(date)
 
@@ -2165,7 +3883,7 @@ class ReduceSatObs(object):
 
                         # Update filter keyword
                         filt_key = filt_arr[idx][0]
-                        filt_trnsl = obsparams['filter_translations'][filt_key]
+                        filt_trnsl = obsparams['filter_translations'].get(filt_key)
                         if filt_trnsl is None:
                             filt_trnsl = 'clear'
                         filt_hdr['FILTER'] = filt_trnsl
@@ -2193,7 +3911,7 @@ class ReduceSatObs(object):
                     hdul.close()
 
                     # Remove the original file
-                    os.system(f"rm -f {file_path}")
+                    Path(file_path).unlink(missing_ok=True)
                     break
 
                 # Update filter
@@ -2201,7 +3919,7 @@ class ReduceSatObs(object):
                 filt_key = None
                 if obsparams['filter'] in new_hdr:
                     filt_key = new_hdr[obsparams['filter']].strip()
-                    filt_trnsl = obsparams['filter_translations'][filt_key]
+                    filt_trnsl = obsparams['filter_translations'].get(filt_key)
                 if filt_trnsl is None:
                     filt_trnsl = 'clear'
                 new_hdr['FILTER'] = filt_trnsl
@@ -2226,7 +3944,7 @@ class ReduceSatObs(object):
 
                     # Remove the original file if done
                     if i == hdu_indices[-1]:
-                        os.system(f"rm -f {file_path}")
+                        Path(file_path).unlink(missing_ok=True)
                         hdul.close()
                 else:
                     # Update gain and readout noise
@@ -2241,6 +3959,12 @@ class ReduceSatObs(object):
                     new_hdu.writeto(file_path, output_verify='ignore', overwrite=True)
 
                     hdul.close()
+
+            if not self.silent:
+                bc.print_progress_bar(row_index + 1, len(file_names), length=77,
+                                      color=bc.BCOLORS.OKGREEN, prefix=' ' * 2)
+        if not self.silent:
+            sys.stdout.write('\n')
 
         return dates[0], filters, binnings
 
@@ -2367,7 +4091,7 @@ class ReduceSatObs(object):
         file_list: numpy.ndarray
             Array containing the filtered list of file names.
         mask: numpy.ndarray, optional
-            Boolean mask used for filtering, returned if `return_mask` is True.
+            Boolean mask used to filtering, returned if `return_mask` is True.
 
         """
         if ldfilter is None:
@@ -2604,17 +4328,17 @@ def update_binning(hdr, obsparams, binnings: list):
     hdr : FITS header
         The header of the FITS image, where binning information may be updated.
     obsparams : dict
-        Dictionary containing observational parameters, specifically requiring 
+        Dictionary containing observational parameters, specifically requiring
         the keys for binning in X and Y dimensions as defined in `obsparams['binning']`.
     binnings : list of tuples
-        List of binning configurations encountered so far. If the current 
+        List of binning configurations encountered so far. If the current
         binning is not in the list, it is appended.
 
     Returns
     -------
     hdr : FITS header
         Updated FITS header with binning information.
-        
+
     """
     binning = get_binning(hdr, obsparams)
     if binning not in binnings:

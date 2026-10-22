@@ -253,7 +253,7 @@ Reduction options
 
 .. py:function:: correct_gain:
 
-   ``True``, ``False`` (default = ``False``)
+   ``True``, ``False`` (default = ``True``)
 
    If ``True`` and the gain is known, applies gain correction to convert pixel values from ADU (Analog-to-Digital Units) to electrons.
 
@@ -264,15 +264,8 @@ Reduction options
 
    If ``True``, identifies and removes cosmic ray hits using either the L.A. Cosmic algorithm (based on Laplacian edge detection) or a median filtering technique.
 
-.. _est_uncertainty:
-.. py:function:: est_uncertainty:
-
-   ``True``, ``False`` (default = ``False``)
-
-   If ``True``, creates an uncertainty frame that incorporates read noise, Poisson (photon) noise, and other error sources.
-
 .. warning::
-   The parameters correct_gain_, correct_cosmic_, and est_uncertainty_ are not yet fully implemented and
+   The parameter correct_cosmic_ is not yet fully implemented and
    will become available in a future release.
 
 .. py:function:: combine_method_bias:

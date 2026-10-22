@@ -30,7 +30,7 @@ import logging
 import fast_histogram as fhist
 
 # scipy
-from scipy.spatial import KDTree, cKDTree
+from scipy.spatial import cKDTree
 from scipy.ndimage import maximum_filter, gaussian_filter, label
 from scipy.ndimage.measurements import center_of_mass
 from scipy.optimize import least_squares
@@ -38,7 +38,7 @@ from scipy.optimize import least_squares
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from astropy.wcs import WCS, utils
+from astropy.wcs import WCS
 
 from . import base_conf as bc
 
@@ -66,8 +66,19 @@ MODULE_PATH = os.path.dirname(inspect.getfile(inspect.currentframe()))
 #                            [[-1, 0], [0, 1]], [[1, 0], [0, -1]],
 #                            [[0, 1], [1, 0]], [[0, -1], [-1, 0]],
 #                            [[0, -1], [1, 0]], [[0, 1], [-1, 0]]])
-rot_matrix_arr = np.array([[[1, 0], [0, 1]], [[-1, 0], [0, -1]],
-                           [[-1, 0], [0, 1]], [[1, 0], [0, -1]]])
+ORIENTATION_HYPOTHESES = (
+    {"name": "identity", "parity": "normal",
+     "matrix": np.array([[1., 0.], [0., 1.]])},
+    {"name": "rotate_180", "parity": "normal",
+     "matrix": np.array([[-1., 0.], [0., -1.]])},
+    {"name": "reflect_x", "parity": "reflected",
+     "matrix": np.array([[-1., 0.], [0., 1.]])},
+    {"name": "reflect_y", "parity": "reflected",
+     "matrix": np.array([[1., 0.], [0., -1.]])},
+)
+
+rot_matrix_arr = np.array([hypothesis["matrix"]
+                           for hypothesis in ORIENTATION_HYPOTHESES])
 
 
 # -----------------------------------------------------------------------------
@@ -118,8 +129,11 @@ class FindWCS(object):
         self.binwidth_ang = None
         self.cross_corr = None
 
-        self.rotations = move_match_to_first(np.array(config['pc_matrix']),
-                                             rot_matrix_arr) if config['pc_matrix'] is not None else rot_matrix_arr
+        self.orientation_hypotheses = build_orientation_hypotheses(
+            config['pc_matrix'])
+        # Backwards-compatible matrix view used by the existing search loop.
+        self.rotations = np.array([hypothesis['matrix']
+                                   for hypothesis in self.orientation_hypotheses])
 
         self.apply_rot = True
         self.match_radius_px = 5  # Default value
@@ -197,22 +211,22 @@ class FindWCS(object):
 
         possible_solutions = []
 
-        self.log.info("> Run WCS calibration")
+        self.log.debug("> Run WCS calibration")
 
         # Prepare source catalog
         if has_large_src_cat:
-            self.log.info("  Using a subset of the source catalog for initial matching.")
+            self.log.debug("  Using a subset of the source catalog for initial matching.")
             self.source_cat = self.source_cat_full.head(init_src_num)
         else:
             self.source_cat = self.source_cat_full.copy()
         self.get_source_cat_variables()
 
-        self.log.info(f"  {'Detected sources (total)':<28}: {Nobs_total}")
-        self.log.info(f"  {'Reference sources (total)':<28}: {Nref_total}")
-        self.log.info(f"  {'Match radius (r)':<28}: {self.match_radius_px:.2f} px")
+        self.log.debug(f"  {'Detected sources (total)':<28}: {Nobs_total}")
+        self.log.debug(f"  {'Reference sources (total)':<28}: {Nref_total}")
+        self.log.debug(f"  {'Match radius (r)':<28}: {self.match_radius_px:.2f} px")
         str_match_radius = f"Match radius limit ({int(self.config['MATCH_RADIUS_LIM'])} x r)"
-        self.log.info(f"  {str_match_radius:<28}: {match_radius_limit_px:.2f} px")
-        self.log.info(f"  > Search possible solutions (This may take a second.)")
+        self.log.debug(f"  {str_match_radius:<28}: {match_radius_limit_px:.2f} px")
+        self.log.debug(f"  > Search possible solutions (This may take a second.)")
 
         total_iterations = len(rotations) * num_ref_samples
         rot_matrix_idx = 0
@@ -226,8 +240,12 @@ class FindWCS(object):
             # Apply rotation matrix
             current_rotMatrix = rotations[rot_matrix_idx]
 
-            self.log.debug(f"{' ':<4}Testing PC matrix {rot_matrix_idx + 1}/{len(rotations)}: "
-                           f"[{', '.join(map(str, current_rotMatrix))}]")
+            orientation = self.orientation_hypotheses[rot_matrix_idx]
+            self.log.debug(
+                f"{' ':<4}Testing orientation {rot_matrix_idx + 1}/{len(rotations)} "
+                f"({orientation['name']}, parity={orientation['parity']}, "
+                f"det={orientation['determinant']:+.0f}): "
+                f"[{', '.join(map(str, current_rotMatrix))}]")
 
             while ref_sample_idx <= num_ref_samples:
                 iteration = rot_matrix_idx * (num_ref_samples + 1) + ref_sample_idx
@@ -249,7 +267,7 @@ class FindWCS(object):
                 Nref_current = len(ref_cat_filtered)
 
                 if Nref_current <= 0:
-                    self.log.warning("{' ':<4}No reference sources found after filtering.")
+                    self.log.debug(f"{' ':<4}No reference sources found after filtering.")
                     break  # No reference sources to consider, move to next rotation
 
                 use_endpoint = False
@@ -292,6 +310,9 @@ class FindWCS(object):
                     # Store the possible solution
                     possible_solutions.append({
                         'rotation_idx': rot_matrix_idx,
+                        'orientation_name': orientation['name'],
+                        'parity': orientation['parity'],
+                        'orientation_determinant': orientation['determinant'],
                         'method': 'fft',
                         'Nobs_matched': Nobs_matched,
                         'score': score,
@@ -332,7 +353,7 @@ class FindWCS(object):
 
         # After the main loop
         if possible_solutions:
-            self.log.info(f"{' ':<2}>> Possible solutions: {len(possible_solutions)}")
+            self.log.debug(f"{' ':<2}>> Possible solutions: {len(possible_solutions)}")
             # Sort possible solutions by completeness, number of matches, and score
             possible_solutions.sort(key=lambda x: (x['Nobs_matched'], x['score']),
                                     reverse=True)
@@ -346,7 +367,7 @@ class FindWCS(object):
             best_overall_solution = None
             best_solution = None
 
-            self.log.info(f"{' ':<2}> Analysing top {len(top_solutions)} solutions")
+            self.log.debug(f"{' ':<2}> Analysing top {len(top_solutions)} solutions")
 
             # Loop over top solutions
             for idx, solution in enumerate(top_solutions):
@@ -396,8 +417,8 @@ class FindWCS(object):
                 # Compute residual statistics for the fit results
                 residual_stats_after = compute_residual_stats(src_df_after, ref_df_after)
 
-                Nobs_matched_r_lim_after = has_m_after.sum()
-                Nobs_matched_r_after = dist_mask_after.sum()
+                Nobs_matched_r_lim_after = float(has_m_after.sum())
+                Nobs_matched_r_after = float(dist_mask_after.sum())
 
                 # Update solution metrics
                 rms_after = residual_stats_after['rms']
@@ -440,15 +461,15 @@ class FindWCS(object):
                     converged_solutions.sort(key=lambda x: (x['rms_dist'], -x['Nobs_matched'], -x['score']),
                                              reverse=False)
                     best_solution = converged_solutions[0]
-                    self.log.info(
+                    self.log.debug(
                         f"{' ':<2}>> " + bc.BCOLORS.PASS + "Solution found." + bc.BCOLORS.OKGREEN)
                 else:
                     # No solution fully converged
-                    self.log.warning(f"{' ':<2}>> No solution fully converged.")
+                    self.log.debug(f"{' ':<2}>> No solution fully converged.")
                     # Use best overall solution if available
                     if best_overall_solution is not None:
                         best_solution = best_overall_solution
-                        self.log.info(f"{' ':<2}>> Using the best available solution.")
+                        self.log.debug(f"{' ':<2}>> Using the best available solution.")
                     else:
                         best_solution = None
 
@@ -467,7 +488,9 @@ class FindWCS(object):
                                "matches": best_solution['Nobs_matched'],
                                "rms": best_solution['rms_dist'],
                                'std_x': best_solution['std_x'],
-                               'std_y': best_solution['std_y']}
+                               'std_y': best_solution['std_y'],
+                               'n_src_total': Nobs_total,
+                               'converged': bool(best_solution['has_converged'])}
                 has_solution = True
 
             else:
@@ -475,13 +498,13 @@ class FindWCS(object):
                 has_solution = False
                 final_wcsprm = None
                 result_dict = result_dict_fail
-                self.log.warning("  No solution found after testing all rotation matrices.")
+                self.log.debug("  No solution found after testing all rotation matrices.")
         else:
             # No solutions found
             has_solution = False
             final_wcsprm = None
             result_dict = result_dict_fail
-            self.log.warning("  No solution found after testing all rotation matrices.")
+            self.log.debug("  No solution found after testing all rotation matrices.")
 
         # Return the final results
         return has_solution, final_wcsprm, result_dict
@@ -508,16 +531,16 @@ class FindWCS(object):
         completeness = solution['completeness']
         rms_dist = solution['rms_dist']
 
-        self.log.info(f"{' ':<2}{'-' * 50}")
-        self.log.info(f"{' ':<2}WCS find summary:")
-        self.log.info(f"{' ':<2}{'-' * 50}")
-        self.log.info(f"{' ':<2}{'Matched (detected sources)':<30} {f'{Nobs}/{Nobs_total}'} ")
-        self.log.info(f"{' ':<2}{'Matched (reference sources)':<30} {f'{Nref}/{Nref_total}'} ")
-        self.log.info(f"{' ':<2}{'Matched (src/ref)':<30} {f'{Nobs}/{Nref}'} ")
-        self.log.info(f"{' ':<2}{'Completeness':<30} {completeness:.3f} ({completeness * 100:.1f}%)")
-        self.log.info(f"{' ':<2}{'RMS distance':<30} {rms_dist:.2f} px")
-        self.log.info(f"{' ':<2}{'Positional error x':<30} {solution['std_x']:.2f} px")
-        self.log.info(f"{' ':<2}{'Positional error y':<30} {solution['std_y']:.2f} px")
+        self.log.debug(f"{' ':<2}{'-' * 50}")
+        self.log.debug(f"{' ':<2}WCS find summary:")
+        self.log.debug(f"{' ':<2}{'-' * 50}")
+        self.log.debug(f"{' ':<2}{'Matched (detected sources)':<30} {f'{Nobs}/{Nobs_total}'} ")
+        self.log.debug(f"{' ':<2}{'Matched (reference sources)':<30} {f'{Nref}/{Nref_total}'} ")
+        self.log.debug(f"{' ':<2}{'Matched (src/ref)':<30} {f'{Nobs}/{Nref}'} ")
+        self.log.debug(f"{' ':<2}{'Completeness':<30} {completeness:.3f} ({completeness * 100:.1f}%)")
+        self.log.debug(f"{' ':<2}{'RMS distance':<30} {rms_dist:.2f} px")
+        self.log.debug(f"{' ':<2}{'Positional error x':<30} {solution['std_x']:.2f} px")
+        self.log.debug(f"{' ':<2}{'Positional error y':<30} {solution['std_y']:.2f} px")
 
     def apply_wcs_and_filter_sources(self, current_wcsprm, source_df, match_radius):
         """Apply the given WCS to the full reference catalog, filter it, then match the observed sources
@@ -643,7 +666,7 @@ class FindWCS(object):
                 wcsprm_new = rotate(copy(self.current_wcsprm), rot_mat)
                 wcsprm_new = scale(wcsprm_new, result_scaling)
 
-                # Find offset between datasets
+                # Find offset between data sets
                 shift_signal, x_shift, y_shift = self.find_offset(self.ref_cat,
                                                                   wcsprm_new,
                                                                   offset_binwidth=1)
@@ -678,11 +701,11 @@ class FindWCS(object):
                     best_rms = current_score[1]
                     best_std_xy = (current_score[2], current_score[3])
 
-                # if self._debug:
-                #     plot_catalog_positions(self.source_cat,
-                #                            self.ref_cat,
-                #                            wcsprm_shifted, self.image)
-                #     plt.show()
+                if self._debug:
+                    plot_catalog_positions(self.source_cat,
+                                           self.ref_cat,
+                                           wcsprm_shifted, self.image)
+                    plt.show()
                 del wcsprm_shifted
 
         return (best_Nobs_matched, best_score, best_wcsprm,
@@ -1035,7 +1058,7 @@ def get_source_matches(obs_df, ref_df, match_radius):
     ref_tree = cKDTree(ref_xy)
 
     # Query all reference sources within match_radius for each observed source
-    obs_all_matches = ref_tree.query_ball_point(obs_xy, r=match_radius, p=1)
+    obs_all_matches = ref_tree.query_ball_point(obs_xy, r=match_radius, p=1, workers=-1)
 
     matches = []
     for obs_idx, ref_indices in enumerate(obs_all_matches):
@@ -1133,13 +1156,23 @@ def find_peaks_2d(inv_cross_power_spec, threshold_multiplier=5., apply_gaussian_
     """
     Find peaks in a 2D array with a given size for the neighborhood and threshold.
 
-    :param inv_cross_power_spec: 2D array of cross-correlations.
-    :param threshold_multiplier:
-    :param apply_gaussian_filter: Boolean flag to apply Gaussian filter for smoothing (default is False).
-    :param size: Size of the neighborhood to consider for the local maxima.
-    :param gauss_sigma:
+    Parameters
+    ----------
+    inv_cross_power_spec : np.ndarray
+        2D array of cross-correlations.
+    threshold_multiplier : float, optional
+        Multiplier for the adaptive threshold based on median and standard deviation.
+    apply_gaussian_filter : bool, optional
+        Whether to apply a Gaussian filter for smoothing (default is False).
+    size : int, optional
+        Size of the neighborhood to consider for the local maxima.
+    gauss_sigma : float, optional
+        Standard deviation for Gaussian filter if applied.
 
-    :return: List of peak coordinates.
+    Returns
+    -------
+    peak_coords : list of tuples
+        Coordinates of detected peaks in the format (row, column).
     """
     median_val = np.median(inv_cross_power_spec)
     std_val = np.std(inv_cross_power_spec)
@@ -1180,7 +1213,7 @@ def find_peaks_2d(inv_cross_power_spec, threshold_multiplier=5., apply_gaussian_
 
 def analyse_cross_corr(cross_corr, binwidth_dist, binwidth_ang):
     """
-    Analyse the cross-correlation spectrum to find the peak(s) and extract the scaling and rotation.
+    Analyze the cross-correlation spectrum to find the peak(s) and extract the scaling and rotation.
 
     Parameters
     ----------
@@ -1251,12 +1284,15 @@ def get_shift_from_peak(inv_cross_power_spec, peak):
 
     Parameters
     ----------
-    inv_cross_power_spec
-    peak
+    inv_cross_power_spec : np.ndarray
+        The inverse cross-power spectrum.
+    peak : tuple
+        The coordinates of the peak (row, column).
 
     Returns
     -------
-
+    tuple
+        A tuple containing the x shift, y shift, and signal strength.
     """
     n_1 = 1
     n_2 = 2
@@ -1289,58 +1325,6 @@ def get_shift_from_peak(inv_cross_power_spec, peak):
     del inv_cross_power_spec
 
     return x_shift, y_shift, signal
-
-
-def match_catalogs(catalog1, catalog2, ra_dec_tol=None, radius=None, N=3):
-    """
-    Match catalogs based on the closest points within a tolerance or centroid within a radius.
-
-    Parameters
-    ----------
-    catalog1 : DataFrame
-        First catalog.
-    catalog2 : DataFrame
-        Second catalog.
-    ra_dec_tol : float
-        Tolerance in RA/DEC coordinates for matching.
-    radius : float
-        Radius in pixels to consider for matching.
-    N : int
-        Number of the closest points to return.
-
-    Returns
-    -------
-    DataFrame
-        A DataFrame that is a subset of catalog2 with matched points.
-    """
-    if ra_dec_tol is not None:
-        # Build a KDTree for catalog1 based on RA/DEC coordinates
-        catalog1_tree = KDTree(catalog1[['RA', 'DEC']].values)
-
-        # Find the indices of the closest points for each row in catalog2
-        # based on RA/DEC coordinates
-        distances, indices = catalog1_tree.query(catalog2[['RA', 'DEC']].values, k=N)
-
-        # Create a mask for distances within the specified tolerance
-        mask = distances <= ra_dec_tol
-
-    elif radius is not None:
-        # Build a KDTree for catalog1 based on centroid coordinates
-        catalog1_tree = KDTree(catalog1[['xcentroid', 'ycentroid']].values)
-
-        # Find the indices and distances of the closest points for each row in catalog2
-        # based on centroid coordinates
-        distances, indices = catalog1_tree.query(catalog2[['xcentroid', 'ycentroid']].values, k=N)
-
-        # Create a mask for distances within the specified radius
-        mask = distances <= radius
-    else:
-        raise ValueError("Either ra_dec_tol or radius must be specified for matching.")
-
-    # Select the matching rows from catalog2
-    matched_catalog2_subset = catalog2[mask]
-
-    return matched_catalog2_subset
 
 
 def plot_catalog_positions(source_catalog, reference_catalog, wcsprm_in=None, image=None):
@@ -1624,66 +1608,155 @@ def calculate_angles(data_x, data_y):
     return angles
 
 
-def rotation_to_matrix(angle):
-    """Return the corresponding rotation matrix"""
-    rot = np.array([[np.cos(angle), np.sin(angle)],
-                    [-np.sin(angle), np.cos(angle)]])
+def build_orientation_hypotheses(preferred_pc=None):
+    """Return explicit detector orientation/parity hypotheses.
 
-    del angle
-    return rot
+    The matrices are active detector-coordinate transformations. Proper
+    rotations have determinant +1; reflections have determinant -1.
+    """
+    hypotheses = []
+    for item in ORIENTATION_HYPOTHESES:
+        matrix = np.array(item['matrix'], dtype=float, copy=True)
+        hypotheses.append({
+            'name': item['name'],
+            'parity': item['parity'],
+            'matrix': matrix,
+            'determinant': float(np.linalg.det(matrix)),
+        })
+
+    if preferred_pc is not None:
+        preferred = np.asarray(preferred_pc, dtype=float).reshape(2, 2)
+        for index, hypothesis in enumerate(hypotheses):
+            if np.allclose(hypothesis['matrix'], preferred, rtol=0., atol=1e-12):
+                hypotheses.insert(0, hypotheses.pop(index))
+                break
+
+    return hypotheses
+
+
+def get_effective_cd_matrix(wcsprm):
+    """Return the effective two-dimensional CD matrix in deg/pixel."""
+    pc = np.asarray(wcsprm.get_pc(), dtype=float)
+    cdelt = np.asarray(wcsprm.get_cdelt(), dtype=float)
+    if pc.shape != (2, 2) or cdelt.shape != (2,):
+        raise ValueError("Only two-dimensional celestial WCS linear terms are supported.")
+    return pc @ np.diag(cdelt)
+
+
+def get_wcs_linear_diagnostics(wcsprm):
+    """Return scale, determinant, handedness, and conditioning diagnostics."""
+    pc = np.asarray(wcsprm.get_pc(), dtype=float)
+    cd = get_effective_cd_matrix(wcsprm)
+    scales = np.linalg.norm(cd, axis=0)
+    determinant = float(np.linalg.det(cd))
+    pc_determinant = float(np.linalg.det(pc))
+    return {
+        'cd': cd,
+        'scale_x': float(scales[0]),
+        'scale_y': float(scales[1]),
+        'determinant': determinant,
+        'handedness': 1 if determinant > 0 else -1 if determinant < 0 else 0,
+        'pc_determinant': pc_determinant,
+        'condition_number': float(np.linalg.cond(cd)),
+        'pc_orthogonality_error': float(
+            np.linalg.norm(pc.T @ pc - np.eye(2), ord=np.inf)),
+    }
+
+
+def validate_wcs_linear_convention(wcsprm, *, atol=1e-10):
+    """Validate the frozen PC/CDELT/CD representation invariant."""
+    diagnostics = get_wcs_linear_diagnostics(wcsprm)
+    values = np.concatenate((
+        diagnostics['cd'].ravel(),
+        [diagnostics['scale_x'], diagnostics['scale_y'],
+         diagnostics['determinant'], diagnostics['pc_determinant'],
+         diagnostics['condition_number']]))
+    if not np.all(np.isfinite(values)):
+        raise ValueError("WCS linear terms contain non-finite values.")
+    if diagnostics['scale_x'] <= 0. or diagnostics['scale_y'] <= 0.:
+        raise ValueError("WCS pixel scales must be strictly positive.")
+    if diagnostics['pc_orthogonality_error'] > atol:
+        raise ValueError(
+            "PC must contain orientation only; scale or skew remains in PC.")
+    if not np.isclose(abs(diagnostics['pc_determinant']), 1., atol=atol, rtol=0.):
+        raise ValueError("PC determinant must be +1 or -1.")
+    if diagnostics['handedness'] == 0:
+        raise ValueError("The effective CD matrix is singular.")
+    return diagnostics
+
+
+def rotation_to_matrix(angle):
+    """Return the standard active counterclockwise rotation matrix."""
+    angle = float(angle)
+    if not np.isfinite(angle):
+        raise ValueError("Rotation angle must be finite.")
+    return np.array([[np.cos(angle), -np.sin(angle)],
+                     [np.sin(angle), np.cos(angle)]])
 
 
 def rotate(wcsprm_rot, rot):
-    """Apply the rotation to the WCS"""
-    pc = wcsprm_rot.get_pc()
-    pc_rotated = rot @ pc
-    wcsprm_rot.pc = pc_rotated
+    """Apply an active detector-coordinate orientation transformation.
 
+    For CD = PC @ diag(CDELT), an active detector transformation ``rot``
+    is represented by CD_new = CD_old @ inv(rot). This preserves scale and
+    changes handedness only when ``rot`` is a reflection.
+    """
+    wcsprm_rot, _ = translate_wcsprm(deepcopy(wcsprm_rot))
+    rot = np.asarray(rot, dtype=float)
+    if rot.shape != (2, 2) or not np.all(np.isfinite(rot)):
+        raise ValueError("Orientation matrix must be a finite 2x2 matrix.")
+    if not np.allclose(rot.T @ rot, np.eye(2), atol=1e-10, rtol=0.):
+        raise ValueError("Orientation matrix must be orthogonal.")
+    if not np.isclose(abs(np.linalg.det(rot)), 1., atol=1e-10, rtol=0.):
+        raise ValueError("Orientation matrix determinant must be +1 or -1.")
+
+    cdelt = np.asarray(wcsprm_rot.get_cdelt(), dtype=float)
+    cd_rotated = get_effective_cd_matrix(wcsprm_rot) @ np.linalg.inv(rot)
+    pc_rotated = cd_rotated @ np.diag(1. / cdelt)
+    wcsprm_rot.pc = pc_rotated
+    validate_wcs_linear_convention(wcsprm_rot, atol=1e-8)
     return wcsprm_rot
 
 
 def scale(wcsprm, scale_factor):
-    """Apply the scale to the WCS."""
-    pc = wcsprm.get_pc()
-    pc_scaled = scale_factor * pc
-    wcsprm.pc = pc_scaled
+    """Apply positive isotropic angular scaling through CDELT only."""
+    scale_factor = float(scale_factor)
+    if not np.isfinite(scale_factor) or scale_factor <= 0.:
+        raise ValueError("Scale factor must be finite and strictly positive.")
 
+    wcsprm, _ = translate_wcsprm(deepcopy(wcsprm))
+    wcsprm.cdelt = np.asarray(wcsprm.get_cdelt(), dtype=float) * scale_factor
+    validate_wcs_linear_convention(wcsprm)
     return wcsprm
 
 
 def translate_wcsprm(wcsprm):
-    """Move scaling from the PC matrix to CDELT.
+    """Normalize a WCS so PC stores orientation and CDELT stores scale.
 
-    Parameters
-    ----------
-    wcsprm : astropy.wcs.wcsprm
-        World coordinate system object describing translation between image and skycoord
-
-    Returns
-    -------
-    wcsprm, scales
-        The updated WCS object
+    The effective CD matrix is preserved exactly within floating-point
+    precision. Existing CDELT signs are retained, so handedness is not
+    silently changed. Skewed linear transformations are rejected because
+    they cannot satisfy the frozen orthogonal-PC convention.
     """
-    # Initialize logging for this user-callable function
-    log.setLevel(logging.getLevelName(log.getEffectiveLevel()))
+    wcsprm = deepcopy(wcsprm)
+    cd = get_effective_cd_matrix(wcsprm)
+    old_cdelt = np.asarray(wcsprm.get_cdelt(), dtype=float)
+    scales = np.linalg.norm(cd, axis=0)
+    if not np.all(np.isfinite(scales)) or np.any(scales <= 0.):
+        raise ValueError("Cannot normalize a singular or non-finite WCS.")
 
-    wcs = WCS(wcsprm.to_header())
+    signs = np.sign(old_cdelt)
+    signs[signs == 0.] = 1.
+    normalized_cdelt = signs * scales
+    normalized_pc = cd @ np.diag(1. / normalized_cdelt)
 
-    # Compute the scales corresponding to celestial axes
-    scales = utils.proj_plane_pixel_scales(wcs)
-    cdelt = wcsprm.get_cdelt()
-    scale_ratio = scales / cdelt
+    wcsprm.pc = normalized_pc
+    wcsprm.cdelt = normalized_cdelt
+    validate_wcs_linear_convention(wcsprm, atol=1e-8)
 
-    pc = np.array(wcsprm.get_pc())
-
-    pc[0, 0] = pc[0, 0] / scale_ratio[0]
-    pc[1, 0] = pc[1, 0] / scale_ratio[1]
-    pc[0, 1] = pc[0, 1] / scale_ratio[0]
-    pc[1, 1] = pc[1, 1] / scale_ratio[1]
-
-    wcsprm.pc = pc
-    wcsprm.cdelt = scales
-
+    if not np.allclose(get_effective_cd_matrix(wcsprm), cd,
+                       rtol=1e-12, atol=1e-15):
+        raise ValueError("WCS normalization changed the effective CD matrix.")
     return wcsprm, scales
 
 
@@ -1691,10 +1764,19 @@ def shift_wcs_central_pixel(wcsprm, x_shift, y_shift):
     """
     Shift the central pixel of the WCS parameters and return the modified WCS parameter object.
 
-    :param wcsprm: WCS parameter object.
-    :param x_shift: Shift in the x-direction.
-    :param y_shift: Shift in the y-direction.
-    :return: Modified WCS parameter object with updated central pixel.
+    Parameters
+    ----------
+    wcsprm : astropy.wcs.wcs.WCS
+        WCS parameter object.
+    x_shift : float
+        Shift in the x-direction.
+    y_shift : float
+        Shift in the y-direction.
+
+    Returns
+    -------
+    wcsprm : astropy.wcs.wcs.WCS
+        Modified WCS parameter object with updated central pixel.
     """
     # Retrieve the current central pixel
     current_central_pixel = wcsprm.crpix
@@ -1737,6 +1819,21 @@ def process_catalog(catalog, wcsprm=None, origin=0):
 def create_histogram(log_distance, angle, bins, ranges):
     """Create a 2D histogram from log distance and angle data.
 
+    Parameters
+    ----------
+    log_distance : np.ndarray
+        Array of logarithmic distances.
+    angle : np.ndarray
+        Array of angles.
+    bins : list
+        List containing the number of bins for distance and angle.
+    ranges : list
+        List containing the ranges for distance and angle.
+
+    Returns
+    -------
+    H : np.ndarray
+        2D histogram as a complex128 numpy array.
     """
 
     vals = [log_distance, angle]
@@ -1757,13 +1854,9 @@ def apply_fft_and_normalize(H):
 
 
 def get_wcs_pixelscale(wcsprm):
-    """Get the pixel scale in deg/pixel from the WCS object."""
-
-    pc = wcsprm.get_pc()
-    cdelt = wcsprm.get_cdelt()
-    wcs_pixscale = (pc @ cdelt)
-
-    return wcs_pixscale
+    """Get X/Y pixel scales in deg/pixel from the effective CD matrix."""
+    diagnostics = get_wcs_linear_diagnostics(wcsprm)
+    return diagnostics['scale_x'], diagnostics['scale_y']
 
 
 def update_catalog_positions(cat, wcsprm, origin=0):
@@ -1813,18 +1906,23 @@ def move_match_to_first(array1, array2):
 
 
 def filter_df_within_bounds(df, center_coords, shape, additional_width):
-    """
+    """ Filter a DataFrame to include only rows within specified bounds.
 
     Parameters
     ----------
-    df
-    center_coords
-    shape
-    additional_width
+    df : pd.DataFrame
+        A DataFrame containing 'xcentroid' and 'ycentroid' columns.
+    center_coords : tuple
+        Tuple of (x_center, y_center) coordinates.
+    shape : tuple
+        Tuple of (x_shape, y_shape) defining the size of the area.
+    additional_width : tuple
+        Tuple of (x_additional_width, y_additional_width) to expand the area.
 
     Returns
     -------
-
+    pd.DataFrame
+        Filtered DataFrame containing only rows within the specified bounds.
     """
     x_coord, y_coord = center_coords
     y_shape, x_shape = shape
@@ -1856,92 +1954,92 @@ def cosine_interpolation_1d(v):
     else:
         return (v[0] - v[2]) / (2 * denom)
 
-def bootstrap_solution(solution, num_bootstraps=100):
-    """
-
-    Parameters
-    ----------
-    solution
-    num_bootstraps
-
-    Returns
-    -------
-
-    """
-    obs_df = solution['src_cat_match']
-    ref_df = solution['ref_cat_match']
-    wcsprm_in = solution['wcsprm']
-    fit_params = solution['fit_params']
-    Nobs = solution['Nobs_matched']
-    match_radius = solution['match_radius']
-
-    # Get the observed and reference source positions
-    obs_xy = obs_df[["xcentroid", "ycentroid"]].values
-    ref_ra_dec = ref_df[["RA", "DEC"]].values
-
-    # Transform reference RA, Dec to pixel coordinates using the updated WCS
-    wcs_r = WCS(wcsprm_in.to_header())
-    predicted_xy = wcs_r.all_world2pix(ref_ra_dec, 0)
-    # print(obs_xy[:5], predicted_xy[:5])
-    weights = np.array([0.5 if nm > 1 else 1. for nm in obs_df.num_matches])  # Weights according to N matches
-
-    lower_bounds = [-np.pi / 2., 0.9, -match_radius, -match_radius]
-    upper_bounds = [np.pi / 2., 1.1, match_radius, match_radius]
-
-    # Compute residuals between transformed reference points and observed points
-    residuals_r = obs_xy - predicted_xy  # Nx2 array
-
-    # Apply weights
-    residuals_xy = residuals_r * weights[:, np.newaxis]
-
-    n_points = len(obs_xy)
-    print(n_points, Nobs)
-
-    # Prepare array to store bootstrap parameter results
-    p = len(fit_params)  # number of parameters
-    all_params = np.full((num_bootstraps, p), np.nan)
-    pixscale = np.full((num_bootstraps, 3), np.nan)
-
-    # Loop n bootstrap iterations
-    for i in range(num_bootstraps):
-        # Randomly sample residual indices with replacement
-        sample_indices = np.random.randint(0, n_points, size=n_points)
-        sampled_residuals = residuals_xy[sample_indices]
-
-        # Create new "observed" data by adding sampled residuals to predicted
-        obs_xy_star = predicted_xy + sampled_residuals
-
-        # Perform optimization
-        result_b = least_squares(
-            residuals_wcs,
-            fit_params,
-            args=(obs_xy_star, ref_ra_dec, wcsprm_in, weights),
-            method='trf',  # or dogbox
-            loss='huber',  # or cauchy
-            f_scale=1.0,
-            bounds=(lower_bounds, upper_bounds),
-            verbose=0)
-
-        # Apply the optimized transformation to the WCS
-        if result_b.success:
-            fitted_params = result_b.x
-            bootstrap_wcs = apply_wcs(wcsprm_in, fitted_params)
-            bootstrap_pixscale = get_wcs_pixelscale(bootstrap_wcs)
-            # print(bootstrap_pixscale, np.nanmean(abs(bootstrap_pixscale)) * 3600.)
-            pixscale[i] = np.array([np.nanmean(abs(bootstrap_pixscale)) * 3600.,
-                                    abs(bootstrap_pixscale[0]) * 3600.,
-                                    abs(bootstrap_pixscale[1]) * 3600.])
-            all_params[i] = result_b.x
-
-    # Compute standard deviations across bootstrap iterations
-    param_means = np.nanmean(all_params, axis=0)
-    param_stds = np.nanstd(all_params, axis=0)
-    # print("Bootstrap parameter means:", param_means)
-    # print("Bootstrap 1σ uncertainties:", param_stds)
-    # print("Bootstrap pixel scale means:", np.nanmean(pixscale, axis=0))
-    # print("Bootstrap pixel scale 1σ uncertainties:", np.nanstd(pixscale, axis=0))
-    bootstrap_samples_j = pixscale[:, 0]  # parameter j across all bootstrap samples
-    lower_3sigma = np.quantile(bootstrap_samples_j, 0.0015)
-    upper_3sigma = np.quantile(bootstrap_samples_j, 0.9985)
-    # print("3σ lower bound:", lower_3sigma)
-    # print("3σ upper bound:", upper_3sigma)
+# def bootstrap_solution(solution, num_bootstraps=100):
+#     """
+#
+#     Parameters
+#     ----------
+#     solution
+#     num_bootstraps
+#
+#     Returns
+#     -------
+#
+#     """
+#     obs_df = solution['src_cat_match']
+#     ref_df = solution['ref_cat_match']
+#     wcsprm_in = solution['wcsprm']
+#     fit_params = solution['fit_params']
+#     Nobs = solution['Nobs_matched']
+#     match_radius = solution['match_radius']
+#
+#     # Get the observed and reference source positions
+#     obs_xy = obs_df[["xcentroid", "ycentroid"]].values
+#     ref_ra_dec = ref_df[["RA", "DEC"]].values
+#
+#     # Transform reference RA, Dec to pixel coordinates using the updated WCS
+#     wcs_r = WCS(wcsprm_in.to_header())
+#     predicted_xy = wcs_r.all_world2pix(ref_ra_dec, 0)
+#     # print(obs_xy[:5], predicted_xy[:5])
+#     weights = np.array([0.5 if nm > 1 else 1. for nm in obs_df.num_matches])  # Weights according to N matches
+#
+#     lower_bounds = [-np.pi / 2., 0.9, -match_radius, -match_radius]
+#     upper_bounds = [np.pi / 2., 1.1, match_radius, match_radius]
+#
+#     # Compute residuals between transformed reference points and observed points
+#     residuals_r = obs_xy - predicted_xy  # Nx2 array
+#
+#     # Apply weights
+#     residuals_xy = residuals_r * weights[:, np.newaxis]
+#
+#     n_points = len(obs_xy)
+#     # print(n_points, Nobs)
+#
+#     # Prepare array to store bootstrap parameter results
+#     p = len(fit_params)  # number of parameters
+#     all_params = np.full((num_bootstraps, p), np.nan)
+#     pixscale = np.full((num_bootstraps, 3), np.nan)
+#
+#     # Loop n bootstrap iterations
+#     for i in range(num_bootstraps):
+#         # Randomly sample residual indices with replacement
+#         sample_indices = np.random.randint(0, n_points, size=n_points)
+#         sampled_residuals = residuals_xy[sample_indices]
+#
+#         # Create new "observed" data by adding sampled residuals to predicted
+#         obs_xy_star = predicted_xy + sampled_residuals
+#
+#         # Perform optimization
+#         result_b = least_squares(
+#             residuals_wcs,
+#             fit_params,
+#             args=(obs_xy_star, ref_ra_dec, wcsprm_in, weights),
+#             method='trf',  # or dogbox
+#             loss='huber',  # or cauchy
+#             f_scale=1.0,
+#             bounds=(lower_bounds, upper_bounds),
+#             verbose=0)
+#
+#         # Apply the optimized transformation to the WCS
+#         if result_b.success:
+#             fitted_params = result_b.x
+#             bootstrap_wcs = apply_wcs(wcsprm_in, fitted_params)
+#             bootstrap_pixscale = get_wcs_pixelscale(bootstrap_wcs)
+#             # print(bootstrap_pixscale, np.nanmean(abs(bootstrap_pixscale)) * 3600.)
+#             pixscale[i] = np.array([np.nanmean(abs(bootstrap_pixscale)) * 3600.,
+#                                     abs(bootstrap_pixscale[0]) * 3600.,
+#                                     abs(bootstrap_pixscale[1]) * 3600.])
+#             all_params[i] = result_b.x
+#
+#     # Compute standard deviations across bootstrap iterations
+#     param_means = np.nanmean(all_params, axis=0)
+#     param_stds = np.nanstd(all_params, axis=0)
+#     # print("Bootstrap parameter means:", param_means)
+#     # print("Bootstrap 1σ uncertainties:", param_stds)
+#     # print("Bootstrap pixel scale means:", np.nanmean(pixscale, axis=0))
+#     # print("Bootstrap pixel scale 1σ uncertainties:", np.nanstd(pixscale, axis=0))
+#     bootstrap_samples_j = pixscale[:, 0]  # parameter j across all bootstrap samples
+#     lower_3sigma = np.quantile(bootstrap_samples_j, 0.0015)
+#     upper_3sigma = np.quantile(bootstrap_samples_j, 0.9985)
+#     # print("3σ lower bound:", lower_3sigma)
+#     # print("3σ upper bound:", upper_3sigma)

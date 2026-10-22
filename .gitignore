@@ -160,10 +160,30 @@ cython_debug/
 !/reduceCalibObs.py
 !/README.html
 !/leosatpy/utils/reduction.py
-!/scripts/
 !/.gitignore
-!/scripts/analyse_glint_helper_func.py
 
-!/scripts/analyse_glint_standalone.py
 
-!/qodana.yaml
+# Local artefacts not meant for version control
+.idea/
+*.zip
+*.tar.gz
+calibration_phase_refactor_plan_package_v6/
+leosatpy_examples/
+leosatpy/*_old.py
+leosatpy/utils/*_old.py
+leosatpy/docs/*.aux
+leosatpy/docs/*.log
+scripts/*.fits
+scripts/*.cat
+scripts/*.csv
+scripts/*.png
+
+# Local-only docs (not part of the Read the Docs build)
+docs/planning/
+leosatpy/docs/
+scripts/
+ToDo.md
+qodana.yaml
+
+# Local-only tests
+tests/
