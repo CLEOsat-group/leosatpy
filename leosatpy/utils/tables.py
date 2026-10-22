@@ -139,21 +139,44 @@ class ObsTables(object):
                       img_filter: str,
                       src_loc: str):
         """ Check for TLE file location """
-        level_up = 0
-        datetime_in_folder = ('morning' in src_loc or 'evening' in src_loc)
-        filter_in_folder = f"/{img_filter}" in src_loc
-        if filter_in_folder:
-            level_up = 1
-            if datetime_in_folder:
-                level_up = 2
-        else:
-            if datetime_in_folder:
-                level_up = 1
-        search_path = Path(src_loc).parents[level_up]
-
         # Get times
         date_obs = self._obj_info['Date-Obs'].values[0]
         obs_date = date_obs.split('-')
+        obs_day = datetime.date(*map(int, obs_date[:3]))
+
+        # TLE files sit in the night's folder, i.e. the nearest folder whose name holds a real date
+        # close to the observation date (e.g. 2026-03-19/ or ALL_2024_12_17_morning/)
+        date_folder_regex = re.compile(r'(?<!\d)(\d{4})[-_]?(\d{2})[-_]?(\d{2})(?!\d)')
+
+        def _folder_date(name):
+            for match in date_folder_regex.finditer(name):
+                try:
+                    folder_day = datetime.date(*map(int, match.groups()))
+                except ValueError:
+                    continue  # digits that are no calendar date, e.g. run12345678
+                # ±2 days covers the UTC date changing during the night
+                if abs(folder_day - obs_day) <= timedelta(days=2):
+                    return folder_day
+            return None
+
+        src_path = Path(src_loc)
+        search_path = next((p for p in [src_path, *src_path.parents] if _folder_date(p.name)), None)
+        if search_path is not None:
+            self.log.debug(f"{' ':<4}TLE search folder: {search_path} (folder date {_folder_date(search_path.name)})")
+        else:
+            # No date folder in the path: fall back to the filter/time-of-night folder layout
+            level_up = 0
+            datetime_in_folder = ('morning' in src_loc or 'evening' in src_loc)
+            filter_in_folder = f"/{img_filter}" in src_loc
+            if filter_in_folder:
+                level_up = 1
+                if datetime_in_folder:
+                    level_up = 2
+            else:
+                if datetime_in_folder:
+                    level_up = 1
+            search_path = src_path.parents[level_up]
+            self.log.debug(f"{' ':<4}TLE search folder: {search_path} (no dated folder; fallback layout)")
 
         # Get satellite type
         sat_type = self.get_sat_type(sat_name)
@@ -173,24 +196,15 @@ class ObsTables(object):
             all_files.extend((root, s, Path(os.path.join(root, s))) for s in files)
 
         def select_tle_file(file_names):
-            if len(file_names) == 1:
-                return file_names[0]
-
-            idx_arr = np.array([i[1].find('unique') for i in file_names])
-            unique_idx = np.where(idx_arr == 0)[0]
-            if unique_idx.size > 1:
-                self.log.warning("Multiple unique TLE files found. "
-                                 "This really should not happen!!! TBW: select")
-            elif unique_idx.size == 1:
-                return files[unique_idx[0]]
-
-            non_unique_idx = np.where(idx_arr == -1)[0]
-            if non_unique_idx.size > 1:
-                self.log.warning("Multiple files found. "
-                                 "This should not happen!!! TBW: select")
-                # TODO: Implement user selection here if required
-            else:
-                return file_names[non_unique_idx[0]]
+            # Prefer files marked 'unique'; among several candidates for the same date, use the
+            # most recent download (file names end in the download time, e.g. tle_ALL_2024-12-17_02:40:54.txt)
+            unique_files = [f for f in file_names if 'unique' in f[1].lower()]
+            candidates = sorted(unique_files or file_names, key=lambda f: (f[1], str(f[2])))
+            selected = candidates[-1]
+            if len(candidates) > 1:
+                self.log.info(f"{' ':<4}{len(candidates)} TLE files match; using the most recent: {selected[1]}")
+                self.log.debug(f"{' ':<4}TLE candidates: {[str(f[2]) for f in candidates]}")
+            return selected
 
         if tle_filenames:
             return select_tle_file(tle_filenames)
@@ -211,8 +225,7 @@ class ObsTables(object):
         if fallback_files:
             return select_tle_file(fallback_files)
 
-        self.log.warning("NO TLE file found!!! "
-                         "Check the naming/dates of any TLE if present. Exiting for now!!!")
+        self.log.warning(f"{' ':<4}No TLE file found; check the names and dates of the TLE files")
         return None  # Return None if no suitable file is found
 
     def find_satellite_in_tle(self, tle_loc, sat_name):
@@ -238,12 +251,10 @@ class ObsTables(object):
 
         if matches:
             match = matches[0]
-            self.log.info(f"    Found match for {sat_name}: {match}")
+            self.log.debug(f"{' ':<4}TLE match for {sat_name}: {match}")
             return match
         else:
-            self.log.warning(f"{sat_name} not found in TLE file!!! "
-                             "TBW: Get TLE. "
-                             "Exiting for now!!!")
+            self.log.warning(f"{' ':<4}{sat_name} not found in the TLE file")
             return None
 
 
@@ -269,8 +280,7 @@ class ObsTables(object):
         data = getattr(self, data_attribute)
 
         if file_path.exists():
-            if not (self.silent if silent is None else silent):
-                self.log.info(f'> Read {table_name} from: {file_path.name}')
+            self.log.debug(f'> Read {table_name} from: {file_path.name}')
             data = pd.read_csv(file_path, header=0, delimiter=',')
 
         setattr(self, data_attribute, data)
@@ -314,8 +324,7 @@ class ObsTables(object):
 
         fname = self.res_table_fname
         if fname.exists():
-            if not self.silent:
-                self.log.info(f'> Read observation info from: {self.def_tbl_name}')
+            self.log.debug(f'> Read observation info from: {self.def_tbl_name}')
 
             df = pd.read_csv(fname, header=None, delimiter=',')
             columns = df.iloc[0].values
@@ -617,7 +626,7 @@ class ObsTables(object):
             key_dict['HDU_idx'] = [f"{hdu_idx:.1f}"]
 
         if list(pos):
-            self.log.debug("  Possible match with previous entry found. Check RA and DEC.")
+            self.log.debug(f"{' ':<4}Table: file already listed; comparing RA/DEC")
 
             df = obs_info[mask][key_list].astype(str)
 
@@ -625,12 +634,11 @@ class ObsTables(object):
 
             if coord_match.any():
                 if len(coord_match) == 1:
-                    self.log.debug("  Coordinate/Pointing match found. Updating.")
+                    self.log.debug(f"{' ':<4}Table: pointing matches; updating entry")
                     idx = pos[coord_match]
                     self._obj_info = obs_info.iloc[idx]
                 else:
-                    self.log.debug("  Multiple Coordinate/Pointing matches found."
-                                   " This should not happen.")
+                    self.log.debug(f"{' ':<4}Table: several entries match this pointing")
                     idx = pos[np.where(coord_match)[0]]
                     self._obj_info = obs_info.iloc[idx]
             else:
@@ -655,7 +663,7 @@ class ObsTables(object):
         tuple
             A tuple containing the satellite identifier and a unique ID (if present).
         """
-        self.log.debug("  Identify Satellite/Object name")
+        self.log.debug(f"{' ':<4}Identify satellite/object name")
 
         # Standardize object name: uppercase and replace spaces with hyphens
         obj_name = obj_in.upper().replace(' ', '-')
@@ -781,25 +789,24 @@ class ObsTables(object):
             key_dict['HDU_idx'] = [hdu_idx]
 
         if not list(pos):
-            self.log.debug("  File name not found. Adding new entry.")
+            self.log.debug(f"{' ':<4}Table: new file; adding entry")
             obs_info = self.add_row(obs_info, file, kwargs, self.def_cols,
                                     expt, obj_key, ra_val, de_val)
         else:
-            self.log.debug("  Possible match with previous entry found. "
-                           "Check RA, DEC, object and instrument.")
+            self.log.debug(f"{' ':<4}Table: file already listed; comparing RA/DEC, object and instrument")
 
             df = obs_info[mask][key_list].astype(str)
 
             coord_match = df.isin(key_dict).all(axis=1)
             if coord_match.any():
 
-                self.log.debug("  Coordinate/Pointing, object and instrument match found. Updating.")
+                self.log.debug(f"{' ':<4}Table: entry matches; updating it")
                 idx = pos[np.where(coord_match)[0]]
                 obs_info = self.update_row(obs_info, idx, kwargs, self.def_cols,
                                            expt, obj_key, ra_val, de_val)
 
             else:
-                self.log.debug("  NO Coordinate/Pointing, object and instrument match found. Adding entry.")
+                self.log.debug(f"{' ':<4}Table: no matching entry; adding a new one")
                 obs_info = self.add_row(obs_info, file, kwargs,
                                         self.def_cols, expt, obj_key, ra_val, de_val)
 
@@ -962,7 +969,7 @@ class ObsTables(object):
 
     def update_times(self, value, expt, kwargs):
         """ Update Observation date, start, mid, and end times."""
-        self.log.debug("  Check Obs-Date")
+        self.log.debug(f"{' ':<4}Check observation date")
 
         tel_key = 'TELESCOP' if 'TELESCOP' in kwargs else 'OBSERVAT'
         if 'TIME-OBS' in kwargs and kwargs[tel_key] != 'CTIO 4.0-m telescope':
