@@ -103,10 +103,10 @@ class FindWCS(object):
 
         # Make sure the catalogs are sorted
         self.source_cat_full = source_cat_full.sort_values(by='mag', ascending=True)
-        self.source_cat_full.reset_index(inplace=True, drop=True)
+        self.source_cat_full = self.source_cat_full.reset_index(drop=True)
 
         self.ref_cat_full = ref_cat_full.sort_values(by='mag', ascending=True)
-        self.ref_cat_full.reset_index(inplace=True, drop=True)
+        self.ref_cat_full = self.ref_cat_full.reset_index(drop=True)
 
         self.obs_x = None
         self.obs_y = None
@@ -1426,11 +1426,11 @@ def find_matches(obs, cat, wcsprm_in=None, threshold=10., sort=True):
     cat_matched = cat.iloc[cat_idx]
 
     obs_matched = obs_matched.sort_values(by='mag', ascending=True)
-    obs_matched.reset_index(drop=True, inplace=True)
+    obs_matched = obs_matched.reset_index(drop=True)
 
     if sort:
         cat_matched = cat_matched.sort_values(by='mag', ascending=True)
-    cat_matched.reset_index(drop=True, inplace=True)
+    cat_matched = cat_matched.reset_index(drop=True)
 
     columns_to_add = ['xcentroid', 'ycentroid', 'fwhm', 'include_fwhm']
     cat_matched = cat_matched.assign(**obs_matched[columns_to_add].to_dict(orient='series'))

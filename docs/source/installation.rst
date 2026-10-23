@@ -10,7 +10,7 @@ A new conda environment can be created and activated with:
 
 .. code-block:: sh
 
-    $ conda create -n leosatpy_env python=3.9
+    $ conda create -n leosatpy_env python=3.12
     $ conda activate leosatpy_env
 
 .. hint::

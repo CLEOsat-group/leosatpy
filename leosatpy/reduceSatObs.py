@@ -53,7 +53,7 @@ from astropy.stats import (sigma_clip, mad_std, SigmaClip, sigma_clipped_stats)
 
 from ccdproc import CCDData
 from ccdproc import ImageFileCollection
-from photutils.background import (Background2D, SExtractorBackground, StdBackgroundRMS)
+from photutils.background import (SExtractorBackground, StdBackgroundRMS)
 from photutils.segmentation import (detect_sources, detect_threshold)
 
 # Project modules
@@ -63,12 +63,14 @@ except ModuleNotFoundError:
     from utils import arguments
     from utils import dataset
     from utils import tables
+    from utils.compat import make_background2d
     from utils.version import __version__
     from utils import base_conf as bc
 else:
     from leosatpy.utils import arguments
     from leosatpy.utils import dataset
     from leosatpy.utils import tables
+    from leosatpy.utils.compat import make_background2d
     from leosatpy.utils.version import __version__
     from leosatpy.utils import base_conf as bc
 
@@ -4224,12 +4226,13 @@ def compute_2d_background_simple(imgarr, box_size, win_size,
     exclude_percentiles = [10]
     for percentile in exclude_percentiles:
         try:
-            bkg = Background2D(imgarr, (box_size, box_size),
-                               filter_size=(win_size, win_size),
-                               bkg_estimator=bkg_estimator(),
-                               bkgrms_estimator=rms_estimator(),
-                               exclude_percentile=percentile, edge_method="pad")
-        except (Exception,):
+            bkg = make_background2d(imgarr, (box_size, box_size),
+                                    filter_size=(win_size, win_size),
+                                    bkg_estimator=bkg_estimator(),
+                                    bkg_rms_estimator=rms_estimator(),
+                                    exclude_percentile=percentile)
+        except (Exception,) as e:
+            _log.debug(f"Background2D failed (exclude_percentile={percentile}): {e!r}")
             bkg = None
             continue
 

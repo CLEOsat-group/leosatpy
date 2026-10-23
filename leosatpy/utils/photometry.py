@@ -341,7 +341,8 @@ def get_opt_aper_trail(image,
     del executor
 
     max_snr_idx = np.nanargmax(output[:, :, 2], axis=0)
-    max_snr_aprad = float(rapers[max_snr_idx])
+    # Single trail position: .item() extracts the scalar (float() on a 1-d array fails with numpy >= 2.4)
+    max_snr_aprad = rapers[max_snr_idx].item()
     optimum_aprad = max_snr_aprad * 1.25  # increased by 25%
     qlf_aptrail = True
 

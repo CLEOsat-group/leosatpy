@@ -1457,7 +1457,7 @@ def get_trail_properties(segm_map, df, config, orig_data,
             if not df_tmp.empty:
                 # Select only the segment labels that belong to this peak
                 [index_list.append(row.Index) for row in df_tmp.itertuples(name='label') if row.label in label_list]
-                df_tmp.drop(index_list, inplace=True)
+                df_tmp = df_tmp.drop(index_list)
             else:
                 break
             sel_dict[i] = index_list
