@@ -21,3 +21,17 @@ of the **LEOSat** Python package:
 
 The project would not have been possible without the help of everyone who contributed.
 
+Use of AI assistance
+--------------------
+
+Since October 2026 (development of version 0.5.0 onwards), parts of the development of **LEOSatpy**
+have been carried out with the help of the AI coding assistant
+`Claude <https://www.anthropic.com/claude>`_ (Anthropic), used through Claude Code.
+It was used to refactor and debug code, to adapt the pipeline to new versions of its dependencies,
+to write tests, and to draft documentation.
+
+All AI-assisted changes were reviewed, tested on observational data, and validated by the authors,
+who take full responsibility for the code and its scientific results.
+Commits that received AI assistance are marked with a ``Co-Authored-By`` line in the
+`git history <https://github.com/CLEOsat-group/leosatpy/commits>`_.
+
