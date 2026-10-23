@@ -574,7 +574,7 @@ class DataSet(object):
         df = df[df[inst_key] == inst_val]
 
         # sort filenames
-        df.sort_values(by='file', inplace=True)
+        df = df.sort_values(by='file')
 
         def to_bin(x):
             if inst_val == 'DECam':

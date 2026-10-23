@@ -762,7 +762,7 @@ class ObsTables(object):
         obs_info = obs_info[self.def_cols].astype(object)
 
         # Replace all None values with NAN
-        obs_info = obs_info.replace(to_replace=[None], value=np.nan, inplace=False)
+        obs_info = obs_info.replace(to_replace=[None], value=np.nan)
 
         # Make a copy
         obs_info_tmp = obs_info.copy()

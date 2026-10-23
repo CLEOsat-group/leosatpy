@@ -321,11 +321,11 @@ def build_source_catalog(data, mask, input_catalog=None, known_fwhm=None,
                   'eccentricity', 'fwhm', 'gini'])
 
     # Rename the flux column
-    sources.rename(columns={"segment_flux": "flux"}, inplace=True)
+    sources = sources.rename(columns={"segment_flux": "flux"})
     sources['mag'] = -2.5 * np.log10(sources['flux'].values)
 
     # Sort by maximum value
-    sources.sort_values(by='flux', ascending=False, inplace=True)
+    sources = sources.sort_values(by='flux', ascending=False)
     log.debug(f'{" ":<6}Initial number of sources: {len(sources)}')
 
     log.debug(f'{" ":<6}Run profile fit (This may take a second.)')
@@ -379,7 +379,7 @@ def build_source_catalog(data, mask, input_catalog=None, known_fwhm=None,
         log.debug(f'{" ":<4}>> Detected sources: {len(obs_df)}')
 
         ref_df = input_catalog.copy()
-        ref_df.reset_index(drop=True, inplace=True)
+        ref_df = ref_df.reset_index(drop=True)
         log.debug(f'{" ":<4}> X-match with reference catalog')
         log.debug(f'{" ":<6}Initial number of reference sources: {len(ref_df)}')
         hsize = (box_size - 1) // 2
@@ -395,7 +395,7 @@ def build_source_catalog(data, mask, input_catalog=None, known_fwhm=None,
                                                   distance_threshold=hsize)
         log.debug(f'{" ":<6}Crowded sources removed: {n_crowded:d}')
 
-        ref_df.reset_index(drop=True, inplace=True)
+        ref_df = ref_df.reset_index(drop=True)
 
         matches = imtrans.find_matches(obs_df, ref_df, threshold=image_fwhm, sort=False)
         sources = matches[1][matches[1]['include_fwhm']].copy()
@@ -555,7 +555,7 @@ def fit_source_cat(data, df, cutout_size, known_fwhm=None, update_position=False
     out_df['fit_mask'] = bool_arr
 
     # Reset index
-    out_df.reset_index(inplace=True, drop=True)
+    out_df = out_df.reset_index(drop=True)
 
     return out_df
 
@@ -1974,8 +1974,8 @@ def select_std_stars(ref_cat: pd.DataFrame,
         has_mag_conv = True
 
     # sort table by magnitude, brightest to fainter
-    df = cat_srt.sort_values(by=[flat_filter_keys[0]], axis=0, ascending=True, inplace=False)
-    df = df.dropna(subset=flat_filter_keys, inplace=False)
+    df = cat_srt.sort_values(by=[flat_filter_keys[0]], axis=0, ascending=True)
+    df = df.dropna(subset=flat_filter_keys)
     if df.empty:
         log.critical("  No sources with uncertainties remaining!!!")
         del ref_cat, cat_srt, df

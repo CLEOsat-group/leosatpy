@@ -2066,7 +2066,7 @@ class AnalyseSatObs(object):
                                                       detect_error=None,
                                                       nsigma=3.0, npixels=5, connectivity=8,
                                                       mask=ref_img_mask)
-        ref_sources.reset_index(drop=True, inplace=True)
+        ref_sources = ref_sources.reset_index(drop=True)
 
         # Match observed data to reference data
         match_radius = image_fwhm
@@ -3311,11 +3311,11 @@ class AnalyseSatObs(object):
                       'bbox_xmin', 'bbox_xmax', 'bbox_ymin', 'bbox_ymax'])
 
         # Rename the flux column
-        sources.rename(columns={"segment_flux": "flux"}, inplace=True)
+        sources = sources.rename(columns={"segment_flux": "flux"})
         sources['mag'] = -2.5 * np.log10(sources['flux'].values)
 
         # Sort by maximum value
-        sources.sort_values(by='flux', ascending=False, inplace=True)
+        sources = sources.sort_values(by='flux', ascending=False)
 
         # Create source mask from bounding boxes
         source_mask = self.create_source_mask_from_bboxes(sources, image.shape)
