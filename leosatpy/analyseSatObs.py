@@ -35,6 +35,7 @@ import os
 import logging
 import subprocess
 import sys
+import traceback
 import warnings
 import time
 
@@ -60,6 +61,7 @@ from astropy.visualization import (LinearStretch, LogStretch, SqrtStretch, ZScal
 from astropy.visualization.mpl_normalize import ImageNormalize
 from astropy.coordinates import (Angle, SkyCoord, AltAz, EarthLocation, get_sun)
 from astropy.time import Time
+from astropy.utils import iers
 
 # photutils
 from photutils.aperture import (RectangularAperture, RectangularAnnulus, CircularAperture)
@@ -115,6 +117,7 @@ except ModuleNotFoundError:
     from utils.tables import ObsTables
     from utils.select_trail import confirm_trail_and_select_aperture_gui
     import utils.sources as sext
+    from utils.compat import catalog_to_pandas
     import utils.satellites as sats
     import utils.transformations as imtrans
     import utils.photometry as phot
@@ -126,6 +129,7 @@ else:
     from leosatpy.utils.tables import ObsTables
     from leosatpy.utils.select_trail import confirm_trail_and_select_aperture_gui
     import leosatpy.utils.sources as sext
+    from leosatpy.utils.compat import catalog_to_pandas
     import leosatpy.utils.satellites as sats
     import leosatpy.utils.transformations as imtrans
     import leosatpy.utils.photometry as phot
@@ -353,6 +357,45 @@ def build_worker_batches(chunks, location, loc, satellite, margin_minutes, timez
     return worker_args
 
 
+def prepare_iers_data(log, max_age_days=30):
+    """Make sure the IERS-A table (UT1-UTC, polar motion) can be used.
+
+    Tables are tried in this order:
+
+    1. The table bundled with the astropy-iers-data package, if its
+       predictions are less than ``max_age_days`` old (no network access).
+    2. Astropy's cached download, which is only refreshed when its
+       predictions are older than ``max_age_days``.
+    3. If the update fails (e.g. offline), the newer of the two tables with
+       the age check disabled, instead of failing the alt/az to RA/DEC
+       transformation.
+    """
+    iers.conf.auto_max_age = max_age_days
+    now = Time.now()
+
+    bundled_mjd = iers.IERS_Auto.read().meta['predictive_mjd']
+    if now.mjd - bundled_mjd <= max_age_days:
+        iers.conf.auto_download = False
+        log.debug("    Using the IERS-A table bundled with astropy-iers-data")
+        return
+
+    iers.conf.auto_download = True
+    try:
+        # Interpolating at the current time triggers the refresh if needed
+        iers.IERS_Auto.open().ut1_utc(now)
+        return
+    except Exception as e:
+        log.debug(f"    IERS update error: {e!r}")
+
+    if bundled_mjd > iers.IERS_Auto.open().meta['predictive_mjd']:
+        iers.conf.auto_download = False
+
+    log.warning(f"    IERS data is older than {max_age_days} days and could not be updated; "
+                f"using the available predicted values instead. Check the internet "
+                f"connection or run 'pip install -U astropy-iers-data'.")
+    iers.conf.auto_max_age = None
+
+
 def vectorized_finalize_results(geom_rows, location, timezone_offset, hdr, dt_sec):
     """
     geom_rows: list of tuples returned by workers:
@@ -397,8 +440,6 @@ def vectorized_finalize_results(geom_rows, location, timezone_offset, hdr, dt_se
         lon=location["lon"] * u.deg,
         height=location["alt"],
     )
-    from astropy.utils.iers import conf
-    conf.auto_download = False
     altaz = AltAz(obstime=astropy_times, location=obs_loc)
 
     alt = df["SatElev"].to_numpy(dtype="float64") * u.deg
@@ -609,6 +650,9 @@ class AnalyseSatObs(object):
 
         self._dataset_all = ds
 
+        # Earth orientation data for the alt/az to RA/DEC transformation
+        prepare_iers_data(self._log)
+
         # Set variables for use
         inst_list = ds.instruments_list
         inst_data = ds.instruments
@@ -655,10 +699,12 @@ class AnalyseSatObs(object):
                 try:
                     exec_state = self.analyse_sat_trails(files=files, sat_name=sat_name)
                 except Exception as e:
-                    exc_type, exc_obj, exc_tb = sys.exc_info()
-                    fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                    # Report the frame where the exception was raised, not this one
+                    origin = traceback.extract_tb(e.__traceback__)[-1]
+                    fname = os.path.split(origin.filename)[1]
                     self._log.critical(f"Unexpected behaviour: {e} in file {fname}, "
-                                       f"line {exc_tb.tb_lineno}")
+                                       f"line {origin.lineno}")
+                    self._log.debug(traceback.format_exc())
                     exec_state = 0
                     self.update_failed_processes([str(e), 'Unexpected behaviour',
                                                   'Please create a ticket url'])
@@ -3258,11 +3304,11 @@ class AnalyseSatObs(object):
         catalog = SourceCatalog(image, segm, mask=mask)
 
         # Select columns
-        sources = catalog.to_table(
-            columns=['label', 'xcentroid', 'ycentroid',
-                     'max_value', 'segment_flux',
-                     'eccentricity', 'fwhm', 'gini',
-                     'bbox_xmin', 'bbox_xmax', 'bbox_ymin', 'bbox_ymax']).to_pandas()
+        sources = catalog_to_pandas(
+            catalog, ['label', 'xcentroid', 'ycentroid',
+                      'max_value', 'segment_flux',
+                      'eccentricity', 'fwhm', 'gini',
+                      'bbox_xmin', 'bbox_xmax', 'bbox_ymin', 'bbox_ymax'])
 
         # Rename the flux column
         sources.rename(columns={"segment_flux": "flux"}, inplace=True)
@@ -4218,7 +4264,7 @@ class AnalyseSatObs(object):
         sat_pos = reg_data['coords']
         sat_ang = Angle(reg_data['orient_deg'], 'deg')
         trail_w = reg_data['width']
-        trail_h = float(self._obj_info['OptAperHeight'])
+        trail_h = float(self._obj_info['OptAperHeight'].iloc[0])
 
         # adjust position offset
         px_offset = -0.

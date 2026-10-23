@@ -96,6 +96,7 @@ else:
 
 # pipeline-specific modules
 from . import photometry as phot
+from .compat import PHOTUTILS_GE_3, catalog_to_pandas, make_background2d
 from . import base_conf as bc
 from . import transformations as imtrans
 
@@ -314,10 +315,10 @@ def build_source_catalog(data, mask, input_catalog=None, known_fwhm=None,
     catalog = SourceCatalog(data, segm_deblend, mask=mask)
 
     # Select columns
-    sources = catalog.to_table(
-        columns=['label', 'xcentroid', 'ycentroid',
-                 'max_value', 'segment_flux',
-                 'eccentricity', 'fwhm', 'gini']).to_pandas()
+    sources = catalog_to_pandas(
+        catalog, ['label', 'xcentroid', 'ycentroid',
+                  'max_value', 'segment_flux',
+                  'eccentricity', 'fwhm', 'gini'])
 
     # Rename the flux column
     sources.rename(columns={"segment_flux": "flux"}, inplace=True)
@@ -479,8 +480,8 @@ def fit_source_cat(data, df, cutout_size, known_fwhm=None, update_position=False
     # Fit sources
     for i in range(total_sources):
         idx = df.index.values[i]
-        x0 = df['xcentroid'].loc[[idx]]
-        y0 = df['ycentroid'].loc[[idx]]
+        x0 = float(df.at[idx, 'xcentroid'])
+        y0 = float(df.at[idx, 'ycentroid'])
 
         # Create the Cutout2D object
         cutout_obj = Cutout2D(data=data, position=(x0, y0), size=cutout_size,
@@ -527,8 +528,8 @@ def fit_source_cat(data, df, cutout_size, known_fwhm=None, update_position=False
                     to_add = [fwhm_fit, fwhm_fit_err, snr_stars]
                     bool_arr[i] = True
                     if update_position:
-                        df['xcentroid'] = df['xcentroid'].replace([x0], x_corrected)
-                        df['ycentroid'] = df['ycentroid'].replace([y0], y_corrected)
+                        df.at[idx, 'xcentroid'] = x_corrected
+                        df.at[idx, 'ycentroid'] = y_corrected
                 else:
                     to_add = nan_arr
 
@@ -858,8 +859,7 @@ def compute_2d_background(imgarr, mask, box_size, win_size,
                                 filter_size=(win_size, win_size),
                                 exclude_percentile=percentile,
                                 bkg_estimator=bkg_estimator,
-                                bkgrms_estimator=rms_estimator,
-                                edge_method="pad")
+                                bkgrms_estimator=rms_estimator)
 
             # print(bkg.background_median, bkg.background_rms_median)
             # plt.figure()
@@ -869,7 +869,8 @@ def compute_2d_background(imgarr, mask, box_size, win_size,
             # bkg.plot_meshes(outlines=True, marker='.', color='cyan', alpha=0.3)
             # plt.show()
 
-        except (Exception,):
+        except (Exception,) as e:
+            log.debug(f"{' ':<4}Background2D failed (exclude_percentile={percentile}): {e!r}")
             bkg = None
             continue
 
@@ -1621,7 +1622,7 @@ def my_background(img, box_size, mask=None, interp=None, filter_size=(1, 1),
     bkgrms_estimator: `~photutils.background.BackgroundRMSBase`, optional
         Background RMS estimator to use.
     edge_method: str, optional
-        Method to handle edges of the image. Options are 'pad', 'crop', or 'none'.
+        Ignored; kept for backwards compatibility. Edges are always padded.
 
     Returns
     -------
@@ -1632,17 +1633,16 @@ def my_background(img, box_size, mask=None, interp=None, filter_size=(1, 1),
         bkg_estimator = SExtractorBackground
     if bkgrms_estimator is None:
         bkgrms_estimator = StdBackgroundRMS
-    if interp is None:
+    if interp is None and not PHOTUTILS_GE_3:
         interp = BkgZoomInterpolator()
 
-    return Background2D(img, box_size,
-                        sigma_clip=SigmaClip(sigma=3., maxiters=10),
-                        exclude_percentile=exclude_percentile,
-                        mask=mask,
-                        bkg_estimator=bkg_estimator(),
-                        bkgrms_estimator=bkgrms_estimator(),
-                        edge_method=edge_method,
-                        interpolator=interp, filter_size=filter_size)
+    return make_background2d(img, box_size,
+                             sigma_clip=SigmaClip(sigma=3., maxiters=10),
+                             exclude_percentile=exclude_percentile,
+                             mask=mask,
+                             bkg_estimator=bkg_estimator(),
+                             bkg_rms_estimator=bkgrms_estimator(),
+                             interpolator=interp, filter_size=filter_size)
 
 
 def rename_colname(table: Table, colname: str, newcol: str):

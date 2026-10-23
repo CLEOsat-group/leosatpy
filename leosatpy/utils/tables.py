@@ -98,7 +98,7 @@ class ObsTables(object):
         self.def_cols = bc.DEF_RES_TBL_COL_NAMES
         self.def_col_units = bc.DEF_RES_TBL_COL_UNITS
         self.def_key_transl = bc.DEF_KEY_TRANSLATIONS
-        self.res_tbl_data = pd.DataFrame(columns=self.def_cols)
+        self.res_tbl_data = pd.DataFrame(columns=self.def_cols, dtype=object)
         self.res_tbl_units = OrderedDict(zip(self.def_cols,
                                              self.def_col_units[:len(self.def_cols)]))
         self.res_tbl_unit_df = pd.DataFrame([self.res_tbl_units])
@@ -326,7 +326,7 @@ class ObsTables(object):
         if fname.exists():
             self.log.debug(f'> Read observation info from: {self.def_tbl_name}')
 
-            df = pd.read_csv(fname, header=None, delimiter=',')
+            df = pd.read_csv(fname, header=None, delimiter=',', dtype=object)
             columns = df.iloc[0].values
 
             if len(df) > 1 and self.unit_row_matches(df.iloc[1]):
@@ -757,8 +757,9 @@ class ObsTables(object):
                 # insert column at the end
                 obs_info.insert(len(obs_info.columns), col, '')
 
-        # Reorder columns
-        obs_info = obs_info[self.def_cols]
+        # Reorder columns; keep generic object dtype so mixed values can be stored
+        # (pandas >= 3 would otherwise infer a strict string dtype)
+        obs_info = obs_info[self.def_cols].astype(object)
 
         # Replace all None values with NAN
         obs_info = obs_info.replace(to_replace=[None], value=np.nan, inplace=False)
@@ -942,7 +943,7 @@ class ObsTables(object):
                     if key == dcol_name and dcol_name not in ['Obs-Start', 'Obs-Mid', 'Obs-Stop', 'Sat-Name']:
                         new_dict[dcol_name] = value
 
-        new_df = pd.DataFrame(new_dict)
+        new_df = pd.DataFrame(new_dict, dtype=object)
 
         # Pandas version < 2.0
         if Version(pd.__version__) < Version('2.0'):
