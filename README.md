@@ -179,6 +179,13 @@ correspond to the observation date. However, the difference in date
 should not exceed 7 days. For example, data observed on 2022-11-11 UTC
 might be located in a folder named 2022-11-10. \<-- This is detected.
 
+> [!NOTE]
+> A dated folder is treated as one observing night: all calibration files
+inside it are used, even if their `DATE-OBS` falls on the next day UTC.
+Header dates are interpreted as observing nights running from noon to
+noon local time (derived from the telescope longitude) and labelled by
+the date of the evening.
+
 It is also recommended to separate the raw calibration files, i.e.,
 bias, darks, and flats from the science observation files and place them
 into separate folder, named accordingly `/bias`, `/darks`, `/flats`, and

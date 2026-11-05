@@ -1934,6 +1934,42 @@ class ReduceSatObs(object):
             return None
 
     @staticmethod
+    def _header_time_string(hdr, obsparams):
+        """Return the observation time string from a header, joining DATE-OBS and TIME-OBS if split."""
+        date_keyword = obsparams.get('date_keyword', 'DATE-OBS')
+        date_raw = hdr.get(date_keyword)
+        if date_raw is None:
+            return None
+        date_raw = str(date_raw).strip()
+        if 'T' not in date_raw and 'TIME-OBS' in hdr:
+            return f"{date_raw}T{str(hdr['TIME-OBS']).strip()}"
+        return date_raw
+
+    @staticmethod
+    def _observing_night(time_string, longitude=None):
+        """Return the observing night (noon-to-noon local mean solar time) of a UTC timestamp.
+
+        A night is labelled by the calendar date of its evening, so all frames of
+        one night share a date even if they cross midnight UTC or local time.
+        The local offset is taken from the site longitude (east positive).
+        A bare date without a time component is returned unchanged.
+        """
+        if time_string is None:
+            return None
+        text = str(time_string).strip()
+        if not re.search(r'\d{1,2}:\d{2}', text):
+            return ReduceSatObs._parse_obs_date_from_text(text)
+        try:
+            t = pd.to_datetime(text, format='ISO8601')
+        except (ValueError, TypeError):
+            return ReduceSatObs._parse_obs_date_from_text(text)
+        if t.tzinfo is not None:
+            t = t.tz_convert('UTC').tz_localize(None)
+        lon = float(longitude) if longitude is not None else 0.0
+        local_t = t + pd.Timedelta(hours=lon / 15.0)
+        return (local_t - pd.Timedelta(hours=12)).date()
+
+    @staticmethod
     def _build_master_bias_path(out_path, suffix, binning_ext, telescope, instrument=None):
         master_bias = f"master_bias_{binning_ext}{suffix}"
         if telescope == 'DDOTI 28-cm f/2.2':
@@ -2049,6 +2085,8 @@ class ReduceSatObs(object):
         selected_probe = None  # type: Optional[dict]
         fallback_deltas = []
         same_night_candidate = Path(dataset_date_root)
+        # Without a dated night folder the candidate may hold several nights
+        same_night_is_night_folder = date_route != 'configured_date_range_fallback'
 
         self._log.debug(f"{' ':<2}> Evaluate same-night calibration candidate")
 
@@ -2061,7 +2099,8 @@ class ReduceSatObs(object):
                                                  binnings=binnings,
                                                  suffix=suffix,
                                                  inst=inst,
-                                                 sci_bin_str=sci_bin_str)
+                                                 sci_bin_str=sci_bin_str,
+                                                 filter_by_date=not same_night_is_night_folder)
         probe_log = [same_night_probe]
 
         if same_night_probe['complete']:
@@ -2807,8 +2846,10 @@ class ReduceSatObs(object):
 
     def _probe_candidate(self, search_path, resolved_date, master_out, requirement,
                          obsparams, filters, binnings, suffix, inst=None,
-                         sci_bin_str=None):
+                         sci_bin_str=None, filter_by_date=False):
         search_path = Path(search_path).resolve()
+        # Night folders are trusted; only filter raw calibrations by observing night otherwise
+        calib_night = resolved_date if filter_by_date else None
         science_master_root = Path(master_out).resolve()
         candidate_master_root = self._derive_candidate_master_root(search_path)
         fallback_master_allowed = not self._is_same_master_root(science_master_root, candidate_master_root)
@@ -2884,7 +2925,7 @@ class ReduceSatObs(object):
                 if raw_available and raw_fits_list:
                     dfilter, add_filters, regexp = self.create_dfilter(inst, obsparams, 'bias')
                     bias_files = list(self.filter_calib_files(raw_fits_list, obsparams, dfilter, add_filters,
-                                                              binnings, resolved_date, regexp=regexp))
+                                                              binnings, calib_night, regexp=regexp))
                     if bias_files:
                         stage_plan['bias'] = bias_files
                         bias_status = {'status': 'raw_creatable', 'path': master_bias_path, 'source': None}
@@ -2941,7 +2982,7 @@ class ReduceSatObs(object):
                         dfilter, add_filters, regexp = self.create_dfilter(inst, obsparams, 'flat')
                         dfilter[obsparams['filter'].lower()] = filt[1]
                         flat_files = list(self.filter_calib_files(raw_fits_list, obsparams, dfilter, add_filters,
-                                                                  binnings, resolved_date, regexp=regexp))
+                                                                  binnings, calib_night, regexp=regexp))
                         if flat_files:
                             stage_plan['flat'][filt_name] = flat_files
                             flat_raw_exposure_requirements[filt_name] = sorted(
@@ -3013,7 +3054,8 @@ class ReduceSatObs(object):
             if unresolved_targets and raw_available and raw_fits_list:
                 dfilter, add_filters, regexp = self.create_dfilter(inst, obsparams, 'dark')
                 raw_dark_files = list(self.filter_calib_files(raw_fits_list, obsparams, dfilter, add_filters,
-                                                              binnings, resolved_date, regexp=regexp))
+                                                              binnings, calib_night, regexp=regexp,
+                                                              group_keyword=obsparams['exptime']))
                 raw_dark_groups = self._group_files_by_exposure(raw_dark_files, obsparams)
                 raw_dark_matches = self._select_exposure_matches(required_exposures=unresolved_targets,
                                                                  available_exposures=raw_dark_groups.keys(),
@@ -3694,8 +3736,8 @@ class ReduceSatObs(object):
 
     def filter_calib_files(self, fits_list, obsparams,
                            dfilter, add_filters,
-                           binnings, obs_date=None, regexp=False):
-        """ Filter files according to their binning and observation date.
+                           binnings, obs_date=None, regexp=False, group_keyword=None):
+        """ Filter files according to their binning and observing night.
 
         If the first try with a binning keyword fails, use the unbinned image size
         known from a telescope to determine the binning factor
@@ -3712,11 +3754,15 @@ class ReduceSatObs(object):
             Additional filters to apply, such as binning keywords.
         binnings : tuple
             A tuple specifying the binning in the x and y directions (e.g., (2, 2)).
-        obs_date : datetime or None, optional
-            The observation date to filter files by. Files from the same date are prioritized.
-            If None, no date-based filtering is applied. Defaults to None.
+        obs_date : datetime.date or None, optional
+            The observing night (noon-to-noon local time) to prefer. Files from that night are
+            prioritized; if none match, all files are used. If None, no date-based filtering is
+            applied, e.g. when the search folder is itself a night folder. Defaults to None.
         regexp : bool, optional
             If True, applies regular expressions to the filtering process. Defaults to False.
+        group_keyword : str or None, optional
+            Header keyword to group files by before applying the night preference
+            (e.g. the exposure time for darks). Defaults to None (one group).
 
         Returns
         -------
@@ -3764,39 +3810,38 @@ class ReduceSatObs(object):
                 if binning_x == int(binnings[0]) and binning_y == int(binnings[1]):
                     files.append(file_path)
 
-        same_date = []
-        diff_date = []
+        del ic_all
+
+        # Trust the folder: all frames in a night folder belong to that night
+        if obs_date is None:
+            return list(files)
+
+        # Prefer frames from the observing night, decided per group (e.g. dark exposure time)
+        # so that one matching group does not discard the others
+        groups = {}
         for file_path in files:
+            with fits.open(file_path, mode='readonly', ignore_missing_end=True) as hdul:
+                hdul.verify('fix')
+                prim_hdr = hdul[0].header
+                night = self._observing_night(self._header_time_string(prim_hdr, obsparams),
+                                              obsparams.get('longitude'))
+                group = prim_hdr.get(group_keyword) if group_keyword else None
+            groups.setdefault(group, []).append((file_path, night))
 
-            # Load fits file
-            hdul = fits.open(file_path, mode='readonly', ignore_missing_end=True)
-            hdul.verify('fix')
-            prim_hdr = hdul[0].header
-
-            self._log.debug("  Check Obs-Date")
-            if 'time-obs'.upper() in prim_hdr:
-                time_string = f"{prim_hdr['date-obs'.upper()]}T{prim_hdr['time-obs'.upper()]}"
-
+        selected = []
+        for group, entries in groups.items():
+            same_night = [f for f, night in entries if night == obs_date]
+            if same_night:
+                selected.extend(same_night)
+                n_excluded = len(entries) - len(same_night)
+                if n_excluded:
+                    group_text = f" ({group_keyword}={group})" if group_keyword else ''
+                    self._log.warning(f"{' ':<4}Excluded {n_excluded} calibration frame(s){group_text} "
+                                      f"not taken in the observing night {obs_date}")
             else:
-                time_string = prim_hdr['date-obs'.upper()]
+                selected.extend(f for f, _ in entries)
 
-            t = pd.to_datetime(time_string,
-                               format='ISO8601', utc=False)
-
-            t_short = t.strftime('%Y-%m-%d')
-            if t_short == obs_date.strftime('%Y-%m-%d'):
-                same_date.append(file_path)
-            else:
-                diff_date.append(file_path)
-
-        if not same_date:
-            files = diff_date
-        else:
-            files = same_date
-
-        del same_date, diff_date, ic_all
-
-        return files
+        return selected
 
     def get_file_list(self, file_list, dfilter=None, regexp=False, key_find='find',
                       invert_find=False, dkeys=None, abspath=False):
@@ -3836,9 +3881,9 @@ class ReduceSatObs(object):
             prim_hdr = hdul[0].header
             new_hdr = prim_hdr.copy()
 
-            # Get observation date from header (accepts YYYY-MM-DD or YYYYMMDD)
-            date_raw = prim_hdr.get(obsparams['date_keyword'])
-            date = self._parse_obs_date_from_text(date_raw)
+            # Get observing night from header (noon-to-noon local time at the site)
+            date_raw = self._header_time_string(prim_hdr, obsparams)
+            date = self._observing_night(date_raw, obsparams.get('longitude'))
             if date is None:
                 raise RuntimeError(
                     f'Could not parse observation date from header keyword '

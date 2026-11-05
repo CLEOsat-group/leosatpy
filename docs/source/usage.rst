@@ -37,6 +37,12 @@ LEOSatpy automatically selects the search path for calibration data based on the
 from the science FITS-header and the folder names in the input path.
 Valid formats include: ``20221110``, ``2022-11-20``, ``tel_20221011_satxy``, ``2022-11-26_satxy_obs1``.
 
+.. note::
+   A dated folder is treated as one observing night: all calibration files inside it are used,
+   regardless of their ``DATE-OBS``, so frames taken after midnight UTC are not dropped.
+   Header dates are interpreted as observing nights running from noon to noon local time
+   (derived from the telescope longitude) and labelled by the date of the evening.
+
 .. tip::
 
    It is recommended to separate raw calibration files (bias, darks, and flats) from science observation files
