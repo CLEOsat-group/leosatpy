@@ -804,7 +804,7 @@ class CalibrateObsWCS(object):
             hdr_file.update(wcs.to_header())
 
             # Get the transformation matrix
-            matrix = wcsprm.pc * wcsprm.cdelt[:, np.newaxis]
+            matrix = imtrans.get_effective_cd_matrix(wcsprm)  # CD = diag(CDELT) @ PC
 
             # Rotation angle
             theta = np.rad2deg(-np.arctan2(matrix[1, 0], matrix[1, 1]))
@@ -892,10 +892,10 @@ class CalibrateObsWCS(object):
         imgarr -= bkg_background
 
         # Get y-axis length as limit
-        matrix = wcsprm.pc * wcsprm.cdelt[:, np.newaxis]
+        matrix = imtrans.get_effective_cd_matrix(wcsprm)  # CD = diag(CDELT) @ PC
 
         # Scale
-        scale_x = np.sqrt(matrix[0, 0] ** 2 + matrix[0, 1] ** 2)
+        scale_x = np.sqrt(matrix[0, 0] ** 2 + matrix[1, 0] ** 2)  # step along detector x
 
         # Rotation angle
         theta = -np.arctan2(matrix[1, 0], matrix[1, 1])

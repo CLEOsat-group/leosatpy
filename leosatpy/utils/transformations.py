@@ -1941,16 +1941,24 @@ def build_orientation_hypotheses(preferred_pc=None):
 
 
 def get_effective_cd_matrix(wcsprm):
-    """Return the effective two-dimensional CD matrix in deg/pixel."""
+    """Return the effective two-dimensional CD matrix in deg/pixel.
+
+    FITS convention (Calabretta & Greisen 2002, as used by astropy):
+    CD_ij = CDELT_i * PC_ij, i.e. CD = diag(CDELT) @ PC.
+    """
     pc = np.asarray(wcsprm.get_pc(), dtype=float)
     cdelt = np.asarray(wcsprm.get_cdelt(), dtype=float)
     if pc.shape != (2, 2) or cdelt.shape != (2,):
         raise ValueError("Only two-dimensional celestial WCS linear terms are supported.")
-    return pc @ np.diag(cdelt)
+    return np.diag(cdelt) @ pc
 
 
 def get_wcs_linear_diagnostics(wcsprm):
-    """Return scale, determinant, handedness, and conditioning diagnostics."""
+    """Return scale, determinant, handedness, and conditioning diagnostics.
+
+    The pixel scales are the lengths of the CD columns, i.e. the angular size of a step
+    along the detector x and y axes.
+    """
     pc = np.asarray(wcsprm.get_pc(), dtype=float)
     cd = get_effective_cd_matrix(wcsprm)
     scales = np.linalg.norm(cd, axis=0)
@@ -1970,7 +1978,13 @@ def get_wcs_linear_diagnostics(wcsprm):
 
 
 def validate_wcs_linear_convention(wcsprm, *, atol=1e-10):
-    """Validate the frozen PC/CDELT/CD representation invariant."""
+    """Validate the PC/CDELT/CD representation.
+
+    CDELT holds the pixel scale along each detector axis (CD column lengths) and PC the
+    rest; for square pixels PC is then a pure rotation or reflection. For non-square
+    pixels with a rotation PC is not orthogonal, which FITS allows, so only finiteness,
+    positive scales and a non-singular matrix are required.
+    """
     diagnostics = get_wcs_linear_diagnostics(wcsprm)
     values = np.concatenate((
         diagnostics['cd'].ravel(),
@@ -1981,11 +1995,6 @@ def validate_wcs_linear_convention(wcsprm, *, atol=1e-10):
         raise ValueError("WCS linear terms contain non-finite values.")
     if diagnostics['scale_x'] <= 0. or diagnostics['scale_y'] <= 0.:
         raise ValueError("WCS pixel scales must be strictly positive.")
-    if diagnostics['pc_orthogonality_error'] > atol:
-        raise ValueError(
-            "PC must contain orientation only; scale or skew remains in PC.")
-    if not np.isclose(abs(diagnostics['pc_determinant']), 1., atol=atol, rtol=0.):
-        raise ValueError("PC determinant must be +1 or -1.")
     if diagnostics['handedness'] == 0:
         raise ValueError("The effective CD matrix is singular.")
     return diagnostics
@@ -2003,7 +2012,7 @@ def rotation_to_matrix(angle):
 def rotate(wcsprm_rot, rot):
     """Apply an active detector-coordinate orientation transformation.
 
-    For CD = PC @ diag(CDELT), an active detector transformation ``rot``
+    With CD = diag(CDELT) @ PC, an active detector transformation ``rot``
     is represented by CD_new = CD_old @ inv(rot). This preserves scale and
     changes handedness only when ``rot`` is a reflection.
     """
@@ -2018,7 +2027,7 @@ def rotate(wcsprm_rot, rot):
 
     cdelt = np.asarray(wcsprm_rot.get_cdelt(), dtype=float)
     cd_rotated = get_effective_cd_matrix(wcsprm_rot) @ np.linalg.inv(rot)
-    pc_rotated = cd_rotated @ np.diag(1. / cdelt)
+    pc_rotated = np.diag(1. / cdelt) @ cd_rotated
     wcsprm_rot.pc = pc_rotated
     validate_wcs_linear_convention(wcsprm_rot, atol=1e-8)
     return wcsprm_rot
@@ -2039,10 +2048,10 @@ def scale(wcsprm, scale_factor):
 def translate_wcsprm(wcsprm):
     """Normalize a WCS so PC stores orientation and CDELT stores scale.
 
-    The effective CD matrix is preserved exactly within floating-point
-    precision. Existing CDELT signs are retained, so handedness is not
-    silently changed. Skewed linear transformations are rejected because
-    they cannot satisfy the frozen orthogonal-PC convention.
+    CDELT gets the pixel scale along each detector axis (the CD column
+    lengths) and PC = diag(1 / CDELT) @ CD the rest, so the effective CD
+    matrix is preserved exactly within floating-point precision. Existing
+    CDELT signs are retained, so handedness is not silently changed.
     """
     wcsprm = deepcopy(wcsprm)
     cd = get_effective_cd_matrix(wcsprm)
@@ -2054,7 +2063,7 @@ def translate_wcsprm(wcsprm):
     signs = np.sign(old_cdelt)
     signs[signs == 0.] = 1.
     normalized_cdelt = signs * scales
-    normalized_pc = cd @ np.diag(1. / normalized_cdelt)
+    normalized_pc = np.diag(1. / normalized_cdelt) @ cd
 
     wcsprm.pc = normalized_pc
     wcsprm.cdelt = normalized_cdelt
