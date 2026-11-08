@@ -605,6 +605,26 @@ Additional information
 
    Flag indicating flat correction applied.
 
+.. py:function:: CcdTemp:
+
+   ``degC``
+
+   Reference CCD temperature of the science frame (``TEMPREF``): the setpoint for cameras with a regulated
+   setpoint, otherwise the measured value. Empty when the temperature is unknown or implausible.
+
+.. py:function:: TempMatch:
+
+   ``bool``
+
+   ``T`` if the applied bias, dark and flat lie within the temperature tolerance of the science frame (``TEMPMTCH``).
+   Only for cameras with a temperature setpoint; empty otherwise.
+
+.. py:function:: DarkScale:
+
+   ``float``
+
+   Scale applied to the bias-free master dark when the dark scale is fitted (``DARKSCL``, see ``DARK_OPTIMIZE``).
+
 .. py:function:: WCS_cal:
 
    ``bool``

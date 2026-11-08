@@ -43,6 +43,39 @@ Valid formats include: ``20221110``, ``2022-11-20``, ``tel_20221011_satxy``, ``2
    Header dates are interpreted as observing nights running from noon to noon local time
    (derived from the telescope longitude) and labelled by the date of the evening.
 
+Each calibration product (bias, each dark exposure, each flat filter) is taken from the best night:
+the observing night itself when it has the frames, otherwise the closest night within ``TIMEDELTA_DAYS``
+(see :ref:`calib_source <calib_source>`). The calibration summary of each pass names the night of every product.
+
+.. _ccd_temperature:
+
+CCD temperature
+^^^^^^^^^^^^^^^
+
+Dark current, hot pixels and, to a small degree, the bias depend on the CCD temperature. For cameras with a
+regulated setpoint, LEOSatpy groups the science frames by their setpoint and prefers calibration frames taken at
+the same temperature (within ``TEMP_TOLERANCE``, default ±1 °C):
+
+* bias and darks for the science frames are matched to the science temperature,
+* bias and darks used to build a flat are matched to the temperature of the flat,
+* flats may come from another temperature (their response hardly depends on it),
+* darks are only ranked by temperature when their hot pixels are significant at the science exposure time.
+
+The temperature is a preference, never a requirement: if no calibration exists at the science temperature, the
+closest one is used and the mismatch is reported in the log, in the header (``TEMPMTCH = 'F'``) and in the
+``TempMatch`` column of the result table. With ``TEMP_MISMATCH = 'strict'`` darks outside the tolerance are not
+used. ``DARK_OPTIMIZE`` and ``HOTPIX_MASK`` reduce the residuals of a dark taken at another temperature.
+
+How the temperature is read is configured per telescope:
+
+* **match**: cameras with a setpoint keyword (CKOIR 0.5 m and 0.6 m, CBNUO, OUKA, CA 1.23 m),
+* **record**: the temperature is only written to the headers (DK 1.54 m and CTIO 0.9 m with LN2 cooling and
+  unreliable or Kelvin readings, FUT without setpoint),
+* **off**: no usable temperature keyword (CTIO 4 m DECam, DDOTI).
+
+Master calibrations carry the temperature and, if taken from another night, the source night in their name,
+e.g. ``master_bias_2x2_Tm10.fits`` or ``master_dark_4x4_1p0_Tm10_s20260914.fits``.
+
 .. tip::
 
    It is recommended to separate raw calibration files (bias, darks, and flats) from science observation files

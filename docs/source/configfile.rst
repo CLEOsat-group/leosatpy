@@ -214,6 +214,8 @@ General options
 Reduction options
 -----------------
 
+.. _timedelta_days:
+
 .. py:function:: timedelta_days:
 
    ``int`` (default = ``7``)
@@ -248,6 +250,79 @@ Reduction options
 
    If one of the parameter above is ``True`` and no `bias`, `dark`, or `flat` FITS-files are found,
    the corresponding parameter is automatically set to ``False``.
+
+.. _calib_source:
+
+.. py:function:: calib_source:
+
+   ``'product'``, ``'night'`` (default = ``'product'``)
+
+   How the calibration frames are chosen:
+
+       - ``'product'`` : every calibration product (bias, each dark exposure, each flat filter) is taken from the
+         best night: the observing night itself if possible, otherwise the closest night within timedelta_days_.
+       - ``'night'`` : all products come from one night, as in version 0.5.x. Together with ``TEMP_MATCH = False``
+         this reproduces the results of 0.5.x.
+
+.. _temp_match:
+
+.. py:function:: temp_match:
+
+   ``True``, ``'record'``, ``False`` (default = ``True``)
+
+   Use the CCD temperature when matching calibration frames (see :ref:`CCD temperature <ccd_temperature>`).
+   ``True`` applies the mode configured for the telescope, ``'record'`` only writes the temperature to the
+   headers and the result table, and ``False`` ignores it completely.
+
+.. py:function:: temp_tolerance:
+
+   ``float`` (default = ``1.0``)
+
+   Temperature difference in °C up to which a calibration frame counts as taken at the science temperature.
+
+.. py:function:: temp_mismatch:
+
+   ``'nearest'``, ``'strict'`` (default = ``'nearest'``)
+
+   What to do when no calibration frame lies within temp_tolerance:
+
+       - ``'nearest'`` : use the closest temperature and flag the mismatch (``TEMPMTCH = 'F'``).
+       - ``'strict'`` : treat darks outside the tolerance as unavailable (the bias-only correction is used, as for
+         a missing dark). Bias and flats are always used with the closest temperature.
+
+.. py:function:: min_calib_frames:
+
+   ``int`` (default = ``3``)
+
+   Minimum number of raw frames for a calibration group to be preferred over a smaller group.
+
+.. py:function:: dark_optimize:
+
+   ``'off'``, ``'mismatch'``, ``'always'`` (default = ``'off'``)
+
+   Fit the scale of the bias-free master dark for every science frame on the hot pixels of the dark, instead of
+   scaling it by the exposure time. ``'mismatch'`` fits only when the dark lies outside temp_tolerance, ``'always'``
+   for every frame. This corrects most of the hot-pixel residuals of a dark taken at another temperature; the
+   fitted scale is stored as ``DARKSCL`` and in the ``DarkScale`` column.
+
+.. py:function:: hotpix_mask:
+
+   ``True``, ``False`` (default = ``False``)
+
+   Add the hot pixels that remain after a mismatched or missing dark to the bad-pixel mask, so they are ignored
+   in the calibration and the photometry.
+
+.. py:function:: allow_dark_scaling:
+
+   ``True``, ``False`` (default = ``False``)
+
+   Allow a dark of a different exposure time to be scaled to the science exposure.
+
+.. py:function:: dark_tolerance:
+
+   ``float`` (default = ``1``)
+
+   Exposure time difference in seconds up to which a dark is used unscaled.
 
 .. _correct_gain:
 
