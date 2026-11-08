@@ -185,6 +185,10 @@ class CalibrateObsWCS(object):
         self._wcsprm = None
         self._fov_radius = 0.5
         self._bin_str = None
+        # Last accepted plate solution per instrument setup (telescope, binning, frame shape):
+        # its parity is searched first for the next frame, its orientation is the reference for the
+        # rotator check
+        self._wcs_memory = {}
 
         # Run calibration
         self.run_calibration_all(silent=silent, verbose=verbose)
@@ -446,12 +450,21 @@ class CalibrateObsWCS(object):
         # Get the default PC matrix
         self._config['pc_matrix'] = obsparams['pc_matrix']
 
+        # Parity of the last accepted solution of the same setup is searched first (order only)
+        setup_key = (self._telescope, self._bin_str, tuple(imgarr.shape))
+        wcs_ref = self._wcs_memory.get(setup_key)
+        config['wcs_prior'] = {'parity': wcs_ref['parity']} if wcs_ref else None
+
         # Initialize find WCS object
         get_wcs = imtrans.FindWCS(src_tbl, ref_tbl, hdr, config, self._log)
 
         # Run the WCS analysis
         wcs_res = get_wcs.find_wcs(init_wcs, imgarr, match_radius)
         has_solution, best_wcsprm, dict_rms = wcs_res
+
+        # Remember an accepted solution and compare its orientation with the rotator, if available
+        if has_solution and best_wcsprm is not None and dict_rms.get('accepted', False):
+            self.check_orientation(best_wcsprm, dict_rms, hdr, obsparams, setup_key, wcs_ref)
 
         # Check the result state
         if not has_solution or best_wcsprm is None:
@@ -547,6 +560,46 @@ class CalibrateObsWCS(object):
                             src_tbl, ref_tbl, ref_catalog, _, src_cat_fname, ref_cat_fname,
                             kernel_fwhm, extraction_result, report,
                             state)
+
+    def check_orientation(self, wcsprm, dict_rms, hdr, obsparams, setup_key, wcs_ref):
+        """Log the orientation of an accepted solution and check it against the field rotator.
+
+        With ``obsparams['orientation'] = {'key': <header keyword>, 'sign': +1 or -1}`` the
+        position angle predicted from the previous accepted solution of the same setup is
+        PA_ref + sign * (ROT - ROT_ref). A difference of more than 1 deg is reported. The
+        solution itself is not changed.
+        """
+        pa, parity = imtrans.get_position_angle(wcsprm)
+        parity_str = 'normal' if parity > 0 else 'reflected'
+        dict_rms['position_angle'] = pa
+
+        rot = None
+        orient_conf = obsparams.get('orientation') or {}
+        rot_key = orient_conf.get('key')
+        if rot_key and rot_key in hdr:
+            try:
+                rot = float(hdr[rot_key])
+            except (TypeError, ValueError):
+                rot = None
+
+        msg = f"  Orientation: {dict_rms.get('orientation', '-')}, PA {pa:.2f} deg, parity {parity_str}"
+        if rot is not None:
+            msg += f", {rot_key} {rot:.2f} deg"
+        if dict_rms.get('prior_used'):
+            msg += ", parity of the previous frame"
+        if not self._silent:
+            self._log.info(msg)
+
+        if rot is not None and wcs_ref is not None and wcs_ref.get('rot') is not None:
+            pred = wcs_ref['pa'] + float(orient_conf.get('sign', 1)) * (rot - wcs_ref['rot'])
+            diff = (pa - pred + 180.) % 360. - 180.
+            dict_rms['pa_vs_rotator'] = diff
+            if wcs_ref['parity'] != parity_str or abs(diff) > 1.:
+                self._log.warning(f"  Orientation differs from the rotator prediction: PA {pa:.2f} deg "
+                                  f"({parity_str}), expected {pred % 360.:.2f} deg ({wcs_ref['parity']}) "
+                                  f"from {rot_key}")
+
+        self._wcs_memory[setup_key] = {'parity': parity_str, 'pa': pa, 'rot': rot}
 
     def prepare_image_wcs(self, wcsprm, hdr, obsparams,
                         radius=-1.):

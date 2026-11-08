@@ -206,6 +206,11 @@ class FindWCS(object):
         """
         Run the plate-solve algorithm to find the best WCS transformation.
 
+        If ``config['wcs_prior']`` gives the parity of a validated solution of the same instrument
+        setup, that parity is searched first, and the search stops there if it gives an accepted
+        solution; otherwise both parities are searched. The prior only changes the order of the
+        search, never the acceptance.
+
         Parameters
         ----------
         input_wcsprm : WCS.wcs
@@ -215,9 +220,26 @@ class FindWCS(object):
         match_radius_px : float, optional
             The matching radius in pixels. Default is 1.
         """
+        prior_parity = (self.config.get('wcs_prior') or {}).get('parity')
+        if prior_parity and self.strict and len(self.search_hypotheses) > 1:
+            first = [h for h in self.search_hypotheses if h['parity'] == prior_parity]
+            if first:
+                self.log.debug(f"  Search the {prior_parity} parity of the previous solution first")
+                result = self._search(input_wcsprm, image, match_radius_px, first)
+                if result[0] and result[2].get('accepted'):
+                    result[2]['prior_used'] = True
+                    return result
+                self.log.debug("  No accepted solution with the previous parity, search all orientations")
+
+        result = self._search(input_wcsprm, image, match_radius_px, self.search_hypotheses)
+        result[2]['prior_used'] = False
+        return result
+
+    def _search(self, input_wcsprm, image, match_radius_px, hypotheses):
+        """Search the given orientation hypotheses; see find_wcs."""
         # Initialization
         self.image = image
-        rotations = self.rotations
+        rotations = np.array([hypothesis['matrix'] for hypothesis in hypotheses])
         self.match_radius_px = match_radius_px
         match_radius_limit_px = self.config['MATCH_RADIUS_LIM'] * match_radius_px
         num_ref_samples = self.config['NUM_REF_SAMPLES']  # Number of samples to draw from the reference catalog
@@ -273,7 +295,7 @@ class FindWCS(object):
             # Apply rotation matrix
             current_rotMatrix = rotations[rot_matrix_idx]
 
-            orientation = self.search_hypotheses[rot_matrix_idx]
+            orientation = hypotheses[rot_matrix_idx]
             self.log.debug(
                 f"{' ':<4}Testing orientation {rot_matrix_idx + 1}/{len(rotations)} "
                 f"({orientation['name']}, parity={orientation['parity']}, "
@@ -1791,6 +1813,13 @@ def calculate_angles(data_x, data_y):
     bc.clean_up(data_x, data_y, vec_x, vec_y)
 
     return angles
+
+
+def get_position_angle(wcsprm):
+    """Position angle (deg, east of north) of the detector +y axis and the parity (+1 / -1)."""
+    cd = get_effective_cd_matrix(wcsprm)
+    pa = np.degrees(np.arctan2(cd[0, 1], cd[1, 1]))
+    return float(pa), int(np.sign(np.linalg.det(cd)))
 
 
 def get_partner_orientation(orientation, hypotheses):

@@ -425,6 +425,9 @@ ckoir_param_cdk20 = {
     'binning': ('XBINNING', 'YBINNING'),  # binning in x/y
     'image_size_1x1': (9576, 6388),
     'pc_matrix': None,  # Preferred CCD PC matrix
+    # Field rotator angle (since 2026-10): the position angle of +y follows ROTATANG one to one
+    # (PA = ROTATANG - 180 deg for 2x2). Only used to check a solution, not to find it.
+    'orientation': {'key': 'ROTATANG', 'sign': 1},
 
     # Gain and readout noise taken from https://people.bsu.edu/rberring/observing-facilities/
     # for FLI PL16801 camera
