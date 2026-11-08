@@ -341,7 +341,7 @@ class CalibrateObsWCS(object):
             hdr = hdul[hdu_idx].header
             imgarr = hdul[hdu_idx].data.astype('float32')
 
-            if 'mask' in hdul or 'MASK' in hdul and obsparams['apply_mask']:
+            if ('mask' in hdul or 'MASK' in hdul) and obsparams['apply_mask']:
                 img_mask = hdul['MASK'].data.astype(bool)
 
         sat_id, _ = self._obsTable.get_satellite_id(hdr[obsparams['object']])

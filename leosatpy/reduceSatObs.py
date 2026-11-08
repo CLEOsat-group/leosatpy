@@ -234,6 +234,7 @@ class ReduceSatObs(object):
         self._failure_log_path = None
         self._temp_settings = None  # CCD temperature handling for the current instrument (None = off)
         self._night_index_cache = {}  # per-run calibration index {night root: {...}}
+        self._dark_scales = []  # fitted dark scales of the current filter (Part C)
         self._frame_meta_cache = {}  # per-run header metadata of raw calibration frames
 
         # Run full reduction
@@ -914,7 +915,41 @@ class ReduceSatObs(object):
             flat_corrected = False
             mflat = None
 
-            if master_dark is not None and self._config['DARK_CORRECT'] and ccd_expt in master_dark:
+            dark_scale = None
+            if (master_dark is not None and self._config['DARK_CORRECT'] and ccd_expt in master_dark
+                    and mbias_ccd is not None and self._config['BIAS_CORRECT']
+                    and self._dark_optimize_wanted(ccd_expt)):
+                # Part C: bias-free dark with a fitted scale per science frame
+                mdark, dark_is_pure, _ = master_dark[ccd_expt]
+                if isinstance(mbias_ccd, str):
+                    mbias_ccd = self.convert_fits_to_ccd(mbias_ccd, single=True)
+                if isinstance(mdark, str):
+                    mdark = self.convert_fits_to_ccd(mdark, single=True)
+                temp_mbias, temp_mdark = mbias_ccd, mdark
+                if ccd_is_cropped:
+                    temp_mbias = self.crop_image(img_ccd=temp_mbias, hdr=ccd_hdr,
+                                                 crop_section_unbinned=ccd_hdr[crop_key])
+                    temp_mdark = self.crop_image(img_ccd=temp_mdark, hdr=ccd_hdr,
+                                                 crop_section_unbinned=ccd_hdr[crop_key])
+                ccd, temp_mbias = check_shape(ccd, temp_mbias)
+                ccd, temp_mdark = check_shape(ccd, temp_mdark)
+                ccd = ccdproc.subtract_bias(ccd, temp_mbias)
+                pure = np.asarray(temp_mdark.data, dtype=float)
+                if not dark_is_pure:
+                    pure = pure - np.asarray(temp_mbias.data, dtype=float)
+                dark_scale, fitted, n_hot = self._fit_dark_scale(ccd.data, pure, ccd_expt,
+                                                                 float(temp_mdark.header['exptime']))
+                ccd.data = ccd.data - dark_scale * pure
+                ccd.header['DARKSCL'] = (round(float(dark_scale), 4), 'scale applied to the bias-free master dark')
+                ccd.header['DARKOPT'] = ('T' if fitted else 'F', 'dark scale fitted on hot pixels')
+                ccd.header['DARKNHP'] = (int(n_hot), 'hot pixels used for the dark scale')
+                if fitted:
+                    self._dark_scales.append(float(dark_scale))
+                add_key_to_hdr(ccd.header, 'MBIAS', get_filename(mbias_ccd))
+                add_key_to_hdr(ccd.header, 'MDARK', get_filename(mdark))
+                bias_corrected = bias_applied = dark_corrected = True
+
+            elif master_dark is not None and self._config['DARK_CORRECT'] and ccd_expt in master_dark:
                 mdark, dark_is_pure, is_nearest = master_dark[ccd_expt]
                 # 1. If Dark is "Pure" (Bias-subtracted), we MUST bias-subtract the Science frame now
                 if dark_is_pure and self._config['BIAS_CORRECT']:
@@ -1003,11 +1038,22 @@ class ReduceSatObs(object):
                                                crop_section_unbinned=ccd_hdr[crop_key])
                 ccd.mask = ccd_mask
 
+            # Part C: mask residual hot pixels of a mismatched or missing dark
+            if self._hotpix_mask_wanted(ccd_expt, dark_corrected):
+                hot = self._residual_hot_pixel_mask(ccd, ccd_expt, master_dark, mbias_ccd,
+                                                    ccd_is_cropped, ccd_hdr, crop_key)
+                if hot is not None:
+                    ccd.mask = hot if ccd.mask is None else (np.asarray(ccd.mask, dtype=bool) | hot)
+                    ccd.header['NHOTMASK'] = (int(hot.sum()), 'residual hot pixels added to the mask')
+
             # Cosmic ray correction
             if cosmic and gain is not None and self._config['CORRECT_GAIN']:
+                hot_mask = ccd.mask if 'NHOTMASK' in ccd.header else None
                 ccd = self.clean_cosmic_ray(ccd, ccd_mask_fname,
                                             mbox=mbox, rbox=rbox, gbox=gbox, sigclip=sigclip,
                                             cleantype=cleantype, cosmic_method=cosmic_method)
+                if hot_mask is not None:
+                    ccd.mask = hot_mask if ccd.mask is None else (np.asarray(ccd.mask, dtype=bool) | hot_mask)
 
             # Update header information and save the reduced file
             fbase = Path(filename).stem
@@ -1061,8 +1107,78 @@ class ReduceSatObs(object):
         if not self.silent and not self.verbose and n_files:
             # Add a new line after the progress bar
             sys.stdout.write('\n')
+        if self._dark_scales:
+            self._log.info(f"{' ':<4}Fitted dark scale: median {np.median(self._dark_scales):.3f} "
+                           f"({len(self._dark_scales)} frame(s), range {min(self._dark_scales):.3f}"
+                           f"-{max(self._dark_scales):.3f})")
+            self._dark_scales = []
         del files_list
         gc.collect()
+
+    def _dark_mismatch(self, exptime):
+        state = (self._calib_state or {}).get('dark', {}).get('science', {}).get(float(exptime), {})
+        return bool(state.get('temp_mismatch'))
+
+    def _dark_optimize_wanted(self, exptime):
+        """Fit the dark scale for this exposure? (DARK_OPTIMIZE: 'off', 'mismatch', 'always')."""
+        mode = str(self._config.get('DARK_OPTIMIZE', 'off')).strip().lower()
+        if mode == 'always':
+            return True
+        return mode == 'mismatch' and self._dark_mismatch(exptime)
+
+    def _hotpix_mask_wanted(self, exptime, dark_corrected):
+        """Mask residual hot pixels for this frame? (HOTPIX_MASK)"""
+        value = self._config.get('HOTPIX_MASK', False)
+        if value is not True and str(value).strip().lower() != 'true':
+            return False
+        if str(self._config.get('DARK_OPTIMIZE', 'off')).strip().lower() == 'always':
+            return True
+        return (not dark_corrected) or self._dark_mismatch(exptime)
+
+    def _fit_dark_scale(self, science, pure, sci_exptime, dark_exptime):
+        """Fitted scale of the bias-free dark for one frame; falls back to the exposure ratio."""
+        fallback = float(sci_exptime) / float(dark_exptime) if dark_exptime else 1.
+        idx = ctemp.hot_pixel_index(pure, nsigma=8.)
+        if len(idx) == 0:
+            return fallback, False, 0
+        k, kept = ctemp.fit_dark_scale(ctemp.local_excess(science, idx), ctemp.local_excess(pure, idx))
+        if ctemp.accept_dark_scale(k, kept, len(idx), pure.size):
+            return float(k), True, len(idx)
+        self._log.debug(f"{' ':<4}Dark scale not accepted (k={k}, kept={kept:.2f}, hot={len(idx)}); "
+                        f"using exposure ratio {fallback:g}")
+        return fallback, False, len(idx)
+
+    def _residual_hot_pixel_mask(self, ccd, exptime, master_dark, mbias, ccd_is_cropped, ccd_hdr, crop_key):
+        """Boolean mask of hot pixels that remain after the correction, or None.
+
+        Hot-pixel positions come from the dark of this exposure or, without one, from the
+        longest available science dark (positions do not depend on the temperature).
+        """
+        if not master_dark:
+            return None
+        key = float(exptime) if float(exptime) in master_dark else max(master_dark)
+        mdark, dark_is_pure, _ = master_dark[key]
+        if isinstance(mdark, str):
+            mdark = self.convert_fits_to_ccd(mdark, single=True)
+        if ccd_is_cropped:
+            mdark = self.crop_image(img_ccd=mdark, hdr=ccd_hdr, crop_section_unbinned=ccd_hdr[crop_key])
+        pure = np.asarray(mdark.data, dtype=float)
+        if not dark_is_pure:
+            if mbias is None or isinstance(mbias, str):
+                return None
+            bias = mbias
+            if ccd_is_cropped:
+                bias = self.crop_image(img_ccd=bias, hdr=ccd_hdr, crop_section_unbinned=ccd_hdr[crop_key])
+            if np.shape(bias.data) != pure.shape:
+                return None
+            pure = pure - np.asarray(bias.data, dtype=float)
+        if pure.shape != ccd.data.shape:
+            return None
+        idx = ctemp.hot_pixel_index(pure, nsigma=8.)
+        residual = ctemp.residual_hot_pixels(ccd.data, idx)
+        mask = np.zeros(ccd.data.shape, dtype=bool)
+        mask.ravel()[residual] = True
+        return mask
 
     def _add_calibration_provenance(self, header, exptime, image_filter, mbias, mdark, mflat):
         """Write temperature and source night of the applied masters to a reduced frame.
