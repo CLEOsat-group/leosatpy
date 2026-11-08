@@ -121,7 +121,12 @@ dk154_params = {
 
     # source extractor settings
     'saturation_limit': 6e5,
-    'apply_mask': True
+    'apply_mask': True,
+
+    # CCD temperature (LN2 cryostat). CCD_TEMP is often frozen at implausible values
+    # (e.g. 8.89, 21.14, -42.59), so it is only recorded, not used for matching.
+    'ccd_temperature': {'mode': 'record', 'set_key': None, 'ccd_key': 'CCD_TEMP',
+                        'unit': 'C', 'valid_range': (-135., -100.), 'tolerance': None},
 }
 
 # ChungBuk National University Observatory South Korea, CBNUO-JC
@@ -203,7 +208,11 @@ cbnuo_params = {
 
     # source extractor settings
     'saturation_limit': 6.5e4,
-    'apply_mask': True
+    'apply_mask': True,
+
+    # CCD temperature (thermoelectric cooler with setpoint)
+    'ccd_temperature': {'mode': 'match', 'set_key': 'SET-TEMP', 'ccd_key': 'CCD-TEMP',
+                        'unit': 'C', 'valid_range': (-60., 30.), 'tolerance': None},
 
 }
 
@@ -287,7 +296,11 @@ ca123dlrmkiii_param = {
 
     # source extractor settings
     'saturation_limit': 5e4,
-    'apply_mask': True
+    'apply_mask': True,
+
+    # CCD temperature (cooler with setpoint)
+    'ccd_temperature': {'mode': 'match', 'set_key': 'SETTEMP', 'ccd_key': 'CCD-TEMP',
+                        'unit': 'C', 'valid_range': (-130., 30.), 'tolerance': None},
 }
 
 # CDK24 telescope ckoirama
@@ -375,7 +388,11 @@ ckoir_param_cdk24 = {
 
     # source extractor settings
     'saturation_limit': 6.5e4,
-    'apply_mask': True
+    'apply_mask': True,
+
+    # CCD temperature (thermoelectric cooler with setpoint)
+    'ccd_temperature': {'mode': 'match', 'set_key': 'SET-TEMP', 'ccd_key': 'CCD-TEMP',
+                        'unit': 'C', 'valid_range': (-60., 30.), 'tolerance': None},
 }
 
 
@@ -462,7 +479,11 @@ ckoir_param_cdk20 = {
 
     # source extractor settings
     'saturation_limit': 6.5e4,
-    'apply_mask': True
+    'apply_mask': True,
+
+    # CCD temperature (thermoelectric cooler with setpoint)
+    'ccd_temperature': {'mode': 'match', 'set_key': 'SET-TEMP', 'ccd_key': 'CCD-TEMP',
+                        'unit': 'C', 'valid_range': (-60., 30.), 'tolerance': None},
 }
 
 # CTIO 0.9 m telescope
@@ -581,7 +602,11 @@ ctio_90cm_params = {
 
     # source extractor settings
     'saturation_limit': 6.5e4,
-    'apply_mask': True
+    'apply_mask': True,
+
+    # CCD temperature (LN2 dewar, CCDTEMP in Kelvin as string); only recorded
+    'ccd_temperature': {'mode': 'record', 'set_key': None, 'ccd_key': 'CCDTEMP',
+                        'unit': 'K', 'valid_range': (-130., -90.), 'tolerance': None},
 
 }
 
@@ -813,7 +838,11 @@ ouka_params = {
 
     # source extractor settings
     'saturation_limit': 6.5e4,
-    'apply_mask': True
+    'apply_mask': True,
+
+    # CCD temperature (thermoelectric cooler with setpoint)
+    'ccd_temperature': {'mode': 'match', 'set_key': 'SET-TEMP', 'ccd_key': 'CCD-TEMP',
+                        'unit': 'C', 'valid_range': (-60., 30.), 'tolerance': None},
 
 }
 
@@ -897,7 +926,11 @@ fut_params = {
 
     # source extractor settings
     'saturation_limit': 'SATLEVEL',
-    'apply_mask': False
+    'apply_mask': False,
+
+    # CCD temperature (measured only, no setpoint keyword); only recorded
+    'ccd_temperature': {'mode': 'record', 'set_key': None, 'ccd_key': 'C-TEMP',
+                        'unit': 'C', 'valid_range': (-60., 30.), 'tolerance': None},
 }
 
 # currently available telescopes

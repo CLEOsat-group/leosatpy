@@ -64,6 +64,7 @@ except ModuleNotFoundError:
     from utils import dataset
     from utils import tables
     from utils.compat import make_background2d
+    from utils import calib_temperature as ctemp
     from utils.version import __version__
     from utils import base_conf as bc
 else:
@@ -71,6 +72,7 @@ else:
     from leosatpy.utils import dataset
     from leosatpy.utils import tables
     from leosatpy.utils.compat import make_background2d
+    from leosatpy.utils import calib_temperature as ctemp
     from leosatpy.utils.version import __version__
     from leosatpy.utils import base_conf as bc
 
@@ -202,6 +204,9 @@ class ReduceSatObs(object):
         self._master_bias_info = {}
         self._master_dark_info = {}
         self._master_flat_info = {}
+        self._master_dark_meta = {}  # {dark product: {'exp', 'bias_product', 'dfilter'}}
+        self._master_bias_dfilter = {}  # {bias product: dfilter selecting its staged frames}
+        self._master_bias_status = {}  # {bias product: master status set by adoption}
         self._dark_exptimes = []
         self._selected_calibration_source_folder = None
         self._force_reduction = args.force_reduction
@@ -224,6 +229,7 @@ class ReduceSatObs(object):
         self._master_darks = None  # loaded master darks for science reduction; assigned from CalibrationPrepResult
         self._reduction_failures = []
         self._failure_log_path = None
+        self._temp_settings = None  # CCD temperature handling for the current instrument (None = off)
 
         # Run full reduction
         self.run_full_reduction(silent=silent)
@@ -273,6 +279,7 @@ class ReduceSatObs(object):
             self._instrument = inst
             self._telescope = inst_data[inst]['telescope']
             self._obsparams = inst_data[inst]['obsparams']
+            self._temp_settings = ctemp.temperature_settings(self._obsparams, self._config)
 
             # Get valid science observations from data set
             ds.get_valid_sci_observations(inst, prog_typ="reduceSatObs")
@@ -2214,6 +2221,9 @@ class ReduceSatObs(object):
         # Dark entries: replace entirely (probe has the authoritative availability result)
         calib_state['dark']['science'].update(preview['dark']['science'])
         calib_state['dark']['flat'].update(preview['dark']['flat'])
+        calib_state['bias']['product'] = 'default'
+        for filt_data in calib_state['flat'].values():
+            filt_data['bias_product'] = 'default'
         self._log.debug(f"{' ':<4}Calibration state after selection — "
                         f"bias.available={calib_state['bias']['available']}, "
                         f"flat={[(f, v['available']) for f, v in calib_state['flat'].items()]}, "
@@ -2224,8 +2234,12 @@ class ReduceSatObs(object):
         ddark = selected_probe['master_dark_info']
         dflat = selected_probe['master_flat_info']
         dark_exptimes = sorted(ddark.keys())
-        self._master_bias_info = dbias
+        # Whole-night selection: one bias product shared by science and flats, darks keyed by exposure
+        self._master_bias_info = {'default': dbias} if dbias else {}
+        self._master_bias_dfilter = {}
+        self._master_bias_status = {}
         self._master_dark_info = ddark
+        self._master_dark_meta = {exp: {'exp': exp, 'bias_product': 'default', 'dfilter': None} for exp in ddark}
         self._master_flat_info = dflat
         self._dark_exptimes = dark_exptimes
         def _format_target(value):
@@ -3449,14 +3463,52 @@ class ReduceSatObs(object):
 
         gain, readnoise = self._extract_gain_readnoise(ic_all)
         has_multiple_amps = obsparams['multiple_amps']
-        dbias = self._master_bias_info
-        ddark = self._master_dark_info
+        dbias = self._master_bias_info  # {bias product: [path, create]}
+        ddark = self._master_dark_info  # {dark product: [path, create]}
         dflat = self._master_flat_info
+        dark_meta = self._master_dark_meta  # {dark product: {'exp', 'bias_product', 'dfilter'}}
         dark_state = calib_state['dark']  # shorthand — reads/writes in-place
+        sci_bias_product = calib_state['bias'].get('product', 'default')
 
-        # Create or load master bias
-        ccd_master_bias = None
-        if requirement['user_preferences']['BIAS_CORRECT'] and not dbias:
+        # Create or load the master bias products (science bias, and flat biases at other temperatures)
+        bias_ccds = {}
+        if requirement['user_preferences']['BIAS_CORRECT']:
+            for bias_product, (master_bias, create_bias) in dbias.items():
+                bias_dfilter = self._master_bias_dfilter.get(bias_product)
+                try:
+                    if create_bias:
+                        status = 'overwritten_from_raw' if Path(master_bias).exists() else 'created_from_raw'
+                        ccd_bias = self.create_master_bias(files_list=ic_all,
+                                                           obsparams=obsparams,
+                                                           mbias_fname=master_bias,
+                                                           multiple_amps=has_multiple_amps,
+                                                           gain=gain,
+                                                           readnoise=readnoise,
+                                                           method=self._config['COMBINE_METHOD_BIAS'],
+                                                           dfilter=bias_dfilter)
+                    else:
+                        # Keep an adoption status set by the adoption step
+                        status = (self._master_bias_status.get(bias_product)
+                                  or (calib_state['bias'].get('master_status')
+                                      if bias_product == sci_bias_product else None)
+                                  or 'loaded_existing_science_date_master')
+                        self._log.debug(f"{' ':<4}Loading master bias file: {os.path.basename(master_bias)}")
+                        ccd_bias = self.convert_fits_to_ccd(master_bias, single=True)
+                    if ccd_bias is None or (isinstance(ccd_bias, list) and not ccd_bias):
+                        raise RuntimeError(f'master bias could not be read: {master_bias}')
+                except Exception as exc:
+                    if bias_product == sci_bias_product:
+                        calib_state['bias']['master_status'] = 'failed_build'
+                    raise MasterBuildError(f'Bias build failed: {exc}') from exc
+                bias_ccds[bias_product] = ccd_bias
+                if bias_product == sci_bias_product:
+                    calib_state['bias']['available'] = True
+                    calib_state['bias']['created'] = create_bias
+                    calib_state['bias']['master_path'] = Path(master_bias)
+                    calib_state['bias']['master_status'] = status
+
+        ccd_master_bias = bias_ccds.get(sci_bias_product)
+        if requirement['user_preferences']['BIAS_CORRECT'] and ccd_master_bias is None:
             # Bias requested but unavailable; the probe only allows this when the
             # science darks cover every science exposure.
             self._log.debug(f"{' ':<4}No master bias available; science darks are the correction baseline")
@@ -3464,34 +3516,6 @@ class ReduceSatObs(object):
             calib_state['bias']['created'] = False
             calib_state['bias']['master_path'] = None
             calib_state['bias']['master_status'] = 'skipped_unavailable_dark_baseline'
-        elif requirement['user_preferences']['BIAS_CORRECT']:
-            master_bias = dbias[0]
-            create_bias = dbias[1]
-            try:
-                if create_bias:
-                    status = 'overwritten_from_raw' if Path(master_bias).exists() else 'created_from_raw'
-                    ccd_master_bias = self.create_master_bias(files_list=ic_all,
-                                                              obsparams=obsparams,
-                                                              mbias_fname=master_bias,
-                                                              multiple_amps=has_multiple_amps,
-                                                              gain=gain,
-                                                              readnoise=readnoise,
-                                                              method=self._config['COMBINE_METHOD_BIAS'])
-                else:
-                    # Keep an adoption status set by _adopt_fallback_master_products
-                    status = calib_state['bias'].get('master_status') or 'loaded_existing_science_date_master'
-                    self._log.debug(f"{' ':<4}Loading master bias file: {os.path.basename(master_bias)}")
-                    ccd_master_bias = self.convert_fits_to_ccd(master_bias, single=True)
-                if ccd_master_bias is None:
-                    raise RuntimeError(f'master bias could not be read: {master_bias}')
-            except Exception as exc:
-                calib_state['bias']['master_status'] = 'failed_build'
-                raise MasterBuildError(f'Bias build failed: {exc}') from exc
-            # Write back into calib_state
-            calib_state['bias']['available'] = ccd_master_bias is not None
-            calib_state['bias']['created'] = create_bias
-            calib_state['bias']['master_path'] = Path(master_bias)
-            calib_state['bias']['master_status'] = status
 
         # Identify pure-dark exposures (need bias removal)
         # A dark that will be SCALED (exposure mismatch beyond tolerance, in EITHER
@@ -3499,8 +3523,8 @@ class ReduceSatObs(object):
         # impure since their bias cancels in the science subtraction. See
         # _dark_needs_bias_removal. (C1 fix: previously only actual>target was flagged,
         # so scale-up darks were subtracted with their bias pedestal scaled — incorrect.)
-        pure_dark_exposures = {
-            info['actual_exposure']
+        pure_dark_products = {
+            info.get('product', info['actual_exposure'])
             for consumer in ('science', 'flat')
             for info in dark_state[consumer].values()
             if self._dark_needs_bias_removal(info)
@@ -3509,27 +3533,32 @@ class ReduceSatObs(object):
         # Build only darks referenced by available entries
         actual_dark_ccds = {}
         dark_preexisting_targets = {}
-        for dark_exptime, dval in ddark.items():
+        for dark_product, dval in ddark.items():
             master_dark = dval[0]
             create_dark = dval[1]
-            dark_preexisting_targets[dark_exptime] = Path(master_dark).exists()
+            meta = dark_meta.get(dark_product, {})
+            dark_exptime = float(meta.get('exp', dark_product))
+            dark_preexisting_targets[dark_product] = Path(master_dark).exists()
             is_referenced = any(
-                info.get('available') and info.get('actual_exposure') == dark_exptime
+                info.get('available') and info.get('product', info.get('actual_exposure')) == dark_product
                 for consumer in ('science', 'flat')
                 for info in dark_state[consumer].values()
             )
-            if not is_referenced and dark_exptime not in pure_dark_exposures:
+            if not is_referenced and dark_product not in pure_dark_products:
                 self._log.debug(f"{' ':<4}Dark {dark_exptime:g}s: not referenced, skipping")
                 continue
-            mbias_for_dark = ccd_master_bias if dark_exptime in pure_dark_exposures else None
+            mbias_for_dark = None
+            if dark_product in pure_dark_products:
+                mbias_for_dark = bias_ccds.get(meta.get('bias_product', sci_bias_product))
             if create_dark:
                 try:
-                    actual_dark_ccds[dark_exptime] = self.create_master_dark(
+                    actual_dark_ccds[dark_product] = self.create_master_dark(
                         files_list=ic_all, obsparams=obsparams,
                         mdark_fname=master_dark, exptime=dark_exptime,
                         mbias=mbias_for_dark, multiple_amps=has_multiple_amps,
                         gain=gain, readnoise=readnoise,
-                        method=self._config['COMBINE_METHOD_DARK'])
+                        method=self._config['COMBINE_METHOD_DARK'],
+                        dfilter=meta.get('dfilter'))
                 except Exception as exc:
                     raise MasterBuildError(
                         f'Dark build failed for exposure {dark_exptime:g}s: {exc}'
@@ -3537,7 +3566,7 @@ class ReduceSatObs(object):
             else:
                 self._log.debug(f"{' ':<4}Loading master dark file: {os.path.basename(master_dark)}")
                 try:
-                    actual_dark_ccds[dark_exptime] = self.convert_fits_to_ccd(master_dark, single=True)
+                    actual_dark_ccds[dark_product] = self.convert_fits_to_ccd(master_dark, single=True)
                 except Exception as exc:
                     raise MasterBuildError(
                         f'Dark load failed for exposure {dark_exptime:g}s: {exc}'
@@ -3554,20 +3583,21 @@ class ReduceSatObs(object):
                         info['master_status'] = 'skipped_optional_unavailable_bias_fallback'
                     continue
                 actual_exp = info.get('actual_exposure')
-                if actual_exp is None or actual_exp not in actual_dark_ccds:
+                dark_product = info.get('product', actual_exp)
+                if actual_exp is None or dark_product not in actual_dark_ccds:
                     self._log.warning(f"{' ':<4}Dark {consumer}:{target:g}: available but not built")
                     # Downgrade availability in calib_state
                     info['available'] = False
                     continue
-                ccd_mdark = actual_dark_ccds[actual_exp]
+                ccd_mdark = actual_dark_ccds[dark_product]
                 bias_corr_in_dark = ccd_mdark.header.get('BIASCORR', False)
                 master_darks[dark_key][float(target)] = (ccd_mdark, bias_corr_in_dark, bool(info['is_exact']))
                 # Write back: built = True
-                info['created'] = ddark[actual_exp][1] if actual_exp in ddark else False
-                info['master_path'] = Path(ddark[actual_exp][0]) if actual_exp in ddark else None
+                info['created'] = ddark[dark_product][1] if dark_product in ddark else False
+                info['master_path'] = Path(ddark[dark_product][0]) if dark_product in ddark else None
                 if info['created']:
                     info['master_status'] = (
-                        'overwritten_from_raw' if dark_preexisting_targets.get(actual_exp,
+                        'overwritten_from_raw' if dark_preexisting_targets.get(dark_product,
                                                                                False) else 'created_from_raw'
                     )
                 elif info.get('master_status') is None:
@@ -3595,14 +3625,27 @@ class ReduceSatObs(object):
             create_flat = dflat[filt_name][1]
             if create_flat:
                 flat_status = 'overwritten_from_raw' if Path(master_flat).exists() else 'created_from_raw'
+                flat_info = calib_state['flat'][filt_name]
+                flat_bias = bias_ccds.get(flat_info.get('bias_product', sci_bias_product))
+                # Flat-darks: per filter when the flats of a pass have different temperatures
+                flat_darks = master_darks['flat_dark']
+                if flat_info.get('flat_dark_products') is not None:
+                    flat_darks = {}
+                    for exp, dark_product in flat_info['flat_dark_products'].items():
+                        if dark_product in actual_dark_ccds:
+                            ccd_fd = actual_dark_ccds[dark_product]
+                            is_exact = abs(float(dark_meta.get(dark_product, {}).get('exp', exp)) - float(exp)) \
+                                <= float(self._config.get('DARK_TOLERANCE', 0))
+                            flat_darks[float(exp)] = (ccd_fd, ccd_fd.header.get('BIASCORR', False), is_exact)
                 try:
                     self.create_master_flat(files_list=ic_all, obsparams=obsparams,
                                             mflat_fname=master_flat, flat_filter=filt_name,
-                                            mbias=ccd_master_bias,
-                                            mdark=master_darks['flat_dark'],
+                                            mbias=flat_bias,
+                                            mdark=flat_darks,
                                             multiple_amps=has_multiple_amps,
                                             gain=gain, readnoise=readnoise,
-                                            method=self._config['COMBINE_METHOD_FLAT'])
+                                            method=self._config['COMBINE_METHOD_FLAT'],
+                                            dfilter=flat_info.get('dfilter'))
                 except Exception as exc:
                     calib_state['flat'][filt_name]['master_status'] = 'failed_build'
                     raise MasterBuildError(
@@ -3651,7 +3694,8 @@ class ReduceSatObs(object):
         dflat = self._master_flat_info
 
         # Hard: bias — or, when no bias is used, a science dark for every exposure
-        if requirement['user_preferences']['BIAS_CORRECT'] and not dbias:
+        sci_bias = dbias.get(calib_state['bias'].get('product', 'default'))
+        if requirement['user_preferences']['BIAS_CORRECT'] and not sci_bias:
             sci_darks = calib_state['dark']['science']
             uncovered = [
                 float(exp) for exp in requirement['science_exposure_times']
@@ -3660,7 +3704,7 @@ class ReduceSatObs(object):
             if uncovered:
                 fatal_missing.extend(f'dark-baseline:{exp:g}' for exp in sorted(set(uncovered)))
         elif requirement['user_preferences']['BIAS_CORRECT']:
-            bias_path = calib_state['bias'].get('master_path') or Path(dbias[0])
+            bias_path = calib_state['bias'].get('master_path') or Path(sci_bias[0])
             bias_path = Path(bias_path)
             if not bias_path.exists():
                 fatal_missing.append('bias')
@@ -3685,7 +3729,7 @@ class ReduceSatObs(object):
                 if not info.get('available'):
                     optional_missing.append(f'science-dark:{target:g}')
                 else:
-                    actual = info.get('actual_exposure')
+                    actual = info.get('product', info.get('actual_exposure'))
                     if actual is not None and actual in ddark:
                         dark_path = Path(ddark[actual][0])
                         if not dark_path.exists():
@@ -3697,7 +3741,7 @@ class ReduceSatObs(object):
                 if not info.get('available'):
                     optional_missing.append(f'flat-dark:{target:g}')
                 else:
-                    actual = info.get('actual_exposure')
+                    actual = info.get('product', info.get('actual_exposure'))
                     if actual is not None and actual in ddark:
                         dark_path = Path(ddark[actual][0])
                         if not dark_path.exists():
@@ -3857,11 +3901,15 @@ class ReduceSatObs(object):
 
         return file_list
 
-    def prepare_fits_files(self, file_names, telescope, obsparams, imagetyp):
+    def prepare_fits_files(self, file_names, telescope, obsparams, imagetyp, extra_keys=None):
         """ Create uniform data structure.
 
         Create uniform data structure using the image type,
         telescope and known parameter to update the header values.
+
+        ``extra_keys`` ({key: value}) are written to every output header, e.g. the
+        calibration source of staged frames. The CCD temperature provenance
+        (TEMPREF/TEMPOK/TEMPVAL) is written when temperature handling is active.
 
         """
         dates = []
@@ -3897,6 +3945,12 @@ class ReduceSatObs(object):
             if nhdus > 1:
                 istart = 1
 
+            # CCD temperature provenance; primary header first, then the first extension
+            temp_cards = {}
+            if self._temp_settings is not None:
+                ext_hdr = hdul[1].header if nhdus > 1 else None
+                temp_cards = ctemp.temperature_header_cards(prim_hdr, self._temp_settings, ext_hdr)
+
             # Loop from first-data to last HDU
             hdu_indices = list(range(nhdus))[istart:]
             for i in hdu_indices:
@@ -3916,6 +3970,11 @@ class ReduceSatObs(object):
 
                 # Check the imagetyp key in header and set
                 new_hdr['IMAGETYP'] = imagetyp
+
+                for key, card in temp_cards.items():
+                    new_hdr[key] = card
+                for key, value in (extra_keys or {}).items():
+                    new_hdr[key] = value
 
                 # Special case GROND NIR obs
                 if i == 0 and telescope == 'GROND_IRIM':
