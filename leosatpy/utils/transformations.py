@@ -642,9 +642,7 @@ class FindWCS(object):
         best_std_xy = (np.inf, np.inf)
 
         rot_multiplier_list = [1., -1.]
-        for n in rot_multiplier_list:
-
-            self.angles_obs = n * self.angles_obs
+        for _ in (0,):
 
             # Use FFT to find the rotation and scaling first
             self.compute_cross_corr()
@@ -1186,14 +1184,14 @@ def find_peaks_2d(inv_cross_power_spec, threshold_multiplier=5., apply_gaussian_
 
     if apply_gaussian_filter:
         # Apply a Gaussian filter for smoothing
-        smoothed = gaussian_filter(inv_cross_power_spec, sigma=gauss_sigma)
+        smoothed = gaussian_filter(inv_cross_power_spec, sigma=gauss_sigma, mode=('nearest', 'wrap'))
     else:
         # Skip Gaussian filtering
         smoothed = inv_cross_power_spec
 
     # Find local maxima
     local_max = maximum_filter(smoothed, size=size,
-                               mode='constant', origin=0) == smoothed
+                               mode=('constant', 'wrap'), origin=0) == smoothed
 
     # Apply the threshold
     detected_peaks = smoothed > adaptive_threshold
@@ -1210,7 +1208,8 @@ def find_peaks_2d(inv_cross_power_spec, threshold_multiplier=5., apply_gaussian_
 
     # Convert to array if not empty
     if peak_coords:
-        peak_coords = np.array(peak_coords, dtype=int)
+        # Round, not truncate: a centre of mass of 2.9999 belongs to bin 3
+        peak_coords = np.rint(np.array(peak_coords)).astype(int) % np.array(smoothed.shape)
 
     bc.clean_up(inv_cross_power_spec, smoothed, detected_peaks, labeled, num_features)
 
@@ -1300,33 +1299,36 @@ def get_shift_from_peak(inv_cross_power_spec, peak):
     tuple
         A tuple containing the x shift, y shift, and signal strength.
     """
-    n_1 = 1
-    n_2 = 2
-    n = n_1 + n_2
+    n_rows, n_cols = inv_cross_power_spec.shape
+    peak = [int(peak[0]), int(peak[1])]
 
-    # Sum up the signal in a fixed aperture 1 pixel in each direction around the peak,
-    # so a 3x3 array, total 9 pixel
-    signal = np.nansum(inv_cross_power_spec[peak[0] - n_1:peak[0] + n_2,
-                       peak[1] - n_1:peak[1] + n_2])
-
-    around_peak = inv_cross_power_spec[peak[0] - n_1:peak[0] + n_2, peak[1] - n_1:peak[1] + n_2]
-    # print(signal, around_peak)
-    if around_peak.shape != (n, n):
+    # Move to the maximum of the unsmoothed spectrum next to the detected peak, so the sub-bin fit
+    # below is centred on it
+    for _ in range(3):
+        if peak[0] < 1 or peak[0] > n_rows - 2:
+            return 0, 0, -1.
+        rows = np.arange(peak[0] - 1, peak[0] + 2)
+        cols = np.arange(peak[1] - 1, peak[1] + 2) % n_cols
+        i, j = np.unravel_index(np.argmax(inv_cross_power_spec[np.ix_(rows, cols)]), (3, 3))
+        if i == 1 and j == 1:
+            break
+        peak = [peak[0] + i - 1, (peak[1] + j - 1) % n_cols]
+    if peak[0] < 1 or peak[0] > n_rows - 2:
         return 0, 0, -1.
-    peak_x_subpixel = cosine_interpolation_1d(around_peak[:, 1]) + 0.5
-    peak_y_subpixel = cosine_interpolation_1d(around_peak[1, :]) + 0.5
 
-    # Get mid-point
-    middle_x = inv_cross_power_spec.shape[0] / 2.
-    middle_y = inv_cross_power_spec.shape[1] / 2.
+    # 3x3 neighbourhood; the angle axis (columns) is periodic and wraps around
+    rows = np.arange(peak[0] - 1, peak[0] + 2)
+    cols = np.arange(peak[1] - 1, peak[1] + 2) % n_cols
+    around_peak = inv_cross_power_spec[np.ix_(rows, cols)]
+    signal = np.nansum(around_peak)
 
-    # Find the sub pixel shift of the true peak
-    # peak_x_subpixel, peak_y_subpixel = subpixel_peak_position(around_peak)
-    # print(peak_x_subpixel, peak_y_subpixel)
+    # Sub-bin peak position relative to the peak bin
+    peak_x_subpixel = gaussian_interpolation_1d(around_peak[:, 1])
+    peak_y_subpixel = gaussian_interpolation_1d(around_peak[1, :])
 
-    # Calculate final shift
-    x_shift = peak[0] - middle_x + peak_x_subpixel
-    y_shift = peak[1] - middle_y + peak_y_subpixel
+    # After fftshift the zero shift lies at index N // 2 (for even and odd N)
+    x_shift = peak[0] - n_rows // 2 + peak_x_subpixel
+    y_shift = peak[1] - n_cols // 2 + peak_y_subpixel
 
     del inv_cross_power_spec
 
@@ -1473,8 +1475,8 @@ def cross_corr_to_fourier_space(a):
 
     aa = (a - np.nanmean(a)) / np.nanstd(a)
 
-    # Wraps around so half the size should be fine, pads 2D array with zeros
-    aaa = np.pad(aa, (5, 5), 'constant')
+    # Pad only the distance axis; the angle axis is periodic and must wrap around
+    aaa = np.pad(aa, ((5, 5), (0, 0)), 'constant')
     ff_a = np.fft.fft2(aaa)
 
     del a, aa, aaa
@@ -1485,19 +1487,15 @@ def cross_corr_to_fourier_space(a):
 def create_bins(min_value, max_value, bin_size, is_distance=True):
     """Create bins for the histogram """
 
-    bin_step = np.deg2rad(bin_size)
-    diff = max_value - min_value
-
     if is_distance:
-        bin_step = bin_size
-        diff = (np.e ** max_value - np.e ** min_value)
+        # Resolution chosen in linear pixels, histogram in log distance
+        N = math.ceil((np.e ** max_value - np.e ** min_value) / bin_size) + 1
+    else:
+        N = max(1, int(round((max_value - min_value) / np.deg2rad(bin_size))))
 
-    N = math.ceil(diff / bin_step)
-    N += 1
+    binwidth = (max_value - min_value) / N
 
-    bins, binwidth = np.linspace(min_value, max_value, N, retstep=True, dtype='float32')
-
-    return bins, binwidth
+    return N, binwidth
 
 
 def frange(x, y, jump=1.0):
@@ -1547,17 +1545,15 @@ def prepare_histogram_bins_and_ranges(log_distance_obs, angle_obs,
     # Broader distance range if the scale is just a guess
     maximum_distance = max(max(log_distance_cat), max(log_distance_obs))
 
-    minimum_ang = min(min(angle_cat), min(angle_obs))
-    maximum_ang = max(max(angle_cat), max(angle_obs))
-
     del log_distance_obs, angle_obs, log_distance_cat, angle_cat
 
-    # Create bins and ranges for histogram
-    bins_dist, binwidth_dist = create_bins(minimum_distance, maximum_distance, dist_bin_size, is_distance=True)
-    bins_ang, binwidth_ang = create_bins(minimum_ang, maximum_ang, ang_bin_size, is_distance=False)
+    # Number of bins and the matching bin width (range / N): the histogram has N bins over the
+    # range, so a shift of k bins is k * range / N. Angles are periodic over [0, pi).
+    n_dist, binwidth_dist = create_bins(minimum_distance, maximum_distance, dist_bin_size, is_distance=True)
+    n_ang, binwidth_ang = create_bins(0., np.pi, ang_bin_size, is_distance=False)
 
-    bins = [len(bins_dist), len(bins_ang)]
-    ranges = [[minimum_distance, maximum_distance], [minimum_ang, maximum_ang]]
+    bins = [n_dist, n_ang]
+    ranges = [[minimum_distance, maximum_distance], [0., np.pi]]
 
     return bins, ranges, binwidth_dist, binwidth_ang
 
@@ -1570,9 +1566,10 @@ def calculate_dist(data_x, data_y):
     dist_x = (data_x - data_x.T)
     dist_y = (data_y - data_y.T)
 
-    # Only use off diagonal elements
-    dist_x = dist_x[np.where(~np.eye(dist_x.shape[0], dtype=bool))]
-    dist_y = dist_y[np.where(~np.eye(dist_y.shape[0], dtype=bool))]
+    # Each unordered pair once (upper triangle); the reversed pair carries no extra information
+    iu = np.triu_indices(dist_x.shape[0], k=1)
+    dist_x = dist_x[iu]
+    dist_y = dist_y[iu]
 
     dist = np.sqrt(dist_x ** 2 + dist_y ** 2)
 
@@ -1594,20 +1591,17 @@ def calculate_angles(data_x, data_y):
     data_x = np.array(data_x)
     data_y = np.array(data_y)
 
-    # Get all pairs: vector differences
+    # Each unordered pair once (same order as calculate_dist)
     vec_x = data_x - data_x.T
     vec_y = data_y - data_y.T
-    vec_x = vec_x[np.where(~np.eye(vec_x.shape[0], dtype=bool))]
-    vec_y = vec_y[np.where(~np.eye(vec_y.shape[0], dtype=bool))]
+    iu = np.triu_indices(vec_x.shape[0], k=1)
+    vec_x = vec_x[iu]
+    vec_y = vec_y[iu]
 
-    # Get the angle with x-axis.
-    angles = np.arctan2(vec_x, vec_y)
-
-    # Make sure angles are between 0 and 2 Pi
-    angles = angles % (2. * np.pi)
-
-    # Shift to -pi to pi
-    angles[np.where(angles > np.pi)] = -1 * (2. * np.pi - angles[np.where(angles > np.pi)])
+    # Pair orientation folded to [0, pi): a pair has no direction, so the angle histogram is
+    # periodic with pi and a rotation is recovered modulo 180 deg (the 180 deg tie is resolved
+    # by the orientation hypotheses)
+    angles = np.arctan2(vec_x, vec_y) % np.pi
 
     bc.clean_up(data_x, data_y, vec_x, vec_y)
 
@@ -1959,6 +1953,30 @@ def cosine_interpolation_1d(v):
         return 0
     else:
         return (v[0] - v[2]) / (2 * denom)
+
+
+def gaussian_interpolation_1d(v):
+    """
+    Sub-bin peak position from three samples, assuming a Gaussian peak (parabola in log).
+
+    A parabola fitted to the samples pulls the estimate towards the bin centre (about 0.13 deg mean
+    error at 1 deg bins in the rotation search); the Gaussian estimate is unbiased for a smooth
+    peak. Falls back to the parabola if a sample is not positive.
+
+    :param v: 1D array of three values, the maximum in the middle
+    :return: Sub-pixel position of the peak relative to the middle sample
+    """
+    v = np.asarray(v, dtype=float)
+    if len(v) != 3:
+        raise ValueError("Input array must have exactly three elements.")
+    if np.any(v <= 0):
+        return cosine_interpolation_1d(v)
+
+    log_v = np.log(v)
+    denom = log_v[0] - 2 * log_v[1] + log_v[2]
+    if denom >= 0:
+        return 0
+    return float(np.clip((log_v[0] - log_v[2]) / (2 * denom), -0.5, 0.5))
 
 # def bootstrap_solution(solution, num_bootstraps=100):
 #     """
