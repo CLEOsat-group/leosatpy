@@ -131,9 +131,25 @@ class FindWCS(object):
 
         self.orientation_hypotheses = build_orientation_hypotheses(
             config['pc_matrix'])
+
+        # 'parity': one search per parity; the FFT gives the rotation modulo 180 deg, and both
+        # branches are tested, so the four named orientations are covered with half the FFTs.
+        # 'legacy': search all four orientations separately (version 0.5.x).
+        self.search_mode = str(config.get('WCS_SEARCH', 'parity')).strip().strip("'\"").lower()
+        if self.search_mode not in ('parity', 'legacy'):
+            self.log.warning(f"Unknown WCS_SEARCH '{self.search_mode}', using 'parity'")
+            self.search_mode = 'parity'
+        if self.search_mode == 'parity':
+            self.search_hypotheses = []
+            for hypothesis in self.orientation_hypotheses:
+                if hypothesis['parity'] not in [h['parity'] for h in self.search_hypotheses]:
+                    self.search_hypotheses.append(hypothesis)
+        else:
+            self.search_hypotheses = list(self.orientation_hypotheses)
+
         # Backwards-compatible matrix view used by the existing search loop.
         self.rotations = np.array([hypothesis['matrix']
-                                   for hypothesis in self.orientation_hypotheses])
+                                   for hypothesis in self.search_hypotheses])
 
         self.apply_rot = True
         self.match_radius_px = 5  # Default value
@@ -246,7 +262,7 @@ class FindWCS(object):
             # Apply rotation matrix
             current_rotMatrix = rotations[rot_matrix_idx]
 
-            orientation = self.orientation_hypotheses[rot_matrix_idx]
+            orientation = self.search_hypotheses[rot_matrix_idx]
             self.log.debug(
                 f"{' ':<4}Testing orientation {rot_matrix_idx + 1}/{len(rotations)} "
                 f"({orientation['name']}, parity={orientation['parity']}, "
@@ -303,6 +319,11 @@ class FindWCS(object):
                     # Unpack and compute metrics
                     Nobs_matched, score, wcsprm_out, result_info, src_cat_match, ref_cat_match = sample_result
 
+                    # In the parity search the 180 deg branch is the partner orientation
+                    found_orientation = orientation
+                    if result_info[5]:
+                        found_orientation = get_partner_orientation(orientation, self.orientation_hypotheses)
+
                     completeness = Nobs_matched / Nobs_current
 
                     self.log.debug(
@@ -316,9 +337,10 @@ class FindWCS(object):
                     # Store the possible solution
                     possible_solutions.append({
                         'rotation_idx': rot_matrix_idx,
-                        'orientation_name': orientation['name'],
-                        'parity': orientation['parity'],
-                        'orientation_determinant': orientation['determinant'],
+                        'orientation_name': found_orientation['name'],
+                        'parity': found_orientation['parity'],
+                        'orientation_determinant': found_orientation['determinant'],
+                        'rotation_deg': np.degrees(result_info[4]),
                         'method': 'fft',
                         'Nobs_matched': Nobs_matched,
                         'score': score,
@@ -640,8 +662,8 @@ class FindWCS(object):
         best_match_radius = self.match_radius_px
         best_rms = np.inf
         best_std_xy = (np.inf, np.inf)
+        best_is_partner = False
 
-        rot_multiplier_list = [1., -1.]
         for _ in (0,):
 
             # Use FFT to find the rotation and scaling first
@@ -661,9 +683,16 @@ class FindWCS(object):
             if result_signal == 0. or result_scaling < 0.9 or 1.1 < result_scaling:
                 continue
 
-            # Test for reflection
-            for m in rot_multiplier_list:
-                result_rot_rad = m * result_scale_rot[2]
+            # Rotation candidates as (angle, is the 180 deg partner orientation).
+            # The FFT shift is the change of the pair angle (measured from the y-axis), so the
+            # detector rotation is its negative. It is known modulo 180 deg: 'parity' tests both
+            # branches; 'legacy' tests both signs (version 0.5.x).
+            if self.search_mode == 'parity':
+                candidates = [(-result_scale_rot[2], False), (-result_scale_rot[2] + np.pi, True)]
+            else:
+                candidates = [(result_scale_rot[2], False), (-result_scale_rot[2], False)]
+
+            for result_rot_rad, is_partner in candidates:
 
                 # Apply rotation and scale
                 rot_mat = rotation_to_matrix(result_rot_rad)
@@ -688,12 +717,15 @@ class FindWCS(object):
                                        wcsprm_in=wcsprm_shifted,
                                        threshold=self.match_radius_px)
 
-                # Unpack result
-                source_cat_matched, ref_cat_matched, obs_xy, cat_xy, _, current_score, _ = matches
+                # Unpack result; no match possible if a catalogue is empty
+                source_cat_matched, ref_cat_matched, obs_xy, cat_xy, _, current_score, success = matches
+                if not success:
+                    del wcsprm_shifted
+                    continue
                 Nobs_matched = len(obs_xy)
 
-                # Update the best result
-                if best_Nobs_matched <= Nobs_matched or best_score <= current_score[0]:
+                # Update the best result: most matches, then the highest score
+                if (Nobs_matched, current_score[0]) > (best_Nobs_matched, best_score):
                     best_Nobs_matched = Nobs_matched
                     best_score = current_score[0]
                     best_scaling = result_scaling
@@ -704,6 +736,7 @@ class FindWCS(object):
                     best_match_radius = self.match_radius_px
                     best_rms = current_score[1]
                     best_std_xy = (current_score[2], current_score[3])
+                    best_is_partner = is_partner
 
                 if self._debug:
                     plot_catalog_positions(self.source_cat,
@@ -713,7 +746,7 @@ class FindWCS(object):
                 del wcsprm_shifted
 
         return (best_Nobs_matched, best_score, best_wcsprm,
-                [best_match_radius, best_rms, best_std_xy, best_scaling, best_rotation],
+                [best_match_radius, best_rms, best_std_xy, best_scaling, best_rotation, best_is_partner],
                 best_source_cat_match, best_ref_cat_match)
 
     def compute_cross_corr(self):
@@ -743,77 +776,72 @@ class FindWCS(object):
 
         self.cross_corr = cross_corr
 
-    def find_offset(self, catalog, wcsprm_in, offset_binwidth=1):
-        """Find offset
+    def find_offset(self, catalog, wcsprm_in, offset_binwidth=1, coarse_binwidth=8):
+        """Find the translation between the detected sources and the projected catalogue.
+
+        All source-reference differences are histogrammed; matching pairs pile up at the offset.
+        A coarse histogram over the full range of differences locates the peak (a 2x2 bin sum
+        keeps a peak on a bin edge together), then a fine histogram around it gives the offset.
+        This keeps the histograms small (a 1 px histogram over a whole frame has ~10^7 bins).
 
         Parameters
         ----------
-        catalog
-        wcsprm_in
-        offset_binwidth : int, optional
-            test
+        catalog : pd.DataFrame
+            Reference catalogue with RA, DEC.
+        wcsprm_in : astropy.wcs.Wcsprm
+            WCS used to project the catalogue.
+        offset_binwidth : float, optional
+            Bin width of the fine histogram in pixel.
+        coarse_binwidth : float, optional
+            Bin width of the coarse histogram in pixel.
 
         Returns
         -------
-
+        tuple
+            Signal (pairs within 3x3 fine bins of the peak), x shift and y shift in pixel.
         """
         # Apply the wcs to the catalog
         cat_x, cat_y = process_catalog(catalog, wcsprm_in)
 
         # Get distances
-        dist_x = (self.obs_x - cat_x.T).flatten()
-        dist_y = (self.obs_y - cat_y.T).flatten()
+        dist_x = (self.obs_x - cat_x.T).flatten().astype(np.float64)
+        dist_y = (self.obs_y - cat_y.T).flatten().astype(np.float64)
 
         del cat_x, cat_y
 
-        # Compute the minimum and maximum values for both axes
-        min_x, max_x = dist_x.min(), dist_x.max()
-        min_y, max_y = dist_y.min(), dist_y.max()
+        coarse = max(float(coarse_binwidth), float(offset_binwidth))
+        min_x, min_y = dist_x.min(), dist_y.min()
+        nx = max(1, int(np.ceil((dist_x.max() - min_x) / coarse + 1e-9)))
+        ny = max(1, int(np.ceil((dist_y.max() - min_y) / coarse + 1e-9)))
+        H = fhist.histogram2d(dist_x, dist_y, bins=[nx, ny],
+                              range=[[min_x, min_x + nx * coarse], [min_y, min_y + ny * coarse]])
 
-        # Compute the number of bins for both axes
-        num_bins_x = int(np.ceil((max_x - min_x) / offset_binwidth)) + 1
-        num_bins_y = int(np.ceil((max_y - min_y) / offset_binwidth)) + 1
+        # Sum over 2x2 bins; the peak lies in the window of bins (i, i + 1) x (j, j + 1)
+        Hp = np.pad(H, ((0, 1), (0, 1)))
+        H2 = Hp[:-1, :-1] + Hp[1:, :-1] + Hp[:-1, 1:] + Hp[1:, 1:]
+        i, j = np.unravel_index(np.argmax(H2), H2.shape)
+        centre_x = min_x + (i + 1) * coarse
+        centre_y = min_y + (j + 1) * coarse
 
-        # Compute the edges for both axes
-        x_edges = np.linspace(min_x, max_x, num_bins_x)
-        y_edges = np.linspace(min_y, max_y, num_bins_y)
+        # Fine histogram within two coarse bins of the window centre
+        half = 2 * coarse
+        sel = (np.abs(dist_x - centre_x) <= half) & (np.abs(dist_y - centre_y) <= half)
+        n_fine = int(np.ceil(2 * half / offset_binwidth))
+        lo_x = centre_x - half
+        lo_y = centre_y - half
+        H = fhist.histogram2d(dist_x[sel], dist_y[sel], bins=[n_fine, n_fine],
+                              range=[[lo_x, lo_x + n_fine * offset_binwidth],
+                                     [lo_y, lo_y + n_fine * offset_binwidth]])
+        peak = np.unravel_index(np.argmax(H), H.shape)
 
-        # Prepare histogram
-        vals = [dist_x, dist_y]
-        bins = [num_bins_x, num_bins_y]
-        ranges = [[min_x, max_x], [min_y, max_y]]
+        # Sum up the signal in the fixed aperture 1 bin in each direction around the peak
+        signal = np.sum(H[max(peak[0] - 1, 0):peak[0] + 2, max(peak[1] - 1, 0):peak[1] + 2])
 
-        # Compute the histogram
-        H = fhist.histogram2d(*vals, bins=bins, range=ranges)
+        # Bin centre of the peak
+        x_shift = lo_x + (peak[0] + 0.5) * offset_binwidth
+        y_shift = lo_y + (peak[1] + 0.5) * offset_binwidth
 
-        # Find the peak for the x and y distance where the two sets overlap and take the first peak
-        highest_peak = np.argwhere(H == np.max(H))[0]
-
-        # Check if the highest peak is out of bounds in x_edges or y_edges
-        if highest_peak[0] >= len(x_edges) - 1 or highest_peak[1] >= len(y_edges) - 1:
-            # Mask the highest peak to discard it
-            H[highest_peak[0], highest_peak[1]] = -np.inf
-
-            # Find the next highest peak
-            next_peak = np.argwhere(H == np.max(H))[0]
-
-            # Use the next highest peak
-            peak = next_peak
-        else:
-            # Use the highest peak
-            peak = highest_peak
-
-        # Sum up the signal in the fixed aperture 1 pixel in each direction around the peak,
-        # so a 3x3 array, total 9 pixel
-        signal = np.sum(H[peak[0] - 1:peak[0] + 2, peak[1] - 1:peak[1] + 2])
-        # signal_wide = np.sum(H[peak[0] - 4:peak[0] + 5, peak[1] - 4:peak[1] + 5])
-
-        x_shift = (x_edges[peak[0]] + x_edges[peak[0] + 1]) / 2
-        y_shift = (y_edges[peak[1]] + y_edges[peak[1] + 1]) / 2
-
-        # print(signal, signal_wide - signal, x_shift, y_shift)
-
-        del x_edges, y_edges, H, vals, dist_x, dist_y
+        del H, Hp, H2, dist_x, dist_y, sel
         return signal, x_shift, y_shift
 
     def calc_cross_corr(self, log_dist_obs, angles_obs, log_dist_cat, angles_cat):
@@ -1606,6 +1634,14 @@ def calculate_angles(data_x, data_y):
     bc.clean_up(data_x, data_y, vec_x, vec_y)
 
     return angles
+
+
+def get_partner_orientation(orientation, hypotheses):
+    """Return the orientation rotated by 180 deg (identity <-> rotate_180, reflect_x <-> reflect_y)."""
+    for hypothesis in hypotheses:
+        if np.allclose(hypothesis['matrix'], -np.asarray(orientation['matrix']), rtol=0., atol=1e-12):
+            return hypothesis
+    return orientation
 
 
 def build_orientation_hypotheses(preferred_pc=None):
