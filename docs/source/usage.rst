@@ -190,9 +190,13 @@ First, the initial WCS guess is applied to the reference catalog to transform th
 The logarithm of the distances (log(`d`)) and angles (θ) between each source and every other source are calculated for each dataset. These values are then combined using a 2D histogram, forming an image representation of the dataset's.
 The Fourier transform of each image is computed, and the cross-power spectrum is formed by multiplying the Fourier transform of source image by the complex conjugate of the reference image.
 The inverse Fourier transform of the cross-power spectrum yields an image containing Dirac delta-like peaks. The peak with the highest signal is identified, and the scale and rotation are determined from its location.
-The WCS guess is then updated and the translation shifts are determined by performing a phase correlation in the spatial domain.
-This process is repeated for multiple rotation patterns, and possible solutions are collected.
-These solutions are then analyzed individually, the transformation refined using LMFIT least-squares optimization, and the best solution selected based on the highest quality metrics, such as number of matched sources, completeness, and positional accuracy (RMS error).
+The WCS guess is then updated and the translation shifts are determined from a histogram of the position differences between the detected and the projected reference sources (coarse to fine).
+Only the pointing (RA/Dec) and the nominal pixel scale are taken from the header and the telescope configuration; the orientation of the detector is found by the search.
+The pair angles are periodic with 180 deg, so the search runs once for each parity (normal or reflected) and tests both 180 deg branches of the found rotation, which covers the four standard orientations for any rotation angle, e.g. of a field rotator.
+These solutions are then analyzed individually, the transformation refined using LMFIT least-squares optimization, and checked with statistical acceptance criteria: enough matches compared with the expected number, a false-alarm probability below 1e-6, an rms below 0.55 FWHM, a pixel scale within 2 % of the nominal one and matches across the frame (see :ref:`wcs_strict <WCS calibration options>`).
+The most significant accepted solution is kept. If the correlation search gives no accepted solution, triangles of the brightest stars are matched with `astroalign <https://astroalign.quatrope.org>`_ as a fallback, with the same criteria.
+If no solution is accepted, no WCS is written and the frame is marked as not calibrated.
+Within a run, the parity of the previous accepted frame of the same setup is searched first, and if the telescope records a field rotator angle (``ROTATANG`` for CDK20), the found orientation is compared with it.
 
 Once a solution is found, LEOSatpy updates the FITS header with the new WCS information, saves the calibrated FITS files in the ``calibrated/`` subdirectory, and updates the result table with the calibration results.
 

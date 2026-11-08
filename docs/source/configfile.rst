@@ -521,7 +521,7 @@ WCS calibration options
 
 .. py:function:: ang_bin_size:
 
-   ``float`` (default = ``0.1``)
+   ``float`` (default = ``1.``)
 
    Bin size (in degrees) for the angle histogram used in the pattern-matching algorithm. This parameter controls the angular resolution when comparing star pattern geometries between observed and reference catalogs. Smaller values provide more precise pattern matching but increase computational requirements.
 
@@ -580,6 +580,58 @@ WCS calibration options
    ``float`` (default = ``0.95``)
 
    Convergence threshold for the astrometric solution, expressed as the fraction of detected sources that must be successfully matched to reference catalog sources. The solution is considered successful when this percentage (95% by default) of sources is matched.
+
+   .. note::
+      Whether a solution is kept is decided by the acceptance criteria (wcs_strict_); a solution can be accepted
+      without reaching this threshold, e.g. in a crowded field or with a strongly distorted wide-field camera. It
+      is then reported as "accepted, not fully converged".
+
+.. py:function:: wcs_search:
+
+   ``'parity'``, ``'legacy'`` (default = ``'parity'``)
+
+   How the four standard detector orientations (identity, rotate_180, reflect_x, reflect_y) are searched. The
+   correlation of the star-pair distances and angles finds the rotation and scale for any rotation angle, modulo
+   180 deg.
+
+       - ``'parity'`` : one search for each parity (normal, reflected); both 180 deg branches of the found rotation
+         are tested. This covers the four orientations with half the work.
+       - ``'legacy'`` : search the four orientations separately (behaviour of version 0.5.x).
+
+   Within a run, the parity of the last accepted solution of the same telescope, binning and frame size is
+   searched first; the other parity is only searched if that gives no accepted solution.
+
+.. _wcs_strict:
+.. py:function:: wcs_strict:
+
+   ``True``, ``False`` (default = ``True``)
+
+   Keep a plate solution only if it passes all acceptance criteria. The criteria are computed for all detected
+   sources and all reference stars on the frame, with the match radius r (match_radius_):
+
+       - at least max(6, 0.3 x N_exp) matches, N_exp being the number of reference stars on the frame down to the
+         matched magnitude limit;
+       - a false-alarm probability below 1e-6: the probability that at least as many sources fall within r of a
+         reference star down to that limit by chance (binomial), times the number of independent offsets,
+         rotations and magnitude limits tried;
+       - an rms of the matches of at most 0.55 x FWHM (chance matches give about 0.7 x r);
+       - a pixel scale within 2 % of the nominal one;
+       - matches in at least three quadrants of the frame.
+
+   The parity is reported but not required. With ``False``, the best available solution is kept with a warning
+   (behaviour of version 0.5.x).
+
+.. py:function:: wcs_asterism:
+
+   ``True``, ``False`` (default = ``True``)
+
+   If the correlation search gives no accepted solution, match triangles of the brightest stars with
+   `astroalign <https://astroalign.quatrope.org>`_ for both parities and check the result with the same
+   acceptance criteria.
+
+The calibrated header records how the solution was found: ``AST_METH`` (``fft``, ``fft-prior`` when the parity of
+the previous frame was used, or ``asterism``), ``AST_ORI`` (orientation), ``AST_PAR`` (parity), ``AST_FAP`` (log10 of
+the false-alarm probability, ``-999`` for smaller values) and ``AST_ACC`` (accepted).
 
 
 Satellite detection & analysis options

@@ -505,6 +505,12 @@ class CalibrateObsWCS(object):
             report["pix_scale"] = np.mean(wcs_pixscale) * 3600. if wcs_pixscale is not np.nan else np.nan
             report["scale_x"] = wcs_pixscale[0] * 3600.
             report["scale_y"] = wcs_pixscale[1] * 3600.
+            method = dict_rms.get('method', 'fft')
+            report["method"] = f"{method}-prior" if method == 'fft' and dict_rms.get('prior_used') else method
+            report["orientation"] = dict_rms.get('orientation', '')
+            report["parity"] = dict_rms.get('parity', '')
+            report["log10_fap"] = dict_rms.get('log10_fap', np.nan)
+            report["accepted"] = bool(dict_rms.get('accepted', False))
 
             # Save the result to the FITS-file
             self.write_wcs_to_hdr(original_filename=abs_file_path,
@@ -818,6 +824,14 @@ class CalibrateObsWCS(object):
             hdr_file['AST_MAT'] = (report["matches"], 'Number of catalog matches')
             hdr_file['AST_RAD'] = (f'{report["match_radius"]:.3f}', 'match radius in pixel')
             hdr_file['AST_CONV'] = (report["converged"], "T or F for astrometry converged or not")
+            if "method" in report:
+                fap = report["log10_fap"]
+                hdr_file['AST_METH'] = (report["method"], 'Plate solving: fft, fft-prior or asterism')
+                hdr_file['AST_ORI'] = (report["orientation"], 'Detector orientation found')
+                hdr_file['AST_PAR'] = (report["parity"], 'Parity of the solution (normal/reflected)')
+                hdr_file['AST_FAP'] = (f'{max(fap, -999.):.1f}' if np.isfinite(fap) or fap < 0 else 'nan',
+                                       'log10 false-alarm probability of the solution')
+                hdr_file['AST_ACC'] = (report["accepted"], 'T or F for solution passed acceptance')
             hdr_file['AST_CAL'] = (True, "T or F for astrometric calibration executed or not")
 
             if 'HISTORY' in hdr_file:
