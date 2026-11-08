@@ -304,6 +304,9 @@ def build_source_catalog(data, mask, input_catalog=None, known_fwhm=None,
     try:
         # Detect and deblend sources
         segm = detect_sources(data, threshold_value, npixels=npixels, connectivity=connectivity, mask=mask)
+        if segm is None:
+            # Nothing above the threshold; deblend_sources would raise a TypeError and end the run
+            raise ValueError('no sources detected')
         segm_deblend = deblend_sources(data, segm,
                                        npixels=npixels, nlevels=32, contrast=0.001, connectivity=connectivity,
                                        progress_bar=False)
