@@ -149,11 +149,17 @@ class FindWCS(object):
 
         self.bin_x = bin_x
         self.bin_y = bin_y
-        self.image_shape_full = config['image_size_1x1']
 
-        search_area_shape = (self.image_shape_full[0] // self.bin_x,
-                             self.image_shape_full[1] // self.bin_y)
-        center_coords = [(search_area_shape[1] // 2, search_area_shape[0] // 2)]
+        # Footprint of the actual frame as (ny, nx); filter_df_within_bounds expects (y, x) sizes and
+        # an (x, y) centre. Fall back to the binned detector size if the frame shape is unknown.
+        if config.get('image_shape') is not None:
+            ny, nx = (int(v) for v in config['image_shape'][:2])
+        else:
+            nx = int(config['image_size_1x1'][0]) // self.bin_x
+            ny = int(config['image_size_1x1'][1]) // self.bin_y
+        self.image_shape_full = (nx * self.bin_x, ny * self.bin_y)
+        search_area_shape = (ny, nx)
+        center_coords = [(nx / 2., ny / 2.)]
 
         self.search_area_shape = search_area_shape
         self.search_area_additional_width = (10, 10)

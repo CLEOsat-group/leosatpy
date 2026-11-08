@@ -588,8 +588,9 @@ class CalibrateObsWCS(object):
             log.error("NAXIS1 or NAXIS2 missing in file. Please add!")
             sys.exit(1)
         else:
-            axis1 = obsparams['image_size_1x1'][0] // bin_x
-            axis2 = obsparams['image_size_1x1'][1] // bin_y
+            # Size of the actual frame (windowed, trimmed or a single extension), not the full detector
+            axis1 = int(hdr['NAXIS1'])
+            axis2 = int(hdr['NAXIS2'])
 
         # Read out RA and Dec from header
         if obsparams['radec_separator'] == 'XXX':
@@ -659,7 +660,9 @@ class CalibrateObsWCS(object):
         x_size = axis1 * pixscale_x / 60.  # arcmin
         y_size = axis2 * pixscale_y / 60.  # arcmin
 
-        # Set the central pixel to the image center pixel
+        # The pointing is placed at the centre of the actual frame. A header reference pixel is not
+        # used: it can be far off the frame (e.g. DK154 CRPIX2 = 3073 on a 1024 px frame), and the
+        # orientation of a header WCS is ignored as well (PC is the identity above).
         wcsprm.crpix = [axis1 // 2, axis2 // 2]
 
         # Check sky position
