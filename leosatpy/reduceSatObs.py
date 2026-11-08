@@ -1352,8 +1352,10 @@ class ReduceSatObs(object):
         if not files_list.size > 0:
             return []
 
+        spool = self._combine_spool(mflat_fname)
         lflat = []
         input_headers = []
+        flat_scales = []
         mbias_ccd = None
         for filename in files_list:
 
@@ -1434,25 +1436,30 @@ class ReduceSatObs(object):
                 ccd = ccdproc.subtract_bias(ccd, mbias)
                 add_key_to_hdr(ccd.header, 'MBIAS', get_filename(mbias_ccd))
 
-            # Append the result to a file list for combining
+            # Spool the processed frame to disk; only its path is kept in memory
             input_headers.append(ccd.header)
-            lflat.append(ccd)
+            flat_scales.append(inv_median(ccd.data))
+            lflat.append(self._spool_frame(ccd, spool, len(lflat)))
 
             del ccd
 
         if not self.silent:
             self._log.info(f'    Creating master flat file: {os.path.basename(mflat_fname)}')
 
-        # Combine flat ccds
-        combine = ccdproc.combine(lflat, method=method,
-                                  mem_limit=self._config['MEM_LIMIT_COMBINE'],
-                                  scale=inv_median,
-                                  minmax_clip=False,
-                                  sigma_clip=True, sigma_clip_low_thresh=3,
-                                  sigma_clip_high_thresh=3,
-                                  sigma_clip_func=np.ma.median,
-                                  sigma_clip_dev_func=mad_std,
-                                  dtype='float32')
+        # Combine flat ccds from the spooled files (the scales come from the processed frames)
+        try:
+            combine = ccdproc.combine(lflat, method=method,
+                                      mem_limit=self._combine_mem_limit(),
+                                      scale=np.array(flat_scales),
+                                      minmax_clip=False,
+                                      sigma_clip=True, sigma_clip_low_thresh=3,
+                                      sigma_clip_high_thresh=3,
+                                      sigma_clip_func=np.ma.median,
+                                      sigma_clip_dev_func=mad_std,
+                                      dtype='float32')
+        finally:
+            shutil.rmtree(spool, ignore_errors=True)
+        combine.header = input_headers[0].copy()
 
         # The mask carries the same name tokens as its flat
         ccd_mask_fname = self._mask_fname_for_flat(mflat_fname)
@@ -1562,6 +1569,7 @@ class ReduceSatObs(object):
         if not files_list.size > 0:
             return []
 
+        spool = self._combine_spool(mdark_fname)
         ldark = []
         input_headers = []
         for filename in files_list:
@@ -1594,20 +1602,24 @@ class ReduceSatObs(object):
                 ccd, mbias = check_shape(ccd, mbias)
                 ccd = ccdproc.subtract_bias(ccd, mbias)
 
-            # Append the result to a file list for combining
+            # Spool the processed frame to disk; only its path is kept in memory
             input_headers.append(ccd.header)
-            ldark.append(ccd)
+            ldark.append(self._spool_frame(ccd, spool, len(ldark)))
             del ccd
 
-        # Combine dark ccds
-        combine = ccdproc.combine(ldark, method=method,
-                                  mem_limit=self._config['MEM_LIMIT_COMBINE'],
-                                  sigma_clip=True,
-                                  sigma_clip_low_thresh=3,
-                                  sigma_clip_high_thresh=3,
-                                  sigma_clip_func=np.ma.median,
-                                  sigma_clip_dev_func=mad_std,
-                                  dtype='float32')
+        # Combine dark ccds from the spooled files
+        try:
+            combine = ccdproc.combine(ldark, method=method,
+                                      mem_limit=self._combine_mem_limit(),
+                                      sigma_clip=True,
+                                      sigma_clip_low_thresh=3,
+                                      sigma_clip_high_thresh=3,
+                                      sigma_clip_func=np.ma.median,
+                                      sigma_clip_dev_func=mad_std,
+                                      dtype='float32')
+        finally:
+            shutil.rmtree(spool, ignore_errors=True)
+        combine.header = input_headers[0].copy()
 
         # Update fits header
         if gain is not None and 'GAIN' not in combine.header:
@@ -1707,6 +1719,7 @@ class ReduceSatObs(object):
         if not files_list.size > 0:
             return []
 
+        spool = self._combine_spool(mbias_fname)
         lbias = []
         input_headers = []
         for filename in files_list:
@@ -1728,20 +1741,24 @@ class ReduceSatObs(object):
             if gain is not None and self._config['CORRECT_GAIN']:
                 ccd = ccdproc.gain_correct(ccd, gain)
 
-            # Append the result to a file list for combining
+            # Spool the processed frame to disk; only its path is kept in memory
             input_headers.append(ccd.header)
-            lbias.append(ccd)
+            lbias.append(self._spool_frame(ccd, spool, len(lbias)))
             del ccd
 
-        # Combine bias ccds
-        combine = ccdproc.combine(lbias, method=method,
-                                  mem_limit=self._config['MEM_LIMIT_COMBINE'],
-                                  sigma_clip=True,
-                                  sigma_clip_low_thresh=3,
-                                  sigma_clip_high_thresh=3,
-                                  sigma_clip_func=np.ma.median,
-                                  sigma_clip_dev_func=mad_std,
-                                  dtype='float32')
+        # Combine bias ccds from the spooled files
+        try:
+            combine = ccdproc.combine(lbias, method=method,
+                                      mem_limit=self._combine_mem_limit(),
+                                      sigma_clip=True,
+                                      sigma_clip_low_thresh=3,
+                                      sigma_clip_high_thresh=3,
+                                      sigma_clip_func=np.ma.median,
+                                      sigma_clip_dev_func=mad_std,
+                                      dtype='float32')
+        finally:
+            shutil.rmtree(spool, ignore_errors=True)
+        combine.header = input_headers[0].copy()
 
         # Update fits header
         if gain is not None and 'GAIN' not in combine.header:
@@ -1771,6 +1788,47 @@ class ReduceSatObs(object):
 
         # Return result
         return combine
+
+    def _combine_spool(self, master_fname):
+        """Empty folder in the temporary directory for the processed frames of one master."""
+        spool = Path(self._tmp_path) / '_combine' / Path(master_fname).stem
+        shutil.rmtree(spool, ignore_errors=True)
+        spool.mkdir(parents=True)
+        return spool
+
+    @staticmethod
+    def _spool_frame(ccd, spool, index):
+        """Write a processed calibration frame (float32, with its mask) for combining.
+
+        ``ccdproc.combine`` reads file inputs tile by tile, so only one tile per frame is in
+        memory at a time instead of every processed frame. The combination uses float32
+        anyway (``dtype='float32'``), so the result is unchanged.
+        """
+        path = Path(spool) / f'frame_{index:04d}.fits'
+        frame = CCDData(np.asarray(ccd.data, dtype=np.float32), unit=ccd.unit, mask=ccd.mask,
+                        header=ccd.header)
+        frame.write(path, overwrite=True, hdu_mask='MASK', hdu_uncertainty=None)
+        return str(path)
+
+    def _combine_mem_limit(self):
+        """Memory limit for ccdproc.combine: MEM_LIMIT_COMBINE, at most half of the available memory."""
+        limit = float(self._config.get('MEM_LIMIT_COMBINE', 8e9))
+        available = None
+        try:
+            with open('/proc/meminfo', encoding='ascii') as fh:
+                for line in fh:
+                    if line.startswith('MemAvailable:'):
+                        available = float(line.split()[1]) * 1024.
+                        break
+        except OSError:
+            try:
+                available = float(os.sysconf('SC_AVPHYS_PAGES') * os.sysconf('SC_PAGE_SIZE'))
+            except (ValueError, OSError, AttributeError):
+                available = None
+        if available:
+            limit = min(limit, 0.5 * available)
+        self._log.debug(f"{' ':<4}Combine memory limit: {limit / 1e9:.1f} GB")
+        return limit
 
     @staticmethod
     def _stamp_master_provenance(header, input_headers):
@@ -3198,6 +3256,11 @@ class ReduceSatObs(object):
                                       self._night_label(offer['date']), offer['date'] == resolved_date,
                                       telescope, obsparams)
 
+        # The images read for the dark significance test are no longer needed
+        for offers in offer_cache.values():
+            for o in offers:
+                o['data_cache'] = None
+
         # ---- build, validate, summarise
         try:
             master_darks = self._build_master_products(requirement=requirement, calib_state=calib_state,
@@ -3334,9 +3397,21 @@ class ReduceSatObs(object):
             dark_parts.append(f'{text} ({where(key)})')
         flat_parts = [f"{filt} {status_words.get(info.get('master_status'), 'loaded')} ({where(f'flat {filt}')})"
                       for filt, info in sorted(calib_state['flat'].items()) if f'flat {filt}' in product_sources]
+        flat_dark_parts = []
+        for target, info in sorted(calib_state['dark']['flat'].items()):
+            if not info.get('available'):
+                flat_dark_parts.append(f'{target:g}s missing')
+                continue
+            actual = info.get('actual_exposure')
+            text = f'{target:g}s'
+            if actual is not None and float(actual) != float(target):
+                text += f" ({float(actual):g}s dark{'' if info.get('is_exact') else ', scaled'})"
+            flat_dark_parts.append(text)
         self._log.info(f"> Calibrations ({self._pass_name()})")
         self._log.info(f"{' ':<4}Bias      : {bias_line}")
         self._log.info(f"{' ':<4}Darks     : {', '.join(dark_parts) if prefs['DARK_CORRECT'] and dark_parts else ('off' if not prefs['DARK_CORRECT'] else 'none')}")
+        if prefs['FLATDARK_CORRECT'] and prefs['FLAT_CORRECT']:
+            self._log.info(f"{' ':<4}Flat-darks: {', '.join(flat_dark_parts) or 'none'}")
         if prefs['FLAT_CORRECT']:
             self._log.info(f"{' ':<4}Flats     : {', '.join(flat_parts) or 'none'}")
         else:
