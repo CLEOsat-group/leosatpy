@@ -462,8 +462,10 @@ class CalibrateObsWCS(object):
             wcsprm = best_wcsprm
             wcs_summary = (f"{dict_rms['matches']}/{dict_rms['n_src_total']} sources matched, "
                            f"RMS {dict_rms['rms']:.2f} px")
-            if not dict_rms['converged']:
-                wcs_summary += ' (best available, not fully converged)'
+            if not dict_rms.get('accepted', True):
+                wcs_summary += ' (best available, not accepted)'
+            elif not dict_rms['converged']:
+                wcs_summary += ' (accepted, not fully converged)'
 
         if not self._silent:
             self._log.info(f"> WCS solution: {wcs_summary}")

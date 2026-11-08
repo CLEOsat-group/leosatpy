@@ -151,6 +151,12 @@ class FindWCS(object):
         self.rotations = np.array([hypothesis['matrix']
                                    for hypothesis in self.search_hypotheses])
 
+        # True: only return a solution that passes the acceptance criteria (assess_solution);
+        # False: return the best available solution as in version 0.5.x, with a warning
+        strict = config.get('WCS_STRICT', True)
+        self.strict = strict if isinstance(strict, bool) else \
+            str(strict).strip().strip("'\"").lower() not in ('false', '0', 'no', 'off')
+
         self.apply_rot = True
         self.match_radius_px = 5  # Default value
         self._refine = False
@@ -251,6 +257,11 @@ class FindWCS(object):
         self.log.debug(f"  > Search possible solutions (This may take a second.)")
 
         total_iterations = len(rotations) * num_ref_samples
+
+        # Independent alignments the search can pick from, for the false-alarm probability:
+        # offsets within the frame (one per match area) for each rotation candidate tested
+        n_trials = (self.search_area_shape[0] * self.search_area_shape[1] / (np.pi * match_radius_px ** 2)
+                    * len(rotations) * 2 * (num_ref_samples + 1))
         rot_matrix_idx = 0
 
         # Loop possible initial rotations of the WCS
@@ -450,7 +461,24 @@ class FindWCS(object):
 
                 # Update solution metrics
                 rms_after = residual_stats_after['rms']
-                completeness_after = Nobs_matched_r_after / Nobs_matched_r_lim_after
+                completeness_after = Nobs_matched_r_after / Nobs_matched_r_lim_after \
+                    if Nobs_matched_r_lim_after > 0 else 0.
+
+                # Acceptance diagnostics with all sources and all reference stars on the frame
+                ref_on_frame = self.get_filtered_ref_cat(current_wcsprm=refined_wcs, origin=0)
+                diag = solution_diagnostics(
+                    self.source_cat_full[['xcentroid', 'ycentroid']].to_numpy(),
+                    ref_on_frame[['xcentroid', 'ycentroid']].to_numpy(),
+                    ref_on_frame['mag'].to_numpy(),
+                    self.search_area_shape, match_radius_px, n_trials=n_trials)
+                scale_ratio = np.sqrt(abs(np.linalg.det(get_effective_cd_matrix(refined_wcs))) /
+                                      abs(np.linalg.det(get_effective_cd_matrix(initial_wcsprm))))
+                accepted, reasons = assess_solution(diag, scale_ratio, match_radius_px)
+                self.log.debug(f"{' ':<6}N_match={diag['n_match']}/{diag['n_obs']} "
+                               f"(expected {diag['n_exp']}), rms={diag['rms']:.2f} px, "
+                               f"log10 FAP={diag['log10_fap']:.1f}, scale={scale_ratio:.4f}, "
+                               f"quadrants={diag['n_quadrants']}, parity={solution['parity']} => "
+                               f"{'accepted' if accepted else 'rejected: ' + '; '.join(reasons)}")
 
                 solution.update({
                     'Nobs_matched': Nobs_matched_r_after,
@@ -461,7 +489,11 @@ class FindWCS(object):
                     'src_cat_match': src_df_after,
                     'ref_cat_match': ref_df_after,
                     'std_x': residual_stats_after['std_x'],
-                    'std_y': residual_stats_after['std_y']
+                    'std_y': residual_stats_after['std_y'],
+                    'diagnostics': diag,
+                    'scale_ratio': scale_ratio,
+                    'accepted': accepted,
+                    'reject_reasons': reasons
                 })
 
                 if fit_status:
@@ -469,7 +501,8 @@ class FindWCS(object):
                                      'fit_status': fit_status,
                                      'fit_params': fit_pars})
 
-                if rms_after <= best_overall_rms or completeness_after >= best_overall_completeness:
+                # Best non-converged fallback: highest completeness, then lowest rms
+                if (completeness_after, -rms_after) > (best_overall_completeness, -best_overall_rms):
                     best_overall_rms = rms_after
                     best_overall_completeness = completeness_after
                     best_overall_solution = copy(solution)
@@ -483,8 +516,22 @@ class FindWCS(object):
             if confirmed_solutions:
                 # Check if any solution converged
                 converged_solutions = [sol for sol in confirmed_solutions if sol['has_converged']]
+                accepted_solutions = [sol for sol in confirmed_solutions if sol['accepted']]
 
-                if converged_solutions:
+                if accepted_solutions:
+                    # Most significant first, then most matches and lowest rms
+                    accepted_solutions.sort(key=lambda x: (x['diagnostics']['log10_fap'],
+                                                           -x['diagnostics']['n_match'],
+                                                           x['diagnostics']['rms']))
+                    best_solution = accepted_solutions[0]
+                    self.log.debug(
+                        f"{' ':<2}>> " + bc.BCOLORS.PASS + "Solution found and accepted." + bc.BCOLORS.OKGREEN)
+                elif self.strict:
+                    best_solution = None
+                    best = max(confirmed_solutions, key=lambda x: x['diagnostics']['n_match'])
+                    self.log.warning(f"{' ':<2}No plate solution passed the acceptance criteria "
+                                     f"(best candidate: {'; '.join(best['reject_reasons'])})")
+                elif converged_solutions:
                     # Sort converged solutions and select the best one
                     converged_solutions.sort(key=lambda x: (x['rms_dist'], -x['Nobs_matched'], -x['score']),
                                              reverse=False)
@@ -518,7 +565,16 @@ class FindWCS(object):
                                'std_x': best_solution['std_x'],
                                'std_y': best_solution['std_y'],
                                'n_src_total': Nobs_total,
-                               'converged': bool(best_solution['has_converged'])}
+                               'converged': bool(best_solution['has_converged']),
+                               'accepted': bool(best_solution['accepted']),
+                               'reject_reasons': best_solution['reject_reasons'],
+                               'log10_fap': best_solution['diagnostics']['log10_fap'],
+                               'orientation': best_solution['orientation_name'],
+                               'parity': best_solution['parity']}
+                if not best_solution['accepted']:
+                    self.log.warning(f"{' ':<2}The plate solution did not pass the acceptance criteria "
+                                     f"({'; '.join(best_solution['reject_reasons'])}); "
+                                     f"it is kept because WCS_STRICT is off")
                 has_solution = True
 
             else:
@@ -1458,15 +1514,15 @@ def find_matches(obs, cat, wcsprm_in=None, threshold=10., sort=True):
     obs_idx = idx_arr[1][mask]
     min_dist_xy = min_dist_xy[mask]
 
-    obs_matched = obs.iloc[obs_idx]
-    cat_matched = cat.iloc[cat_idx]
-
-    obs_matched = obs_matched.sort_values(by='mag', ascending=True)
-    obs_matched = obs_matched.reset_index(drop=True)
-
+    # Keep the pairs together: both tables are ordered the same way (by the observed magnitude)
     if sort:
-        cat_matched = cat_matched.sort_values(by='mag', ascending=True)
-    cat_matched = cat_matched.reset_index(drop=True)
+        order = np.argsort(obs['mag'].to_numpy()[obs_idx], kind='stable')
+        obs_idx = obs_idx[order]
+        cat_idx = cat_idx[order]
+        min_dist_xy = min_dist_xy[order]
+
+    obs_matched = obs.iloc[obs_idx].reset_index(drop=True)
+    cat_matched = cat.iloc[cat_idx].reset_index(drop=True)
 
     columns_to_add = ['xcentroid', 'ycentroid', 'fwhm', 'include_fwhm']
     cat_matched = cat_matched.assign(**obs_matched[columns_to_add].to_dict(orient='series'))
@@ -1496,6 +1552,107 @@ def find_matches(obs, cat, wcsprm_in=None, threshold=10., sort=True):
         score = len(obs_xy) / (rms + 1)
 
     return obs_matched, cat_matched, obs_xy, cat_xy, min_dist_xy, (score, rms, std_x, std_y), True
+
+
+def solution_diagnostics(obs_xy, ref_xy, ref_mag, shape, match_radius, n_trials=1.):
+    """Quality and significance of a plate solution, independent of how it was found.
+
+    Each detected source is matched to the nearest projected reference star within
+    ``match_radius``. The chance of a random coincidence is p = 1 - exp(-rho_ref * pi * r^2) per
+    source, so the number of chance matches is binomial with N_obs trials; the false-alarm
+    probability is the binomial tail at the observed number of matches times the number of
+    independent alignments the search could have picked (``n_trials``).
+
+    Parameters
+    ----------
+    obs_xy : np.ndarray
+        (N, 2) positions of the detected sources (pixel).
+    ref_xy : np.ndarray
+        (M, 2) positions of the reference stars projected with the solution (pixel).
+    ref_mag : np.ndarray
+        (M,) magnitudes of the reference stars.
+    shape : tuple
+        Frame shape (ny, nx).
+    match_radius : float
+        Match radius in pixel (typically the FWHM).
+    n_trials : float, optional
+        Number of independent alignments tested by the search.
+
+    Returns
+    -------
+    dict
+        n_obs, n_ref, n_match, n_exp (references on the frame down to the 90th percentile of
+        the matched magnitudes), rms (px), n_quadrants (frame quadrants with a match) and
+        log10_fap.
+    """
+    from scipy.stats import binom
+
+    ny, nx = shape[:2]
+    obs_xy = np.asarray(obs_xy, dtype=float).reshape(-1, 2)
+    ref_xy = np.asarray(ref_xy, dtype=float).reshape(-1, 2)
+    ref_mag = np.asarray(ref_mag, dtype=float).reshape(-1)
+
+    on_frame = ((ref_xy[:, 0] >= -0.5) & (ref_xy[:, 0] <= nx - 0.5) &
+                (ref_xy[:, 1] >= -0.5) & (ref_xy[:, 1] <= ny - 0.5) & np.all(np.isfinite(ref_xy), axis=1))
+    ref_xy = ref_xy[on_frame]
+    ref_mag = ref_mag[on_frame]
+
+    result = {'n_obs': len(obs_xy), 'n_ref': len(ref_xy), 'n_match': 0, 'n_exp': 0,
+              'rms': np.inf, 'n_quadrants': 0, 'log10_fap': 0.}
+    if len(obs_xy) == 0 or len(ref_xy) == 0:
+        return result
+
+    dist, idx = cKDTree(ref_xy).query(obs_xy, k=1, distance_upper_bound=match_radius)
+    matched = np.isfinite(dist)
+    n_match = int(matched.sum())
+    result['n_match'] = n_match
+    if n_match == 0:
+        return result
+
+    result['rms'] = float(np.sqrt(np.mean(dist[matched] ** 2)))
+    mag_lim = np.nanpercentile(ref_mag[idx[matched]], 90)
+    result['n_exp'] = int(np.sum(ref_mag <= mag_lim))
+
+    xy = obs_xy[matched]
+    quadrant = (xy[:, 0] >= nx / 2.).astype(int) + 2 * (xy[:, 1] >= ny / 2.).astype(int)
+    result['n_quadrants'] = int(len(np.unique(quadrant)))
+
+    # Chance matches are counted against the reference stars down to the matched magnitude limit:
+    # a true solution matches the bright stars, a chance alignment mostly hits faint ones (a deep
+    # catalogue would otherwise make every sparse field insignificant). The limit is chosen from
+    # the data, so the number of possible limits (n_match) is added to the trials.
+    n_match_bright = int(np.sum(ref_mag[idx[matched]] <= mag_lim))
+    p_chance = 1. - np.exp(-result['n_exp'] / float(nx * ny) * np.pi * match_radius ** 2)
+    log_sf = binom.logsf(n_match_bright - 1, len(obs_xy), p_chance) / np.log(10.)
+    result['log10_fap'] = float(min(0., log_sf + np.log10(max(n_trials, 1.) * n_match)))
+
+    return result
+
+
+def assess_solution(diag, scale_ratio, fwhm, strict_limits=None):
+    """Acceptance of a plate solution from :func:`solution_diagnostics`.
+
+    Returns (accepted, reasons), where reasons lists the failed criteria.
+    """
+    lim = {'min_match': 6, 'min_frac_exp': 0.3, 'max_log10_fap': -6., 'max_rms_fwhm': 0.55,
+           'max_scale_dev': 0.02, 'min_quadrants': 3}
+    if strict_limits:
+        lim.update(strict_limits)
+
+    reasons = []
+    if diag['n_match'] < max(lim['min_match'], lim['min_frac_exp'] * diag['n_exp']):
+        reasons.append(f"matches {diag['n_match']} < max({lim['min_match']}, "
+                       f"{lim['min_frac_exp']:g} x {diag['n_exp']} expected)")
+    if diag['log10_fap'] > lim['max_log10_fap']:
+        reasons.append(f"false-alarm probability 10^{diag['log10_fap']:.1f} > 10^{lim['max_log10_fap']:g}")
+    if not diag['rms'] <= lim['max_rms_fwhm'] * fwhm:
+        reasons.append(f"rms {diag['rms']:.2f} px > {lim['max_rms_fwhm']:g} x FWHM ({fwhm:.2f} px)")
+    if not abs(scale_ratio - 1.) < lim['max_scale_dev']:
+        reasons.append(f"scale {scale_ratio:.4f} differs from the nominal by more than {lim['max_scale_dev']:g}")
+    if diag['n_quadrants'] < lim['min_quadrants']:
+        reasons.append(f"matches in {diag['n_quadrants']} of 4 quadrants")
+
+    return not reasons, reasons
 
 
 def cross_corr_to_fourier_space(a):
