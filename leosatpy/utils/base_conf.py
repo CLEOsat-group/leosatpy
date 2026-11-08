@@ -169,7 +169,8 @@ DEF_RES_TBL_COL_NAMES = ['File', 'Object', 'Sat-Name', 'AltID', 'UniqueID',
                          'TrailCRA', 'e_TrailCRA', 'TrailCDEC', 'e_TrailCDEC',
                          'TrailANG', 'e_TrailANG', 'OptAperHeight',
                          'CalRA', 'CalDEC', 'CentX', 'e_CentX', 'CentY', 'e_CentY', 'PixScale', 'DetRotAng', 'FWHM', 'e_FWHM',
-                         'bias_cor', 'dark_cor', 'flat_cor', 'gain_cor', 'WCS_cal', 'mag_conv', 'QlfAperRad', 'TrailDetMethod']
+                         'bias_cor', 'dark_cor', 'flat_cor', 'gain_cor', 'CcdTemp', 'TempMatch', 'DarkScale',
+                         'WCS_cal', 'mag_conv', 'QlfAperRad', 'TrailDetMethod']
 
 # To be implemented. Default result table column units.
 DEF_RES_TBL_COL_UNITS = ['', '', '', '', '',
@@ -200,7 +201,8 @@ DEF_RES_TBL_COL_UNITS = ['', '', '', '', '',
                          'deg', 'arcsec', 'deg', 'arcsec',
                          'deg', 'arcsec', 'px',
                          'deg', 'deg', 'px', 'px', 'px', 'px', 'arcsec/px', 'deg', 'px', 'px',
-                         '', '', '', '', '', '', '', '']
+                         '', '', '', '', 'degC', '', '',
+                         '', '', '', '']
 
 # Default visibility file table column names.
 DEF_VIS_TBL_COL_NAMES = ['ID', 'AltID', 'UniqueID', 'UT Date', 'UT time',
@@ -237,6 +239,9 @@ DEF_KEY_TRANSLATIONS = {
     'dark_cor': ['DARK_COR'],
     'flat_cor': ['FLAT_COR'],
     'gain_cor': ['GAIN_COR'],
+    'CcdTemp': ['TEMPREF'],
+    'TempMatch': ['TEMPMTCH'],
+    'DarkScale': ['DARKSCL'],
     'WCS_cal': ['AST_CAL', 'WCSCAL', 'WCS-STAT'],
     'HasTrail': ['HASTRAIL'],
     'NTrail': ['NTRAIL']

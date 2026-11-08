@@ -120,6 +120,7 @@ class CalibrationPrepResult:
     searched_sources: list[Path] = field(default_factory=list)
     calib_state: Optional[dict[str, Any]] = None
     master_darks: Optional[dict[str, Any]] = None
+    product_sources: dict[str, Any] = field(default_factory=dict)
 
 
 class CalibrationInternalError(RuntimeError):
@@ -225,11 +226,15 @@ class ReduceSatObs(object):
         self._obsTable = None
         self._bin_str = None
         self._binxy = [1, 1]
+        self._pass_temp = None  # science temperature of the current pass (match mode)
+        self._pass_label = None  # TEMPGRP label of the current pass (match mode), else None
         self._calib_state = None  # calibration availability; set by find_and_create_calibrations
         self._master_darks = None  # loaded master darks for science reduction; assigned from CalibrationPrepResult
         self._reduction_failures = []
         self._failure_log_path = None
         self._temp_settings = None  # CCD temperature handling for the current instrument (None = off)
+        self._night_index_cache = {}  # per-run calibration index {night root: {...}}
+        self._frame_meta_cache = {}  # per-run header metadata of raw calibration frames
 
         # Run full reduction
         self.run_full_reduction(silent=silent)
@@ -280,6 +285,11 @@ class ReduceSatObs(object):
             self._telescope = inst_data[inst]['telescope']
             self._obsparams = inst_data[inst]['obsparams']
             self._temp_settings = ctemp.temperature_settings(self._obsparams, self._config)
+            self._night_index_cache = {}
+            self._frame_meta_cache = {}
+            if not silent and self._temp_settings is not None:
+                self._log.info(f"  CCD temperature handling: {self._temp_settings['mode']} "
+                               f"(tolerance {self._temp_settings['tolerance']:g} degC)")
 
             # Get valid science observations from data set
             ds.get_valid_sci_observations(inst, prog_typ="reduceSatObs")
@@ -490,14 +500,20 @@ class ReduceSatObs(object):
             self._log.info(f"{' ':<2}{filter_label:<20}: {filter_names}")
             self._log.info(f"{' ':<2}{'-' * 78}")
 
-        # Loop over binnings and prepare the calibration files for each binning
-        for binxy in binnings:
+        # Loop over binnings (and CCD temperature groups) and prepare the calibration files for each pass
+        for binxy, pass_temp, pass_label in self._science_passes(binnings):
             self._binxy = binxy
             self._bin_str = f"{binxy[0]}x{binxy[1]}"
+            self._pass_temp = pass_temp
+            self._pass_label = pass_label
             if not self.silent:
                 self._log.info("")
                 self._log.info(f"{'-' * 45}")
-                self._log.info(f"  PROCESSING BINNING: {self._bin_str}")
+                if pass_label is None:
+                    self._log.info(f"  PROCESSING BINNING: {self._bin_str}")
+                else:
+                    temp_text = 'unknown' if pass_temp is None else f'{pass_temp:g} degC'
+                    self._log.info(f"  PROCESSING BINNING: {self._bin_str}, CCD temperature {temp_text}")
                 self._log.info(f"{'-' * 45}")
 
             # Find and prepare calibration files
@@ -528,8 +544,9 @@ class ReduceSatObs(object):
                     binning=self._bin_str,
                 )
 
-            # In silent mode the dataset header is not shown, so name the folder in the result line
-            result_label = f"binning {self._bin_str}" + (f", {self._sci_root_path}" if self.silent else '')
+            # Name the pass in failure records; in silent mode also name the folder in the result line
+            result.binning = self._pass_name()
+            result_label = f"binning {self._pass_name()}" + (f", {self._sci_root_path}" if self.silent else '')
             if not result.ok:
                 self._record_reduction_failure(result)
                 products = ', '.join(sorted({str(item.get('reason', '')) for item in result.failed_products}))
@@ -553,6 +570,60 @@ class ReduceSatObs(object):
         if tmp_path.name == 'atmp' and tmp_path != tmp_path.anchor:
             shutil.rmtree(tmp_path, ignore_errors=True)
 
+
+    def _science_dfilter(self):
+        """File filter for the science frames of the current pass (binning and temperature group)."""
+        dfilter = {'imagetyp': bc.IMAGETYP_LIGHT, 'binning': self._bin_str}
+        if self._pass_label is not None:
+            dfilter[ctemp.KEY_TEMPGRP.lower()] = self._pass_label
+        return dfilter
+
+    def _pass_name(self):
+        """Label of the current pass for logs and failure records, e.g. '2x2' or '2x2@-10C'."""
+        if self._pass_label is None:
+            return self._bin_str
+        if self._pass_temp is None:
+            return f'{self._bin_str}@unknown T'
+        return f'{self._bin_str}@{self._pass_temp:g}C'
+
+    def _science_passes(self, binnings):
+        """Split the science frames into passes per binning and CCD temperature group.
+
+        Without temperature matching there is one pass per binning (as before). In ``match``
+        mode the frames of each binning are grouped by their setpoint; the group label is
+        written as TEMPGRP to the staged copies so every science filter of the pass can select
+        them. Frames without a usable temperature form their own pass.
+        """
+        settings = self._temp_settings
+        if settings is None or settings['mode'] != 'match':
+            return [(binxy, None, None) for binxy in binnings]
+
+        ic_all = ImageFileCollection(location=self._tmp_path)
+        summary = ic_all.summary
+        passes = []
+        for binxy in binnings:
+            bin_str = f'{binxy[0]}x{binxy[1]}'
+            rows = [row for row in summary
+                    if str(row['imagetyp']).strip().lower() == str(bc.IMAGETYP_LIGHT).lower()
+                    and str(row['binning']).strip() == bin_str]
+            temps = []
+            for row in rows:
+                value = row['tempref'] if 'tempref' in summary.colnames else None
+                if value is None or np.ma.is_masked(value):
+                    temps.append(None)
+                else:
+                    temps.append(float(value))
+            groups, unknown = ctemp.group_temperatures(temps, settings['tolerance'])
+            members = [(ref, idx) for ref, idx in groups]
+            if unknown:
+                members.append((None, unknown))
+            for ref, idx in members:
+                label = ctemp.group_label(ref)
+                for i in idx:
+                    fits.setval(os.path.join(self._tmp_path, rows[i]['file']), ctemp.KEY_TEMPGRP,
+                                value=label, comment='CCD temperature group of the reduction pass')
+                passes.append((binxy, ref, label))
+        return passes
 
     def run_ccdproc(self, obsparams, filters, binnings):
         """Run ccdproc on the prepared data set.
@@ -620,7 +691,7 @@ class ReduceSatObs(object):
         for filt in filters:
             filt_name = filt[0]
             sci_img_count_by_filter = len(
-                ic_all.files_filtered(imagetyp=bc.IMAGETYP_LIGHT, filter=filt_name)
+                ic_all.files_filtered(filter=filt_name, **self._science_dfilter())
             )
             if sci_img_count_by_filter == 0:
                 continue
@@ -749,8 +820,7 @@ class ReduceSatObs(object):
             readnoise = readnoise * u.Unit("electron")
 
         # Create default filter if none provided, add additional filters if given, and get file list
-        dfilter = {'imagetyp': bc.IMAGETYP_LIGHT,
-                   'binning': self._bin_str} if dfilter is None else dfilter
+        dfilter = self._science_dfilter() if dfilter is None else dfilter
         if dfilter is not None and key_filter is not None and image_filter is not None:
             dfilter = add_keys_to_dict(dfilter, {key_filter: image_filter})
         files_list = self.get_file_list(files_list, dfilter,
@@ -760,7 +830,7 @@ class ReduceSatObs(object):
         mbias_ccd = master_bias
         mflat_ccd = None
 
-        # Get ccd mask file if exists
+        # Get ccd mask file if exists; it carries the same name tokens as the master flat
         ccd_mask_fname = os.path.join(self._master_calib_path,
                                       'mask_from_ccdmask_%s_%s.fits' % (image_filter,
                                                                         self._bin_str))
@@ -769,6 +839,9 @@ class ReduceSatObs(object):
                                           'mask_from_ccdmask_%s_%s_%s.fits' % (self._instrument,
                                                                                image_filter,
                                                                                self._bin_str))
+        flat_master_path = ((self._calib_state or {}).get('flat', {}).get(image_filter, {}) or {}).get('master_path')
+        if flat_master_path is not None:
+            ccd_mask_fname = self._mask_fname_for_flat(flat_master_path)
         if os.path.isfile(ccd_mask_fname):
             self._ccd_mask_fname = ccd_mask_fname
         else:
@@ -837,7 +910,9 @@ class ReduceSatObs(object):
             # Bias or dark frame subtract
             dark_corrected = False
             bias_corrected = False
+            bias_applied = False  # a master bias was subtracted (not only the bias inside an impure dark)
             flat_corrected = False
+            mflat = None
 
             if master_dark is not None and self._config['DARK_CORRECT'] and ccd_expt in master_dark:
                 mdark, dark_is_pure, is_nearest = master_dark[ccd_expt]
@@ -854,6 +929,7 @@ class ReduceSatObs(object):
                     ccd, temp_mbias = check_shape(ccd, temp_mbias)
                     ccd = ccdproc.subtract_bias(ccd, temp_mbias)
                     bias_corrected = True
+                    bias_applied = True
                     add_key_to_hdr(ccd.header, 'MBIAS', get_filename(mbias_ccd))
 
                 # 2. Apply Master Dark
@@ -893,6 +969,7 @@ class ReduceSatObs(object):
                 ccd, temp_mbias = check_shape(ccd, temp_mbias)
                 ccd = ccdproc.subtract_bias(ccd, temp_mbias)
                 bias_corrected = True
+                bias_applied = True
                 add_key_to_hdr(ccd.header, 'MBIAS', get_filename(mbias_ccd))
 
             if master_flat is not None and self._config['FLAT_CORRECT']:
@@ -938,6 +1015,11 @@ class ReduceSatObs(object):
             filename = f'{fbase}_red{suffix}'
             filename = join_path(filename, self._red_path)
 
+            self._add_calibration_provenance(ccd.header, ccd_expt, image_filter,
+                                             mbias_ccd if bias_applied else None,
+                                             master_dark[ccd_expt][0] if dark_corrected else None,
+                                             mflat if flat_corrected else None)
+
             ccd.header['FILENAME'] = os.path.basename(filename)
             ccd.header['bias_cor'] = 'T' if bias_corrected else 'F'
             ccd.header['dark_cor'] = 'T' if dark_corrected else 'F'
@@ -969,6 +1051,9 @@ class ReduceSatObs(object):
             hdr_dict['dark_cor'] = 'T' if dark_corrected else 'F'
             hdr_dict['flat_cor'] = 'T' if flat_corrected else 'F'
             hdr_dict['gain_cor'] = 'T' if gain_corrected else 'F'
+            for key in (ctemp.KEY_TEMPREF, 'TEMPMTCH', 'DARKSCL'):
+                if key in hdr:
+                    hdr_dict[key] = hdr[key]
 
             self._obsTable.update_obs_table(fbase, hdr_dict, obsparams)
 
@@ -978,6 +1063,35 @@ class ReduceSatObs(object):
             sys.stdout.write('\n')
         del files_list
         gc.collect()
+
+    def _add_calibration_provenance(self, header, exptime, image_filter, mbias, mdark, mflat):
+        """Write temperature and source night of the applied masters to a reduced frame.
+
+        BIASTEMP/DARKTEMP/FLATTEMP and BIASSRC/DARKSRC/FLATSRC are copied from the master
+        headers when known. TEMPMTCH ('T'/'F') is written in ``match`` mode: 'F' if an applied
+        bias, a significant dark or a flat lies outside the temperature tolerance.
+        """
+        for key, master in (('BIAS', mbias), ('DARK', mdark), ('FLAT', mflat)):
+            mhdr = getattr(master, 'header', None)
+            if mhdr is None:
+                continue
+            temp = ctemp.header_tempref(mhdr)
+            if temp is not None:
+                header[f'{key}TEMP'] = (temp, f'[degC] CCD temperature of the master {key.lower()}')
+            if ctemp.KEY_CALSRC in mhdr:
+                header[f'{key}SRC'] = (str(mhdr[ctemp.KEY_CALSRC]), f'night of the master {key.lower()} frames')
+
+        if self._temp_settings is None or self._temp_settings['mode'] != 'match' or self._calib_state is None:
+            return
+        state = self._calib_state
+        mismatch = False
+        if mbias is not None and state['bias'].get('temp_mismatch'):
+            mismatch = True
+        if mdark is not None and state['dark']['science'].get(float(exptime), {}).get('temp_mismatch'):
+            mismatch = True
+        if mflat is not None and state['flat'].get(image_filter, {}).get('temp_mismatch'):
+            mismatch = True
+        header['TEMPMTCH'] = ('F' if mismatch else 'T', 'calibrations within the CCD temperature tolerance')
 
     def clean_cosmic_ray(self, ccd, ccd_mask_fname,
                          mbox=15, rbox=15, gbox=11, sigclip=5,
@@ -1123,6 +1237,7 @@ class ReduceSatObs(object):
             return []
 
         lflat = []
+        input_headers = []
         mbias_ccd = None
         for filename in files_list:
 
@@ -1204,6 +1319,7 @@ class ReduceSatObs(object):
                 add_key_to_hdr(ccd.header, 'MBIAS', get_filename(mbias_ccd))
 
             # Append the result to a file list for combining
+            input_headers.append(ccd.header)
             lflat.append(ccd)
 
             del ccd
@@ -1222,13 +1338,8 @@ class ReduceSatObs(object):
                                   sigma_clip_dev_func=mad_std,
                                   dtype='float32')
 
-        ccd_mask_fname = os.path.join(self._master_calib_path,
-                                      f'mask_from_ccdmask_{flat_filter}_{self._bin_str}.fits')
-        if self._telescope == 'DDOTI 28-cm f/2.2':
-            ccd_mask_fname = os.path.join(self._master_calib_path,
-                                          'mask_from_ccdmask_%s_%s_%s.fits' % (self._instrument,
-                                                                               flat_filter,
-                                                                               self._bin_str))
+        # The mask carries the same name tokens as its flat
+        ccd_mask_fname = self._mask_fname_for_flat(mflat_fname)
 
         self.create_bad_pixel_map(combine.header, obsparams, combine, mbias_ccd,
                                   ccd_mask_fname, vignette=self._config['VIGNETTE_FRAC'])
@@ -1243,6 +1354,7 @@ class ReduceSatObs(object):
         combine.header['CGAIN'] = True if gain is not None and self._config['CORRECT_GAIN'] else False
         combine.header['IMAGETYP'] = 'FLAT'
         combine.header['CMETHOD'] = method
+        self._stamp_master_provenance(combine.header, input_headers)
         if sjoin is not None:
             combine.header['LFLAT'] = sjoin.join([os.path.basename(f) for f in files_list])
         combine.header['NFLAT'] = len(files_list)
@@ -1335,6 +1447,7 @@ class ReduceSatObs(object):
             return []
 
         ldark = []
+        input_headers = []
         for filename in files_list:
 
             # Read image to ccd object
@@ -1366,6 +1479,7 @@ class ReduceSatObs(object):
                 ccd = ccdproc.subtract_bias(ccd, mbias)
 
             # Append the result to a file list for combining
+            input_headers.append(ccd.header)
             ldark.append(ccd)
             del ccd
 
@@ -1389,6 +1503,7 @@ class ReduceSatObs(object):
         combine.header['CGAIN'] = bool(gain is not None and self._config['CORRECT_GAIN'])
         combine.header['IMAGETYP'] = 'DARK'
         combine.header['CMETHOD'] = method
+        self._stamp_master_provenance(combine.header, input_headers)
 
         if sjoin is not None:
             combine.header['LDARK'] = sjoin.join([os.path.basename(f) for f in files_list])
@@ -1477,6 +1592,7 @@ class ReduceSatObs(object):
             return []
 
         lbias = []
+        input_headers = []
         for filename in files_list:
 
             # Read image to ccd object
@@ -1497,6 +1613,7 @@ class ReduceSatObs(object):
                 ccd = ccdproc.gain_correct(ccd, gain)
 
             # Append the result to a file list for combining
+            input_headers.append(ccd.header)
             lbias.append(ccd)
             del ccd
 
@@ -1519,6 +1636,7 @@ class ReduceSatObs(object):
         combine.header['CGAIN'] = True if gain is not None and self._config['CORRECT_GAIN'] else False
         combine.header['IMAGETYP'] = 'BIAS'
         combine.header['CMETHOD'] = method
+        self._stamp_master_provenance(combine.header, input_headers)
         if sjoin is not None:
             combine.header['LBIAS'] = sjoin.join([os.path.basename(f) for f in files_list])
         combine.header['NBIAS'] = len(files_list)
@@ -1537,6 +1655,29 @@ class ReduceSatObs(object):
 
         # Return result
         return combine
+
+    @staticmethod
+    def _stamp_master_provenance(header, input_headers):
+        """Write the temperature and source of the combined frames to a master header.
+
+        ``ccdproc.combine`` copies the header of the first input frame, so the per-frame
+        provenance keys are replaced by values describing all input frames.
+        """
+        temps = [ctemp.header_tempref(h) for h in input_headers]
+        temps = [t for t in temps if t is not None]
+        for key in (ctemp.KEY_TEMPOK, ctemp.KEY_TEMPVAL, ctemp.KEY_CALPROD, ctemp.KEY_TEMPGRP):
+            header.remove(key, ignore_missing=True)
+        if temps:
+            header[ctemp.KEY_TEMPREF] = (round(float(np.median(temps)), 2), '[degC] median CCD temperature of inputs')
+            header['TEMPMIN'] = (round(float(min(temps)), 2), '[degC] minimum CCD temperature of inputs')
+            header['TEMPMAX'] = (round(float(max(temps)), 2), '[degC] maximum CCD temperature of inputs')
+            header['NTEMP'] = (len(temps), 'number of inputs with a known CCD temperature')
+        else:
+            header.remove(ctemp.KEY_TEMPREF, ignore_missing=True)
+        sources = sorted({str(h[ctemp.KEY_CALSRC]) for h in input_headers if ctemp.KEY_CALSRC in h})
+        if sources:
+            header[ctemp.KEY_CALSRC] = (sources[0] if len(sources) == 1 else 'mixed',
+                                        'night of the calibration frames')
 
     def create_bad_pixel_map(self, hdr, obsparams,
                              mflat_ccd, mbias_ccd, ccd_mask_fname, vignette=0.975, silent=False):
@@ -2088,6 +2229,12 @@ class ReduceSatObs(object):
         self._log.debug(f"{' ':<4}Science exposures     : {requirement['science_exposure_times']}")
         self._log.debug(f"{' ':<4}Science filters       : {[f[0] for f in requirement['filters']]}")
 
+        if str(self._config.get('CALIB_SOURCE', 'product')).strip().lower() != 'night':
+            return self._prepare_calibrations_by_product(telescope, obsparams, filters, binnings, requirement,
+                                                         calib_state, resolved_date, date_route,
+                                                         dataset_date_root, parent_search_root, master_out,
+                                                         sci_root_path, sci_bin_str, suffix, inst)
+
         # Probe same-night candidate
         selected_probe = None  # type: Optional[dict]
         fallback_deltas = []
@@ -2381,6 +2528,704 @@ class ReduceSatObs(object):
             master_darks=master_darks,
         )
 
+    # -------------------------------------------------------------------------
+    # Per-product calibration sources (CALIB_SOURCE = 'product')
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _night_label(night_date):
+        return night_date.strftime('%Y-%m-%d') if night_date is not None else 'unknown'
+
+    def _master_name(self, kind, suffix, bin_str, filt=None, exp=None, token=None, tag=None):
+        """Master file name; temperature token and source tag are appended when given."""
+        inst = f'{self._instrument}_' if self._telescope == 'DDOTI 28-cm f/2.2' else ''
+        if kind == 'bias':
+            base = f'master_bias_{inst}{bin_str}'
+        elif kind == 'dark':
+            base = f"master_dark_{inst}{bin_str}_{str(float(exp)).replace('.', 'p')}"
+        else:
+            base = f'master_flat_{inst}{filt}_{bin_str}'
+        for part in (token, tag):
+            if part:
+                base += f'_{part}'
+        return base + suffix
+
+    @staticmethod
+    def _mask_fname_for_flat(mflat_fname):
+        """Bad-pixel mask file name belonging to a master flat (same tokens)."""
+        mflat_fname = Path(mflat_fname)
+        stem = mflat_fname.stem.replace('master_flat_', 'mask_from_ccdmask_', 1)
+        return str(mflat_fname.with_name(f'{stem}.fits'))
+
+    def _scan_masters(self, master_root, kind, bin_str, expected_shape, night_date, filt=None):
+        """Existing master offers in a master_calibs folder."""
+        master_root = Path(master_root)
+        if not master_root.is_dir():
+            return []
+        inst = f'{self._instrument}_' if self._telescope == 'DDOTI 28-cm f/2.2' else ''
+        prefix = {'bias': f'master_bias_{inst}{bin_str}',
+                  'dark': f'master_dark_{inst}{bin_str}_',
+                  'flat': f'master_flat_{inst}{filt}_{bin_str}'}[kind]
+        offers = []
+        for path in sorted(master_root.glob(prefix + '*')):
+            if path.suffix.lower() not in self.INDEX_SUFFIXES or not self._is_master_usable(path, expected_shape):
+                continue
+            rest = path.stem[len(prefix):]
+            # 'master_bias_2x2' must not pick up 'master_bias_2x2x...' style names
+            if kind in ('bias', 'flat') and rest and not rest.startswith('_'):
+                continue
+            try:
+                hdr = fits.getheader(path)
+            except Exception:
+                continue
+            src_date = self._parse_obs_date_from_text(hdr.get(ctemp.KEY_CALSRC)) or night_date
+            exp = None
+            if kind == 'dark':
+                value = self._get_header_value(hdr, 'EXPTIME')
+                if value is None:
+                    continue
+                exp = float(value)
+            offers.append({'kind': kind, 'master': True, 'path': str(path), 'files': [],
+                           'date': src_date, 'T': ctemp.header_tempref(hdr), 'exp': exp, 'n': None,
+                           'in_science_root': None, 'data_cache': None})
+        return offers
+
+    def _group_raw_offers(self, files, kind, night_date, obsparams, split_exposure):
+        """Group raw frames of one night into offers by exposure (darks) and temperature."""
+        settings = self._temp_settings
+        match = settings is not None and settings['mode'] == 'match'
+        tol = settings['tolerance'] if settings else 0.
+        min_frames = int(self._config.get('MIN_CALIB_FRAMES', 3))
+        by_exp = collections.defaultdict(list)
+        for f in files:
+            meta = self._frame_meta(f, obsparams)
+            if split_exposure:
+                if meta['exptime'] is None:
+                    continue
+                by_exp[float(meta['exptime'])].append((f, meta))
+            else:
+                by_exp[None].append((f, meta))
+        offers = []
+        for exp, items in sorted(by_exp.items(), key=lambda kv: (kv[0] is None, kv[0])):
+            temps = [m['tempref'] if match else None for _, m in items]
+            groups, unknown = ctemp.group_temperatures(temps, tol)
+            members = list(groups) + ([(None, unknown)] if unknown else [])
+            for ref, idx in members:
+                group = [items[i] for i in idx]
+                good = [f for f, m in group if m['tempok'] is not False]
+                use = good if len(good) >= min_frames else [f for f, _ in group]
+                offers.append({'kind': kind, 'master': False, 'path': use[0], 'files': sorted(use),
+                               'date': night_date, 'T': ref, 'exp': exp, 'n': len(use), 'data_cache': None})
+        return offers
+
+    def _offer_image(self, offer):
+        """Low-noise image of an offer (master, or median of up to three raw frames) and the
+        noise of a single frame; cached on the offer. None if unreadable."""
+        if offer['data_cache'] is None:
+            try:
+                if offer['master']:
+                    hdr = fits.getheader(offer['path'])
+                    data = fits.getdata(offer['path']).astype(np.float32)
+                    n_comb = max(1, int(hdr.get('NDARK', hdr.get('NBIAS', 1)) or 1))
+                    noise = float(mad_std(data[np.isfinite(data)])) * np.sqrt(n_comb)
+                else:
+                    frames = [fits.getdata(f).astype(np.float32) for f in offer['files'][:3]]
+                    data = np.median(np.array(frames), axis=0) if len(frames) > 1 else frames[0]
+                    noise = float(mad_std(frames[0][np.isfinite(frames[0])]))
+                offer['data_cache'] = (data, noise)
+            except Exception as exc:
+                self._log.debug(f"{' ':<4}Cannot read {offer['path']}: {exc}")
+                offer['data_cache'] = (None, None)
+        return offer['data_cache']
+
+    def _dark_offer_significant(self, offer, target_exp, bias_offer=None):
+        """Whether the thermal signal of a dark offer matters at the target exposure."""
+        if offer['exp'] is None:
+            return False
+        data, noise = self._offer_image(offer)
+        if data is None:
+            return True
+        bias, bias_noise = self._offer_image(bias_offer) if bias_offer is not None else (None, None)
+        # Raw bias frames give the cleanest single-frame (read) noise
+        if bias is not None and bias_offer is not None and not bias_offer['master'] and bias_noise:
+            noise = bias_noise
+        significant = ctemp.dark_is_significant(data, offer['exp'], target_exp, noise=noise, bias=bias)
+        self._log.debug(f"{' ':<4}Dark {offer['exp']:g}s ({Path(offer['path']).name}): thermal signal at "
+                        f"{target_exp:g}s {'significant' if significant else 'insignificant'}")
+        return significant
+
+    def _prepare_calibrations_by_product(self, telescope, obsparams, filters, binnings, requirement,
+                                         calib_state, resolved_date, date_route, dataset_date_root,
+                                         parent_search_root, master_out, sci_root_path, sci_bin_str,
+                                         suffix, inst):
+        """Choose every calibration product from the best night and build the masters.
+
+        Bias, darks and flats are resolved independently over the science night and the
+        neighbouring nights (``TIMEDELTA_DAYS``). In ``match`` mode the CCD temperature is a
+        soft preference; it never makes the only available calibration unusable (except
+        significant darks under ``TEMP_MISMATCH = 'strict'``).
+        """
+        prefs = requirement['user_preferences']
+        settings = self._temp_settings
+        match = settings is not None and settings['mode'] == 'match'
+        tol = settings['tolerance'] if settings else 0.
+        policy = settings['policy'] if settings else 'nearest'
+        min_frames = int(self._config.get('MIN_CALIB_FRAMES', 3))
+        dark_tol = float(prefs['DARK_TOLERANCE'])
+        allow_scaling = bool(prefs['ALLOW_DARK_SCALING'])
+        force = requirement['force_reduction']
+        expected_shape = requirement['science_image_shape']
+        t_sci = self._pass_temp if match else None
+        science_root = Path(master_out).resolve()
+        calib_night = resolved_date if date_route == 'configured_date_range_fallback' else None
+        pass_name = self._pass_name()
+
+        # Candidate nights: the science night first, neighbouring nights loaded on demand
+        nights = [{'root': Path(dataset_date_root).resolve(), 'date': resolved_date, 'calib_night': calib_night}]
+        fallbacks_loaded = [False]
+
+        def load_fallback_nights():
+            if fallbacks_loaded[0]:
+                return
+            fallbacks_loaded[0] = True
+            try:
+                roots, _ = self._collect_fallback_candidates(parent_search_root, resolved_date)
+            except Exception as exc:
+                self._log.debug(f"{' ':<4}Fallback nights unavailable: {exc}")
+                roots = []
+            for root in roots:
+                if root.resolve() == nights[0]['root']:
+                    continue
+                nights.append({'root': root.resolve(), 'date': self._parse_obs_date_from_text(root.name),
+                               'calib_night': None})
+            self._log.debug(f"{' ':<4}Neighbouring nights searched: {[n['root'].name for n in nights[1:]]}")
+
+        offer_cache = {}
+
+        def offers_for(kind, filt=None, all_nights=False):
+            if all_nights:
+                load_fallback_nights()
+            result = []
+            for idx, night in enumerate(nights if all_nights else nights[:1]):
+                key = (kind, filt, str(night['root']))
+                if key not in offer_cache:
+                    found = []
+                    # Existing masters: the science night's master_calibs (any source) and the
+                    # neighbouring nights' master_calibs (adoptable)
+                    master_root = night['root'] / 'master_calibs'
+                    if idx == 0:
+                        if not force:
+                            for o in self._scan_masters(science_root, kind, sci_bin_str, expected_shape,
+                                                        resolved_date, filt=filt[0] if filt else None):
+                                o['in_science_root'] = True
+                                found.append(o)
+                    elif master_root.resolve() != science_root:
+                        for o in self._scan_masters(master_root, kind, sci_bin_str, expected_shape,
+                                                    night['date'], filt=filt[0] if filt else None):
+                            o['in_science_root'] = False
+                            found.append(o)
+                    files = self._night_calib_files(night['root'], kind, obsparams, binnings, inst,
+                                                    filt=filt[1] if filt else None,
+                                                    calib_night=night['calib_night'])
+                    found.extend(self._group_raw_offers(files, kind, night['date'], obsparams,
+                                                        split_exposure=(kind == 'dark')))
+                    offer_cache[key] = found
+                result.extend(offer_cache[key])
+            return result
+
+        def night_key(date, preferred):
+            if date is None:
+                return 1, 999, 999
+            d = (date - resolved_date).days
+            return (0 if date == preferred else 1), abs(d), d
+
+        def unknown_flag(offer, target_t):
+            return 1 if (match and target_t is not None and offer['T'] is None) else 0
+
+        def few_flag(offer):
+            return 1 if (not offer['master'] and offer['n'] is not None and offer['n'] < min_frames) else 0
+
+        def tie(offer):
+            return 0 if offer['master'] else 1, str(offer['path'])
+
+        def rank_bias(target_t, preferred):
+            def key(o):
+                if o['date'] == preferred:
+                    cat = 0
+                elif not match or target_t is None or o['T'] is None or ctemp.within_tolerance(o['T'], target_t, tol):
+                    cat = 1
+                else:
+                    cat = 2
+                return (cat, few_flag(o), night_key(o['date'], preferred), unknown_flag(o, target_t),
+                        ctemp.temperature_distance(o['T'], target_t) if match else 0.) + tie(o)
+            best = None
+            for all_nights in (False, True):
+                offers = offers_for('bias', all_nights=all_nights)
+                if offers:
+                    best = min(offers, key=key)
+                    if key(best)[0] == 0:
+                        return best
+            return best
+
+        reference_bias = []
+
+        def significance_bias(bias_offer):
+            """Bias used to isolate the thermal signal of darks (any temperature will do)."""
+            if bias_offer is not None:
+                return bias_offer
+            if not reference_bias:
+                reference_bias.append(rank_bias(None, resolved_date))
+            return reference_bias[0]
+
+        def rank_dark(target_exp, target_t, bias_ok, preferred, bias_offer=None):
+            def evaluate(o):
+                exact = abs(o['exp'] - target_exp) <= dark_tol
+                scaled = (not exact) and allow_scaling and bias_ok
+                if not exact and not scaled:
+                    return None
+                tmatch = True
+                if (match and target_t is not None and o['T'] is not None
+                        and not ctemp.within_tolerance(o['T'], target_t, tol)
+                        and self._dark_offer_significant(o, target_exp, significance_bias(bias_offer))):
+                    tmatch = False
+                if tmatch:
+                    cat = 0 if exact else 1
+                elif exact and policy != 'strict':
+                    cat = 2
+                else:
+                    return None
+                return (cat, few_flag(o), night_key(o['date'], preferred), unknown_flag(o, target_t),
+                        ctemp.temperature_distance(o['T'], target_t) if match else 0.,
+                        abs(o['exp'] - target_exp)) + tie(o)
+            best, best_key = None, None
+            for all_nights in (False, True):
+                for o in offers_for('dark', all_nights=all_nights):
+                    k = evaluate(o)
+                    if k is not None and (best_key is None or k < best_key):
+                        best, best_key = o, k
+                if best_key is not None and best_key[0] == 0:
+                    break
+            if best is None:
+                return None, None
+            return best, {'is_exact': best_key[0] in (0, 2), 'mismatch': best_key[0] == 2}
+
+        bias_offers_used = {}  # id(offer) -> product id
+        dark_offers_used = {}
+
+        def flat_baseline(offer):
+            """Bias and flat-darks for a raw flat at its own temperature, from its own night first."""
+            t_flat = offer['T']
+            flat_bias = rank_bias(t_flat, offer['date']) if prefs['BIAS_CORRECT'] else None
+            flat_darks = {}
+            if prefs['FLATDARK_CORRECT']:
+                exposures = sorted({self._frame_meta(f, obsparams)['exptime'] for f in offer['files']
+                                    if self._frame_meta(f, obsparams)['exptime'] is not None})
+                for exp in exposures:
+                    dark, info = rank_dark(exp, t_flat, flat_bias is not None, offer['date'], flat_bias)
+                    if dark is not None:
+                        flat_darks[float(exp)] = (dark, info)
+                darks_cover = bool(exposures) and all(
+                    float(exp) in flat_darks and flat_darks[float(exp)][1]['is_exact'] for exp in exposures)
+            else:
+                darks_cover = False
+            ok = flat_bias is not None or darks_cover
+            return ok, flat_bias, flat_darks
+
+        def rank_flat(filt):
+            def key(o):
+                return (night_key(o['date'], resolved_date), few_flag(o), unknown_flag(o, t_sci),
+                        ctemp.temperature_distance(o['T'], t_sci) if match else 0.) + tie(o)
+            had_raw = False
+            for all_nights in (False, True):
+                for o in sorted(offers_for('flat', filt=filt, all_nights=all_nights), key=key):
+                    if o['master']:
+                        return o, None, {}, False
+                    had_raw = True
+                    ok, flat_bias, flat_darks = flat_baseline(o)
+                    if ok:
+                        return o, flat_bias, flat_darks, False
+            return None, None, {}, had_raw
+
+        # ---- resolve the science products
+        unresolved = []
+        sci_bias = rank_bias(t_sci, resolved_date) if prefs['BIAS_CORRECT'] else None
+        sci_darks = {}
+        if prefs['DARK_CORRECT']:
+            for exp in requirement['science_exposure_times']:
+                dark, info = rank_dark(float(exp), t_sci, sci_bias is not None, resolved_date, sci_bias)
+                if dark is not None:
+                    sci_darks[float(exp)] = (dark, info)
+
+        flats = {}
+        if prefs['FLAT_CORRECT']:
+            for filt in requirement['filters']:
+                offer, flat_bias, flat_darks, had_raw = rank_flat(filt)
+                if offer is None:
+                    unresolved.append(f'flat-baseline:{filt[0]}' if had_raw else f'flat:{filt[0]}')
+                else:
+                    flats[filt[0]] = (offer, flat_bias, flat_darks)
+
+        if prefs['BIAS_CORRECT'] and sci_bias is None:
+            # Darks can only replace the bias when used unscaled
+            covered = bool(requirement['science_exposure_times']) and all(
+                float(exp) in sci_darks and sci_darks[float(exp)][1]['is_exact']
+                for exp in requirement['science_exposure_times'])
+            if not covered:
+                unresolved.append('bias')
+        if prefs['DARK_CORRECT'] and sci_bias is None:
+            unresolved.extend(f'dark-baseline:{float(exp):g}' for exp in requirement['science_exposure_times']
+                              if float(exp) not in sci_darks)
+
+        searched = [n['root'] for n in nights]
+        if unresolved:
+            unresolved = sorted(set(unresolved))
+            failure_items = [{'product': 'flat' if t.startswith(('flat:', 'flat-baseline:')) else t, 'reason': t}
+                             for t in unresolved]
+            if any(str(item['reason']).startswith(('dark-baseline:', 'flat-baseline:')) for item in failure_items):
+                status = 'dataset_failed_no_bias_or_dark'
+            elif any(i['product'] == 'flat' for i in failure_items):
+                status = 'dataset_failed_missing_requested_flat'
+            else:
+                status = 'dataset_failed_missing_requested_bias'
+            return self._make_failure_result(
+                status=status,
+                reason=(f"Calibration preparation failed for {pass_name}. Unresolved calibration types: "
+                        f"{unresolved}. Searched nights: {[str(p) for p in searched]}. "
+                        f"Date resolution route: {date_route}. Master output root: {master_out}."),
+                dataset_path=sci_root_path, binning=pass_name, master_output=master_out,
+                failed_products=failure_items, searched_sources=searched)
+
+        # ---- turn the chosen offers into master products
+        products = {}  # product id -> {'kind', 'offer', 'path', 'create', 'adopt'}
+
+        def product_id(kind, offer):
+            token = ctemp.temperature_token(offer['T']) if match else None
+            label = self._night_label(offer['date'])
+            if offer['master']:
+                return f"{kind}:{Path(offer['path']).name}:{label}"
+            exp = f":{offer['exp']:g}s" if kind == 'dark' else ''
+            return f"{kind}{exp}:{token or 'T-'}:{label}"
+
+        def register(kind, offer, filt_name=None):
+            pid = product_id(kind if kind != 'flat' else f'flat-{filt_name}', offer)
+            if pid in products:
+                return pid
+            token = ctemp.temperature_token(offer['T']) if match else None
+            tag = None if offer['date'] == resolved_date else ctemp.source_tag(offer['date'])
+            if offer['master'] and offer.get('in_science_root'):
+                products[pid] = {'kind': kind, 'offer': offer, 'path': Path(offer['path']), 'create': False,
+                                 'adopt': None}
+                return pid
+            if offer['master'] and offer['T'] is None:
+                token = None
+            name = self._master_name(kind, suffix, sci_bin_str, filt=filt_name, exp=offer['exp'],
+                                     token=token, tag=tag)
+            target = science_root / name
+            products[pid] = {'kind': kind, 'offer': offer, 'path': target, 'create': not offer['master'],
+                             'adopt': Path(offer['path']) if offer['master'] else None}
+            return pid
+
+        mismatches = []
+
+        def note_mismatch(what, used_t, target_t):
+            if match and used_t is not None and target_t is not None \
+                    and not ctemp.within_tolerance(used_t, target_t, tol):
+                mismatches.append(f'{what} {used_t:g} degC for {target_t:g} degC')
+                return True
+            return False
+
+        product_sources = {}
+        sci_bias_pid = None
+        if sci_bias is not None:
+            sci_bias_pid = register('bias', sci_bias)
+            calib_state['bias']['product'] = sci_bias_pid
+            calib_state['bias']['temp_mismatch'] = note_mismatch('bias', sci_bias['T'], t_sci)
+            product_sources['bias'] = (self._night_label(sci_bias['date']), sci_bias['T'],
+                                       products[sci_bias_pid]['path'])
+        else:
+            calib_state['bias']['product'] = None
+
+        self._master_dark_meta = {}
+
+        def register_dark(dark, consumer_bias_pid):
+            pid = register('dark', dark)
+            meta = self._master_dark_meta.setdefault(pid, {'exp': dark['exp'], 'bias_product': consumer_bias_pid,
+                                                          'dfilter': None})
+            if meta['bias_product'] is None:
+                meta['bias_product'] = consumer_bias_pid
+            if products[pid]['create']:
+                meta['dfilter'] = {'imagetyp': bc.IMAGETYP_DARK, ctemp.KEY_CALPROD.lower(): pid}
+            return pid
+
+        for exp in requirement['science_exposure_times']:
+            entry = calib_state['dark']['science'].get(float(exp))
+            if entry is None:
+                continue
+            if float(exp) not in sci_darks:
+                entry.update({'available': False, 'fallback': 'bias' if sci_bias is not None else 'none',
+                              'status': 'optional_unavailable_bias_fallback' if sci_bias is not None else 'unavailable'})
+                continue
+            dark, info = sci_darks[float(exp)]
+            pid = register_dark(dark, sci_bias_pid)
+            mism = info['mismatch'] and note_mismatch(f'dark {dark["exp"]:g}s', dark['T'], t_sci)
+            entry.update({'available': True, 'actual_exposure': float(dark['exp']), 'is_exact': info['is_exact'],
+                          'product': pid, 'fallback': 'none', 'temp_mismatch': bool(mism),
+                          'status': 'raw_creatable' if products[pid]['create'] else 'science_date_master_usable'})
+            product_sources[f'dark {float(exp):g}s'] = (self._night_label(dark['date']), dark['T'],
+                                                       products[pid]['path'])
+
+        self._master_flat_info = {}
+        for filt in requirement['filters']:
+            filt_name = filt[0]
+            if filt_name not in flats:
+                continue
+            offer, flat_bias, flat_darks = flats[filt_name]
+            pid = register('flat', offer, filt_name=filt_name)
+            entry = calib_state['flat'][filt_name]
+            entry['temp_mismatch'] = note_mismatch(f'flat {filt_name}', offer['T'], t_sci)
+            entry['temp'] = offer['T']
+            entry['bias_product'] = None
+            entry['flat_dark_products'] = None
+            if products[pid]['create']:
+                entry['dfilter'] = {'imagetyp': bc.IMAGETYP_FLAT, 'binning': sci_bin_str,
+                                    ctemp.KEY_CALPROD.lower(): pid}
+                if flat_bias is not None:
+                    entry['bias_product'] = register('bias', flat_bias)
+                    note_mismatch(f'flat-bias {filt_name}', flat_bias['T'], offer['T'])
+                if flat_darks:
+                    entry['flat_dark_products'] = {}
+                    for exp, (dark, info) in flat_darks.items():
+                        dpid = register_dark(dark, entry['bias_product'])
+                        entry['flat_dark_products'][float(exp)] = dpid
+                        fd_entry = calib_state['dark']['flat'].setdefault(float(exp), {
+                            'requested': True, 'blocking': False, 'created': False, 'fallback': 'none',
+                            'master_status': None})
+                        if not fd_entry.get('available'):
+                            fd_entry.update({'available': True, 'actual_exposure': float(dark['exp']),
+                                             'is_exact': info['is_exact'], 'product': dpid,
+                                             'target_exposure': float(exp), 'wanted': True})
+            self._master_flat_info[filt_name] = [products[pid]['path'], products[pid]['create']]
+            product_sources[f'flat {filt_name}'] = (self._night_label(offer['date']), offer['T'],
+                                                    products[pid]['path'])
+
+        # Bias products and their frame selection
+        self._master_bias_info = {}
+        self._master_bias_dfilter = {}
+        self._master_bias_status = {}
+        self._master_dark_info = {}
+        for pid, prod in products.items():
+            if prod['kind'] == 'bias':
+                self._master_bias_info[pid] = [prod['path'], prod['create']]
+                if prod['create']:
+                    self._master_bias_dfilter[pid] = {'imagetyp': bc.IMAGETYP_BIAS, 'binning': sci_bin_str,
+                                                      ctemp.KEY_CALPROD.lower(): pid}
+            elif prod['kind'] == 'dark':
+                self._master_dark_info[pid] = [prod['path'], prod['create']]
+        self._dark_exptimes = sorted({m['exp'] for m in self._master_dark_meta.values()})
+        self._master_calib_path = master_out
+        source_dates = {p['offer']['date'] for p in products.values()}
+        selected_source = None
+        if len(source_dates) == 1:
+            only = next(iter(source_dates))
+            selected_source = next((n['root'] for n in nights if n['date'] == only), None)
+        self._selected_calibration_source_folder = str(selected_source) if selected_source else None
+
+        for pid, prod in products.items():
+            src = prod['offer']
+            self._log.debug(f"{' ':<4}Product {pid}: {'create' if prod['create'] else ('adopt' if prod['adopt'] else 'use')}"
+                            f" {prod['path'].name} (night {self._night_label(src['date'])}, "
+                            f"T {src['T'] if src['T'] is not None else '-'}, "
+                            f"{len(src['files']) if src['files'] else 'master'})")
+
+        # ---- adopt masters from neighbouring nights
+        for pid, prod in products.items():
+            if prod['adopt'] is None:
+                continue
+            target = prod['path']
+            source = prod['adopt']
+            target.parent.mkdir(exist_ok=True, parents=True)
+            if target.exists() and not force and self._is_master_usable(target, expected_shape):
+                status = 'loaded_existing_science_date_master'
+            else:
+                was_existing = target.exists()
+                try:
+                    shutil.copy2(source, target)
+                    if ctemp.KEY_CALSRC not in fits.getheader(target):
+                        fits.setval(str(target), ctemp.KEY_CALSRC, value=self._night_label(prod['offer']['date']),
+                                    comment='night of the calibration frames')
+                except Exception as exc:
+                    raise MasterBuildError(f'Failed to adopt master {source} -> {target}: {exc}') from exc
+                status = 'overwritten_by_adopted_fallback_master' if was_existing else 'adopted_from_fallback_master'
+            self._log.debug(f"{' ':<4}Adopted master {source} -> {target}")
+            if prod['kind'] == 'bias':
+                self._master_bias_status[pid] = status
+                if pid == sci_bias_pid:
+                    calib_state['bias']['master_status'] = status
+            elif prod['kind'] == 'flat':
+                for filt_name, (path, _) in self._master_flat_info.items():
+                    if Path(path) == target:
+                        calib_state['flat'][filt_name]['master_status'] = status
+            else:
+                for consumer in ('science', 'flat'):
+                    for info in calib_state['dark'][consumer].values():
+                        if info.get('product') == pid:
+                            info['master_status'] = status
+
+        # ---- stage the raw frames of all products to create
+        self._clear_staged_calibrations()
+        staged_imagetyp = {'bias': bc.IMAGETYP_BIAS, 'dark': bc.IMAGETYP_DARK, 'flat': bc.IMAGETYP_FLAT}
+        for pid, prod in products.items():
+            if not prod['create']:
+                continue
+            offer = prod['offer']
+            self._stage_product_files(offer['files'], staged_imagetyp[prod['kind']], pid,
+                                      self._night_label(offer['date']), offer['date'] == resolved_date,
+                                      telescope, obsparams)
+
+        # ---- build, validate, summarise
+        try:
+            master_darks = self._build_master_products(requirement=requirement, calib_state=calib_state,
+                                                       obsparams=obsparams, filters=requirement['filters'])
+        except MasterBuildError:
+            raise
+        except Exception as exc:
+            raise MasterBuildError(str(exc)) from exc
+
+        fatal_missing, optional_missing = self._validate_master_products(requirement=requirement,
+                                                                         calib_state=calib_state,
+                                                                         master_out=master_out)
+        if fatal_missing:
+            failed_products = [{'product': 'flat' if str(i).startswith('flat:') else str(i).split(':', 1)[0],
+                                'reason': str(i)} for i in fatal_missing]
+            return self._make_failure_result(
+                status='dataset_failed_validation_error',
+                reason=(f"Calibration validation failed. Missing hard products: {fatal_missing}. "
+                        f"Optional unavailable: {optional_missing}. Master output root: {master_out}."),
+                dataset_path=sci_root_path, binning=pass_name, selected_source=selected_source,
+                master_output=master_out, failed_products=failed_products, searched_sources=searched)
+
+        if prefs['DARK_CORRECT']:
+            if not calib_state['bias'].get('available') and not (master_darks and master_darks.get('sci_dark')):
+                return self._make_failure_result(
+                    status='dataset_failed_no_bias_or_dark',
+                    reason='No usable science bias or science dark available.',
+                    dataset_path=sci_root_path, binning=pass_name, selected_source=selected_source,
+                    master_output=master_out, searched_sources=searched)
+
+        self._obsparams = obsparams
+        calib_state['product_sources'] = product_sources
+        calib_state['science_temp'] = t_sci
+        if mismatches:
+            hint = ''
+            if any(m.startswith('dark') for m in mismatches) and \
+                    str(self._config.get('DARK_OPTIMIZE', 'off')).lower() == 'off':
+                hint = " Consider DARK_OPTIMIZE = 'mismatch' and HOTPIX_MASK = True."
+            self._log.warning(f"> CCD temperature mismatch ({pass_name}): " + '; '.join(mismatches) + '.' + hint)
+            calib_state['warnings'].extend(mismatches)
+
+        if not self.silent:
+            self._log_product_summary(requirement, calib_state, product_sources, resolved_date)
+
+        return CalibrationPrepResult(
+            ok=True, dataset_failed=False, status='ok', dataset_path=sci_root_path, binning=pass_name,
+            selected_source=selected_source, master_output=master_out,
+            searched_sources=[Path(p).resolve() for p in searched], calib_state=calib_state,
+            master_darks=master_darks, product_sources=product_sources,
+            warnings=list(calib_state['warnings']))
+
+    def _clear_staged_calibrations(self):
+        """Remove calibration frames staged by an earlier pass from the temporary folder."""
+        tmp_path = Path(self._tmp_path)
+        removed = 0
+        for path in tmp_path.iterdir():
+            if not path.is_file() or path.suffix.lower() not in self.INDEX_SUFFIXES:
+                continue
+            try:
+                imagetyp = str(fits.getval(path, 'IMAGETYP')).strip().lower()
+            except Exception:
+                continue
+            if imagetyp != str(bc.IMAGETYP_LIGHT).lower():
+                path.unlink(missing_ok=True)
+                removed += 1
+        if removed:
+            self._log.debug(f"{' ':<4}Removed {removed} staged calibration frame(s) of an earlier pass")
+
+    def _stage_product_files(self, file_list, imagetyp, product, night_label, same_night, telescope, obsparams):
+        """Copy the raw frames of one calibration product to the temporary folder and prepare them.
+
+        Frames from another night get the night as name prefix (no name collisions); every
+        frame is tagged with CALPROD (the product) and CALSRC (the night of the frames).
+        """
+        if not file_list:
+            return
+        tmp_path = Path(self._tmp_path)
+        if not self.silent:
+            self._log.info(f"{' ':<4}Copying {len(file_list)} raw {imagetyp} frame(s)"
+                           + ('' if same_night else f" from {night_label}"))
+        new_paths = []
+        for i, fpath in enumerate(file_list):
+            name = Path(fpath).name if same_night else f'{night_label}__{Path(fpath).name}'
+            target = tmp_path / name
+            shutil.copy2(str(fpath), target)
+            new_paths.append(str(target))
+            if not self.silent:
+                bc.print_progress_bar(i + 1, len(file_list), length=60,
+                                      color=bc.BCOLORS.OKGREEN, prefix=' ' * 2)
+        if not self.silent:
+            sys.stdout.write('\n')
+        self.prepare_fits_files(new_paths, telescope, obsparams, imagetyp,
+                                extra_keys={ctemp.KEY_CALPROD: product, ctemp.KEY_CALSRC: night_label})
+
+    def _log_product_summary(self, requirement, calib_state, product_sources, science_date):
+        """Calibration overview of a pass with the source night and temperature per product."""
+        status_words = {
+            'loaded_existing_science_date_master': 'loaded',
+            'adopted_from_fallback_master': 'adopted',
+            'overwritten_by_adopted_fallback_master': 'adopted',
+            'created_from_raw': 'created',
+            'overwritten_from_raw': 're-created',
+        }
+        science_label = self._night_label(science_date)
+        prefs = requirement['user_preferences']
+
+        def where(key):
+            night, temp, _ = product_sources[key]
+            parts = []
+            if temp is not None and self._temp_settings is not None and self._temp_settings['mode'] == 'match':
+                parts.append(f'{temp:g} degC')
+            parts.append('same night' if night == science_label else f'from {night}')
+            return ', '.join(parts)
+
+        bias = calib_state['bias']
+        if not prefs['BIAS_CORRECT']:
+            bias_line = 'off'
+        elif 'bias' not in product_sources:
+            bias_line = 'none (science darks used instead)'
+        else:
+            bias_line = f"{status_words.get(bias.get('master_status'), 'loaded')} ({where('bias')})"
+        dark_parts = []
+        for target, info in sorted(calib_state['dark']['science'].items()):
+            if not prefs['DARK_CORRECT']:
+                break
+            key = f'dark {target:g}s'
+            if not info.get('available') or key not in product_sources:
+                dark_parts.append(f'{target:g}s missing' + (' (bias only)' if info.get('fallback') == 'bias' else ''))
+                continue
+            text = f"{target:g}s {status_words.get(info.get('master_status'), 'loaded')}"
+            actual = info.get('actual_exposure')
+            if actual is not None and float(actual) != float(target):
+                text += f" ({float(actual):g}s dark{'' if info.get('is_exact') else ', scaled'})"
+            dark_parts.append(f'{text} ({where(key)})')
+        flat_parts = [f"{filt} {status_words.get(info.get('master_status'), 'loaded')} ({where(f'flat {filt}')})"
+                      for filt, info in sorted(calib_state['flat'].items()) if f'flat {filt}' in product_sources]
+        self._log.info(f"> Calibrations ({self._pass_name()})")
+        self._log.info(f"{' ':<4}Bias      : {bias_line}")
+        self._log.info(f"{' ':<4}Darks     : {', '.join(dark_parts) if prefs['DARK_CORRECT'] and dark_parts else ('off' if not prefs['DARK_CORRECT'] else 'none')}")
+        if prefs['FLAT_CORRECT']:
+            self._log.info(f"{' ':<4}Flats     : {', '.join(flat_parts) or 'none'}")
+        else:
+            self._log.info(f"{' ':<4}Flats     : off")
+
     def _log_calibration_summary(self, requirement, calib_state, source=None):
         """Log a compact per-binning overview of the calibrations used for science reduction.
 
@@ -2434,6 +3279,93 @@ class ReduceSatObs(object):
         if prefs['FLATDARK_CORRECT']:
             self._log.info(f"{' ':<4}Flat-darks: {_darks_line(calib_state['dark']['flat'])}")
         self._log.info(f"{' ':<4}Flats     : {flat_line}")
+
+    # Folders that never hold raw calibration frames (pipeline output, auxiliary data)
+    INDEX_EXCLUDED_DIRS = {'atmp', 'reduced', 'calibrated', 'auxiliary', 'processed', 'catalogs',
+                           'figures', 'tle_predictions', 'master_calibs'}
+    INDEX_SUFFIXES = ('.fit', '.fits', '.fts')
+
+    def _night_index(self, night_root):
+        """Return the cached calibration index of a night folder.
+
+        The index lists all FITS files below ``night_root`` (``.fit``, ``.fits``, ``.fts``,
+        any case), skipping pipeline output folders and dotfiles, and holds one
+        ImageFileCollection that is reused for every product. Compressed ``.fz``
+        files are not supported and only counted.
+        """
+        night_root = Path(night_root).resolve()
+        entry = self._night_index_cache.get(night_root)
+        if entry is not None:
+            return entry
+
+        t0 = time.perf_counter()
+        files = []
+        n_fz = 0
+        if night_root.is_dir():
+            for root, dirs, fnames in os.walk(night_root):
+                dirs[:] = sorted(d for d in dirs
+                                 if d.lower() not in self.INDEX_EXCLUDED_DIRS and not d.startswith('.'))
+                for fname in sorted(fnames):
+                    if fname.startswith('.'):
+                        continue
+                    lower = fname.lower()
+                    if lower.endswith(self.INDEX_SUFFIXES):
+                        files.append(str(Path(root, fname)))
+                    elif lower.endswith('.fz'):
+                        n_fz += 1
+        ic_all = ImageFileCollection(filenames=files) if files else None
+        entry = {'files': files, 'ic': ic_all, 'groups': {}}
+        self._night_index_cache[night_root] = entry
+        self._log.debug(f"{' ':<4}[index] {night_root.name}: {len(files)} FITS file(s) indexed "
+                        f"in {time.perf_counter() - t0:.1f} s"
+                        + (f"; {n_fz} compressed .fz file(s) skipped" if n_fz else ''))
+        return entry
+
+    def _night_calib_files(self, night_root, imagetyp, obsparams, binnings, inst=None,
+                           filt=None, calib_night=None):
+        """Raw calibration frames of one type (and filter) in a night, via the cached index."""
+        entry = self._night_index(night_root)
+        key = (imagetyp, tuple(binnings), filt, calib_night)
+        if key in entry['groups']:
+            return entry['groups'][key]
+        files = []
+        if entry['ic'] is not None:
+            dfilter, add_filters, regexp = self.create_dfilter(inst, obsparams, imagetyp)
+            if filt is not None:
+                dfilter[obsparams['filter'].lower()] = filt
+            try:
+                files = sorted(str(f) for f in self.filter_calib_files(entry['files'], obsparams, dfilter,
+                                                                       add_filters, binnings, calib_night,
+                                                                       regexp=regexp, ic_all=entry['ic']))
+            except Exception as exc:
+                self._log.debug(f"{' ':<4}[index] {Path(night_root).name}: no {imagetyp} frames ({exc})")
+                files = []
+        entry['groups'][key] = files
+        return files
+
+    def _frame_meta(self, file_path, obsparams):
+        """Cached header metadata of a raw calibration frame (exposure, temperature)."""
+        file_path = str(file_path)
+        meta = self._frame_meta_cache.get(file_path)
+        if meta is not None:
+            return meta
+        exptime, tempref, tempok = None, None, None
+        try:
+            with fits.open(file_path, mode='readonly', ignore_missing_end=True) as hdul:
+                hdul.verify('silentfix')
+                prim = hdul[0].header
+                ext = hdul[1].header if len(hdul) > 1 else None
+                value = self._get_header_value(prim, obsparams['exptime'])
+                if value is None and ext is not None:
+                    value = self._get_header_value(ext, obsparams['exptime'])
+                exptime = None if value is None else float(value)
+                if self._temp_settings is not None:
+                    tempref, tempok, _ = ctemp.frame_temperature(prim, self._temp_settings, ext)
+        except Exception as exc:
+            self._log.debug(f"{' ':<4}[index] unreadable header {file_path}: {exc}")
+        meta = {'exptime': exptime, 'tempref': tempref, 'tempok': tempok}
+        self._frame_meta_cache[file_path] = meta
+        return meta
 
     def _list_fits(self, search_path, suffix):
         fits_files = list(Path(search_path).rglob(f"*{suffix}"))
@@ -2555,23 +3487,18 @@ class ReduceSatObs(object):
         Actual availability is tracked separately in calib_state.
         """
         ic_all = ImageFileCollection(location=self._tmp_path)
-        ic_science = ic_all.filter(imagetyp=bc.IMAGETYP_LIGHT, binning=self._bin_str)
+        ic_science = ic_all.filter(**self._science_dfilter())
         if ic_science.summary is None or len(ic_science.summary) == 0:
-            raise RuntimeError(f'No normalized science files found for binning {self._bin_str}.')
+            raise RuntimeError(f'No normalized science files found for {self._pass_name()}.')
 
         science_filters = []
         for filt in filters:
-            n_files = len(ic_all.files_filtered(imagetyp=bc.IMAGETYP_LIGHT,
-                                                filter=filt[0],
-                                                binning=self._bin_str))
+            n_files = len(ic_all.files_filtered(filter=filt[0], **self._science_dfilter()))
             if n_files > 0:
                 science_filters.append(filt)
 
         science_exptimes = np.unique(ic_science.summary[obsparams['exptime'].lower()]).astype(float).tolist()
-        science_files = list(self.get_file_list(ic_all,
-                                                {'imagetyp': bc.IMAGETYP_LIGHT,
-                                                 'binning': self._bin_str},
-                                                abspath=True))
+        science_files = list(self.get_file_list(ic_all, self._science_dfilter(), abspath=True))
         representative_science_file = self._resolve_representative_science_file(science_files,
                                                                                 ic_science)
 
@@ -3780,7 +4707,7 @@ class ReduceSatObs(object):
 
     def filter_calib_files(self, fits_list, obsparams,
                            dfilter, add_filters,
-                           binnings, obs_date=None, regexp=False, group_keyword=None):
+                           binnings, obs_date=None, regexp=False, group_keyword=None, ic_all=None):
         """ Filter files according to their binning and observing night.
 
         If the first try with a binning keyword fails, use the unbinned image size
@@ -3807,6 +4734,8 @@ class ReduceSatObs(object):
         group_keyword : str or None, optional
             Header keyword to group files by before applying the night preference
             (e.g. the exposure time for darks). Defaults to None (one group).
+        ic_all : ImageFileCollection or None, optional
+            Pre-built collection of ``fits_list`` to avoid re-reading the headers. Defaults to None.
 
         Returns
         -------
@@ -3814,12 +4743,13 @@ class ReduceSatObs(object):
             A list of file paths that match the specified binning and observation date criteria.
 
         """
-        files_filtered = [f for f in fits_list if '/atmp/' not in str(f)
-                          and 'reduced' not in str(f)
-                          and 'master_calibs' not in str(f)]
+        if ic_all is None:
+            files_filtered = [f for f in fits_list if '/atmp/' not in str(f)
+                              and 'reduced' not in str(f)
+                              and 'master_calibs' not in str(f)]
 
-        # Create an image file collection from the file list
-        ic_all = ImageFileCollection(filenames=files_filtered)
+            # Create an image file collection from the file list
+            ic_all = ImageFileCollection(filenames=files_filtered)
 
         # Filter with binning keyword
         add_filters_tmp = add_filters.copy()

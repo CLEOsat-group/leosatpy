@@ -272,39 +272,46 @@ def temperature_distance(t_a, t_b):
     return abs(float(t_a) - float(t_b))
 
 
-def dark_is_significant(dark, dark_exptime, target_exptime, noise=None, percentile=99.9, nsigma=3.):
+def dark_is_significant(dark, dark_exptime, target_exptime, noise=None, bias=None,
+                        nsigma=5., min_pixels=50, min_fraction=1e-5):
     """Decide whether the thermal signal of a dark matters at a target exposure time.
 
-    The hot-pixel excess over the frame median (``percentile`` of
-    ``dark - median(dark)``), scaled to the target exposure, is compared with
-    ``nsigma`` times the noise of a single frame. A dark with zero exposure has
-    no thermal signal.
+    The thermal signal is the dark minus a reference bias (the bias level and
+    pattern do not depend on the temperature) or, without a bias, minus its
+    median. Scaled to the target exposure, the dark is significant if at least
+    ``max(min_pixels, min_fraction * N)`` pixels exceed ``nsigma`` times the noise
+    of a single frame, i.e. if a wrong-temperature dark would leave visible hot
+    pixels. A dark with zero exposure has no thermal signal.
 
     Parameters
     ----------
     dark : numpy.ndarray
-        Dark frame (single frame or master).
+        Dark frame (single frame or a low-noise combination).
     dark_exptime, target_exptime : float
         Exposure times in seconds.
     noise : float or None
         Noise sigma of a single frame; estimated from the dark if None.
+    bias : numpy.ndarray or None
+        Reference bias with the same shape as ``dark``.
     """
     if dark is None or dark_exptime is None or target_exptime is None:
         return False
     if float(dark_exptime) <= 0. or float(target_exptime) <= 0.:
         return False
     data = np.asarray(dark, dtype=float)
+    if bias is not None and np.shape(bias) == data.shape:
+        data = data - np.asarray(bias, dtype=float)
     data = data[np.isfinite(data)]
     if data.size == 0:
         return False
-    median = np.median(data)
-    excess = np.percentile(data - median, percentile)
+    data = data - np.median(data)
     if noise is None:
-        noise = 1.4826 * np.median(np.abs(data - median))
+        noise = _robust_sigma(data)
     if not noise or not math.isfinite(noise):
         return False
-    scaled = excess * float(target_exptime) / float(dark_exptime)
-    return bool(scaled > nsigma * noise)
+    scaled = data * float(target_exptime) / float(dark_exptime)
+    n_hot = int(np.count_nonzero(scaled > nsigma * noise))
+    return n_hot >= max(min_pixels, min_fraction * data.size)
 
 
 def _robust_sigma(values):
