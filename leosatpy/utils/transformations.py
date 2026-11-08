@@ -153,6 +153,11 @@ class FindWCS(object):
 
         # True: only return a solution that passes the acceptance criteria (assess_solution);
         # False: return the best available solution as in version 0.5.x, with a warning
+        # True: match asterisms (astroalign) if the correlation search gives no accepted solution
+        asterism = config.get('WCS_ASTERISM', True)
+        self.use_asterism = asterism if isinstance(asterism, bool) else \
+            str(asterism).strip().strip("'\"").lower() not in ('false', '0', 'no', 'off')
+
         strict = config.get('WCS_STRICT', True)
         self.strict = strict if isinstance(strict, bool) else \
             str(strict).strip().strip("'\"").lower() not in ('false', '0', 'no', 'off')
@@ -225,7 +230,7 @@ class FindWCS(object):
             first = [h for h in self.search_hypotheses if h['parity'] == prior_parity]
             if first:
                 self.log.debug(f"  Search the {prior_parity} parity of the previous solution first")
-                result = self._search(input_wcsprm, image, match_radius_px, first)
+                result = self._search(input_wcsprm, image, match_radius_px, first, allow_asterism=False)
                 if result[0] and result[2].get('accepted'):
                     result[2]['prior_used'] = True
                     return result
@@ -235,8 +240,12 @@ class FindWCS(object):
         result[2]['prior_used'] = False
         return result
 
-    def _search(self, input_wcsprm, image, match_radius_px, hypotheses):
-        """Search the given orientation hypotheses; see find_wcs."""
+    def _search(self, input_wcsprm, image, match_radius_px, hypotheses, allow_asterism=True):
+        """Search the given orientation hypotheses; see find_wcs.
+
+        If no candidate of the correlation search is accepted, asterisms are matched as a fallback
+        (``allow_asterism`` and WCS_ASTERISM).
+        """
         # Initialization
         self.image = image
         rotations = np.array([hypothesis['matrix'] for hypothesis in hypotheses])
@@ -415,196 +424,100 @@ class FindWCS(object):
         # After the main loop
         if possible_solutions:
             self.log.debug(f"{' ':<2}>> Possible solutions: {len(possible_solutions)}")
-            # Sort possible solutions by completeness, number of matches, and score
+            # Sort possible solutions by number of matches and score
             possible_solutions.sort(key=lambda x: (x['Nobs_matched'], x['score']),
                                     reverse=True)
 
-            # Select the top n solutions
-            top_solutions = possible_solutions[:max_num_top_solution]
+        # Select the top n solutions
+        top_solutions = possible_solutions[:max_num_top_solution]
 
-            confirmed_solutions = []
-            best_overall_completeness = 0.
-            best_overall_rms = np.inf
-            best_overall_solution = None
-            best_solution = None
+        # Use all sources for the refit
+        if has_large_src_cat and top_solutions:
+            self.source_cat = self.source_cat_full
+            self.get_source_cat_variables()
 
+        if top_solutions:
             self.log.debug(f"{' ':<2}> Analysing top {len(top_solutions)} solutions")
+        confirmed_solutions = [self._refine_candidate(solution, match_radius_px, match_radius_limit_px,
+                                                      initial_wcsprm, n_trials,
+                                                      label=f"{idx + 1}/{len(top_solutions)}")
+                               for idx, solution in enumerate(top_solutions)]
 
-            # Loop over top solutions
-            for idx, solution in enumerate(top_solutions):
+        # Asterism matching (astroalign) if the correlation search gave no accepted solution
+        if allow_asterism and self.use_asterism and not any(sol['accepted'] for sol in confirmed_solutions):
+            candidates = self.asterism_candidates(initial_wcsprm, hypotheses)
+            if candidates:
+                self.source_cat = self.source_cat_full
+                self.log.debug(f"{' ':<2}> Analysing {len(candidates)} asterism solution(s)")
+            confirmed_solutions += [self._refine_candidate(solution, match_radius_px, match_radius_limit_px,
+                                                           initial_wcsprm, n_trials * 10,
+                                                           label=f"asterism {idx + 1}/{len(candidates)}")
+                                    for idx, solution in enumerate(candidates)]
 
-                solution['has_converged'] = False
+        best_solution = None
+        if confirmed_solutions:
+            # Check if any solution converged
+            converged_solutions = [sol for sol in confirmed_solutions if sol['has_converged']]
+            accepted_solutions = [sol for sol in confirmed_solutions if sol['accepted']]
+            # Best non-converged fallback: highest completeness, then lowest rms
+            best_overall_solution = max(confirmed_solutions,
+                                        key=lambda x: (x['completeness'], -x['rms_dist']))
 
-                self.log.debug(f"{' ':<4}Run WCS fit [{idx + 1}/{len(top_solutions)}]")
-
-                current_wcsprm = solution['wcsprm']
-
-                # Update source catalog to include all sources if necessary
-                if has_large_src_cat:
-                    self.source_cat = self.source_cat_full
-                    self.get_source_cat_variables()
-
-                # Create a new index column
-                source_df = self.source_cat.reset_index(drop=False).rename(columns={'index': 'obs_idx'})
-
-                # Apply WCS and get matched data
-                matched_src_df, ref_cat_filtered, has_m_before, dist_mask_before = (
-                    self.apply_wcs_and_filter_sources(current_wcsprm=current_wcsprm,
-                                                      source_df=source_df,
-                                                      match_radius=match_radius_limit_px))
-
-                # Prepare data for fitting
-                src_df_fit, ref_df_fit = extract_sources_subset(matched_src_df,
-                                                                ref_cat_filtered,
-                                                                has_m_before)
-
-                # Fit possible WCS solution using least-squares
-                fit_status, refined_wcs, fit_pars = self.refine_wcs_fit(obs_df=src_df_fit,
-                                                                        ref_df=ref_df_fit,
-                                                                        wcsprm_in=current_wcsprm,
-                                                                        match_radius=match_radius_px)
-
-                # Apply WCS and get matched data for fitted WCS
-                matched_src_df_after, ref_cat_filtered_after, has_m_after, dist_mask_after = (
-                    self.apply_wcs_and_filter_sources(current_wcsprm=refined_wcs,
-                                                      source_df=source_df,
-                                                      match_radius=match_radius_limit_px))
-
-                # Extract matched sources
-                src_df_after, ref_df_after = extract_sources_subset(matched_src_df_after,
-                                                                    ref_cat_filtered_after,
-                                                                    has_m_after, dist_mask_after)
-
-                # Compute residual statistics for the fit results
-                residual_stats_after = compute_residual_stats(src_df_after, ref_df_after)
-
-                Nobs_matched_r_lim_after = float(has_m_after.sum())
-                Nobs_matched_r_after = float(dist_mask_after.sum())
-
-                # Update solution metrics
-                rms_after = residual_stats_after['rms']
-                completeness_after = Nobs_matched_r_after / Nobs_matched_r_lim_after \
-                    if Nobs_matched_r_lim_after > 0 else 0.
-
-                # Acceptance diagnostics with all sources and all reference stars on the frame
-                ref_on_frame = self.get_filtered_ref_cat(current_wcsprm=refined_wcs, origin=0)
-                diag = solution_diagnostics(
-                    self.source_cat_full[['xcentroid', 'ycentroid']].to_numpy(),
-                    ref_on_frame[['xcentroid', 'ycentroid']].to_numpy(),
-                    ref_on_frame['mag'].to_numpy(),
-                    self.search_area_shape, match_radius_px, n_trials=n_trials)
-                scale_ratio = np.sqrt(abs(np.linalg.det(get_effective_cd_matrix(refined_wcs))) /
-                                      abs(np.linalg.det(get_effective_cd_matrix(initial_wcsprm))))
-                accepted, reasons = assess_solution(diag, scale_ratio, match_radius_px)
-                self.log.debug(f"{' ':<6}N_match={diag['n_match']}/{diag['n_obs']} "
-                               f"(expected {diag['n_exp']}), rms={diag['rms']:.2f} px, "
-                               f"log10 FAP={diag['log10_fap']:.1f}, scale={scale_ratio:.4f}, "
-                               f"quadrants={diag['n_quadrants']}, parity={solution['parity']} => "
-                               f"{'accepted' if accepted else 'rejected: ' + '; '.join(reasons)}")
-
-                solution.update({
-                    'Nobs_matched': Nobs_matched_r_after,
-                    'Nobs_lim': Nobs_matched_r_lim_after,
-                    'rms_dist': rms_after,
-                    'completeness': completeness_after,
-                    'wcsprm': copy(refined_wcs),
-                    'src_cat_match': src_df_after,
-                    'ref_cat_match': ref_df_after,
-                    'std_x': residual_stats_after['std_x'],
-                    'std_y': residual_stats_after['std_y'],
-                    'diagnostics': diag,
-                    'scale_ratio': scale_ratio,
-                    'accepted': accepted,
-                    'reject_reasons': reasons
-                })
-
-                if fit_status:
-                    solution.update({'method': 'WCS_fit',
-                                     'fit_status': fit_status,
-                                     'fit_params': fit_pars})
-
-                # Best non-converged fallback: highest completeness, then lowest rms
-                if (completeness_after, -rms_after) > (best_overall_completeness, -best_overall_rms):
-                    best_overall_rms = rms_after
-                    best_overall_completeness = completeness_after
-                    best_overall_solution = copy(solution)
-
-                # Check for convergence
-                if completeness_after >= self.config['THRESHOLD_CONVERGENCE']:
-                    solution['has_converged'] = True
-
-                confirmed_solutions.append(solution)
-
-            if confirmed_solutions:
-                # Check if any solution converged
-                converged_solutions = [sol for sol in confirmed_solutions if sol['has_converged']]
-                accepted_solutions = [sol for sol in confirmed_solutions if sol['accepted']]
-
-                if accepted_solutions:
-                    # Most significant first, then most matches and lowest rms
-                    accepted_solutions.sort(key=lambda x: (x['diagnostics']['log10_fap'],
-                                                           -x['diagnostics']['n_match'],
-                                                           x['diagnostics']['rms']))
-                    best_solution = accepted_solutions[0]
-                    self.log.debug(
-                        f"{' ':<2}>> " + bc.BCOLORS.PASS + "Solution found and accepted." + bc.BCOLORS.OKGREEN)
-                elif self.strict:
-                    best_solution = None
-                    best = max(confirmed_solutions, key=lambda x: x['diagnostics']['n_match'])
-                    self.log.warning(f"{' ':<2}No plate solution passed the acceptance criteria "
-                                     f"(best candidate: {'; '.join(best['reject_reasons'])})")
-                elif converged_solutions:
-                    # Sort converged solutions and select the best one
-                    converged_solutions.sort(key=lambda x: (x['rms_dist'], -x['Nobs_matched'], -x['score']),
-                                             reverse=False)
-                    best_solution = converged_solutions[0]
-                    self.log.debug(
-                        f"{' ':<2}>> " + bc.BCOLORS.PASS + "Solution found." + bc.BCOLORS.OKGREEN)
-                else:
-                    # No solution fully converged
-                    self.log.debug(f"{' ':<2}>> No solution fully converged.")
-                    # Use best overall solution if available
-                    if best_overall_solution is not None:
-                        best_solution = best_overall_solution
-                        self.log.debug(f"{' ':<2}>> Using the best available solution.")
-                    else:
-                        best_solution = None
-
-            if best_solution is not None:
-
-                # Prepare final results
-                final_wcsprm = best_solution['wcsprm']
-
-                # Bootstrap the result to get uncertainties
-                # self.bootstrap_solution(best_solution, num_bootstraps=100)
-
-                # Print final summary
-                self.print_final_summary(best_solution, Nobs_total, Nref_total)
-
-                result_dict = {"radius_px": self.match_radius_px,
-                               "matches": best_solution['Nobs_matched'],
-                               "rms": best_solution['rms_dist'],
-                               'std_x': best_solution['std_x'],
-                               'std_y': best_solution['std_y'],
-                               'n_src_total': Nobs_total,
-                               'converged': bool(best_solution['has_converged']),
-                               'accepted': bool(best_solution['accepted']),
-                               'reject_reasons': best_solution['reject_reasons'],
-                               'log10_fap': best_solution['diagnostics']['log10_fap'],
-                               'orientation': best_solution['orientation_name'],
-                               'parity': best_solution['parity']}
-                if not best_solution['accepted']:
-                    self.log.warning(f"{' ':<2}The plate solution did not pass the acceptance criteria "
-                                     f"({'; '.join(best_solution['reject_reasons'])}); "
-                                     f"it is kept because WCS_STRICT is off")
-                has_solution = True
-
+            if accepted_solutions:
+                # Most significant first, then most matches and lowest rms
+                accepted_solutions.sort(key=lambda x: (x['diagnostics']['log10_fap'],
+                                                       -x['diagnostics']['n_match'],
+                                                       x['diagnostics']['rms']))
+                best_solution = accepted_solutions[0]
+                self.log.debug(
+                    f"{' ':<2}>> " + bc.BCOLORS.PASS + "Solution found and accepted." + bc.BCOLORS.OKGREEN)
+            elif self.strict:
+                best = max(confirmed_solutions, key=lambda x: x['diagnostics']['n_match'])
+                self.log.warning(f"{' ':<2}No plate solution passed the acceptance criteria "
+                                 f"(best candidate: {'; '.join(best['reject_reasons'])})")
+            elif converged_solutions:
+                # Sort converged solutions and select the best one
+                converged_solutions.sort(key=lambda x: (x['rms_dist'], -x['Nobs_matched'], -x['score']),
+                                         reverse=False)
+                best_solution = converged_solutions[0]
+                self.log.debug(
+                    f"{' ':<2}>> " + bc.BCOLORS.PASS + "Solution found." + bc.BCOLORS.OKGREEN)
             else:
-                # No solutions found
-                has_solution = False
-                final_wcsprm = None
-                result_dict = result_dict_fail
-                self.log.debug("  No solution found after testing all rotation matrices.")
+                # No solution fully converged, use the best available
+                self.log.debug(f"{' ':<2}>> No solution fully converged.")
+                best_solution = best_overall_solution
+                self.log.debug(f"{' ':<2}>> Using the best available solution.")
+
+        if best_solution is not None:
+
+            # Prepare final results
+            final_wcsprm = best_solution['wcsprm']
+
+            # Bootstrap the result to get uncertainties
+            # self.bootstrap_solution(best_solution, num_bootstraps=100)
+
+            # Print final summary
+            self.print_final_summary(best_solution, Nobs_total, Nref_total)
+
+            result_dict = {"radius_px": self.match_radius_px,
+                           "matches": best_solution['Nobs_matched'],
+                           "rms": best_solution['rms_dist'],
+                           'std_x': best_solution['std_x'],
+                           'std_y': best_solution['std_y'],
+                           'n_src_total': Nobs_total,
+                           'converged': bool(best_solution['has_converged']),
+                           'accepted': bool(best_solution['accepted']),
+                           'reject_reasons': best_solution['reject_reasons'],
+                           'log10_fap': best_solution['diagnostics']['log10_fap'],
+                           'orientation': best_solution['orientation_name'],
+                           'parity': best_solution['parity'],
+                           'method': best_solution.get('search', 'fft')}
+            if not best_solution['accepted']:
+                self.log.warning(f"{' ':<2}The plate solution did not pass the acceptance criteria "
+                                 f"({'; '.join(best_solution['reject_reasons'])}); "
+                                 f"it is kept because WCS_STRICT is off")
+            has_solution = True
+
         else:
             # No solutions found
             has_solution = False
@@ -614,6 +527,177 @@ class FindWCS(object):
 
         # Return the final results
         return has_solution, final_wcsprm, result_dict
+
+    def _refine_candidate(self, solution, match_radius_px, match_radius_limit_px, initial_wcsprm,
+                          n_trials, label=''):
+        """Refit a candidate solution with all sources and assess it (assess_solution)."""
+        solution['has_converged'] = False
+
+        self.log.debug(f"{' ':<4}Run WCS fit [{label}]")
+
+        current_wcsprm = solution['wcsprm']
+
+        # Create a new index column
+        source_df = self.source_cat.reset_index(drop=False).rename(columns={'index': 'obs_idx'})
+
+        # Apply WCS and get matched data
+        matched_src_df, ref_cat_filtered, has_m_before, dist_mask_before = (
+            self.apply_wcs_and_filter_sources(current_wcsprm=current_wcsprm,
+                                              source_df=source_df,
+                                              match_radius=match_radius_limit_px))
+
+        # Prepare data for fitting
+        src_df_fit, ref_df_fit = extract_sources_subset(matched_src_df,
+                                                        ref_cat_filtered,
+                                                        has_m_before)
+
+        # Fit possible WCS solution using least-squares
+        fit_status, refined_wcs, fit_pars = self.refine_wcs_fit(obs_df=src_df_fit,
+                                                                ref_df=ref_df_fit,
+                                                                wcsprm_in=current_wcsprm,
+                                                                match_radius=match_radius_px)
+
+        # Apply WCS and get matched data for fitted WCS
+        matched_src_df_after, ref_cat_filtered_after, has_m_after, dist_mask_after = (
+            self.apply_wcs_and_filter_sources(current_wcsprm=refined_wcs,
+                                              source_df=source_df,
+                                              match_radius=match_radius_limit_px))
+
+        # Extract matched sources
+        src_df_after, ref_df_after = extract_sources_subset(matched_src_df_after,
+                                                            ref_cat_filtered_after,
+                                                            has_m_after, dist_mask_after)
+
+        # Compute residual statistics for the fit results
+        residual_stats_after = compute_residual_stats(src_df_after, ref_df_after)
+
+        Nobs_matched_r_lim_after = float(has_m_after.sum())
+        Nobs_matched_r_after = float(dist_mask_after.sum())
+
+        # Update solution metrics
+        rms_after = residual_stats_after['rms']
+        completeness_after = Nobs_matched_r_after / Nobs_matched_r_lim_after \
+            if Nobs_matched_r_lim_after > 0 else 0.
+
+        # Acceptance diagnostics with all sources and all reference stars on the frame
+        ref_on_frame = self.get_filtered_ref_cat(current_wcsprm=refined_wcs, origin=0)
+        diag = solution_diagnostics(
+            self.source_cat_full[['xcentroid', 'ycentroid']].to_numpy(),
+            ref_on_frame[['xcentroid', 'ycentroid']].to_numpy(),
+            ref_on_frame['mag'].to_numpy(),
+            self.search_area_shape, match_radius_px, n_trials=n_trials)
+        scale_ratio = np.sqrt(abs(np.linalg.det(get_effective_cd_matrix(refined_wcs))) /
+                              abs(np.linalg.det(get_effective_cd_matrix(initial_wcsprm))))
+        accepted, reasons = assess_solution(diag, scale_ratio, match_radius_px)
+        self.log.debug(f"{' ':<6}N_match={diag['n_match']}/{diag['n_obs']} "
+                       f"(expected {diag['n_exp']}), rms={diag['rms']:.2f} px, "
+                       f"log10 FAP={diag['log10_fap']:.1f}, scale={scale_ratio:.4f}, "
+                       f"quadrants={diag['n_quadrants']}, parity={solution['parity']} => "
+                       f"{'accepted' if accepted else 'rejected: ' + '; '.join(reasons)}")
+
+        solution.update({
+            'Nobs_matched': Nobs_matched_r_after,
+            'Nobs_lim': Nobs_matched_r_lim_after,
+            'rms_dist': rms_after,
+            'completeness': completeness_after,
+            'wcsprm': copy(refined_wcs),
+            'src_cat_match': src_df_after,
+            'ref_cat_match': ref_df_after,
+            'std_x': residual_stats_after['std_x'],
+            'std_y': residual_stats_after['std_y'],
+            'diagnostics': diag,
+            'scale_ratio': scale_ratio,
+            'accepted': accepted,
+            'reject_reasons': reasons
+        })
+
+        if fit_status:
+            solution.update({'method': 'WCS_fit',
+                             'fit_status': fit_status,
+                             'fit_params': fit_pars})
+
+        # Check for convergence
+        if completeness_after >= self.config['THRESHOLD_CONVERGENCE']:
+            solution['has_converged'] = True
+
+        return solution
+
+    def asterism_candidates(self, initial_wcsprm, hypotheses, n_src=50, n_ref=150):
+        """Candidate solutions from asterism (triangle) matching with astroalign, for each parity.
+
+        The brightest sources are matched to the brightest reference stars projected with the
+        initial WCS. astroalign finds the similarity transform q = A p + t (A = s R) from the
+        (mirrored, for the reflected parity) detector positions p to the projected positions q.
+        With the mirror P, the solution is CD = CD0 (A P) and CRPIX = (A P)^-1 (CRPIX0 - 1 - t) + 1.
+        """
+        import astroalign
+
+        src = self.source_cat_full.head(n_src)[['xcentroid', 'ycentroid']].to_numpy(dtype=float)
+        if len(src) < 5:
+            return []
+
+        ny, nx = self.search_area_shape
+        centre = np.array([nx / 2., ny / 2.])
+        ref = update_catalog_positions(self.ref_cat_full, initial_wcsprm, origin=0)
+        ref_xy = ref[['xcentroid', 'ycentroid']].to_numpy(dtype=float)
+        # References within the circle around the frame (any rotation) plus a margin for the pointing
+        inside = np.hypot(*(ref_xy - centre).T) <= 0.6 * np.hypot(nx, ny)
+        ref_xy = ref_xy[inside & np.all(np.isfinite(ref_xy), axis=1)][:n_ref]
+        if len(ref_xy) < 5:
+            return []
+
+        crpix0 = np.asarray(initial_wcsprm.crpix, dtype=float) - 1.
+        candidates = []
+        for parity, mirror in (('normal', np.eye(2)), ('reflected', np.diag([-1., 1.]))):
+            if parity not in [h['parity'] for h in hypotheses]:
+                continue
+            try:
+                transform, _ = astroalign.find_transform(src @ mirror.T, ref_xy,
+                                                         max_control_points=max(n_src, 50))
+            except Exception as exc:  # astroalign raises MaxIterError and others if nothing matches
+                self.log.debug(f"{' ':<4}Asterism match ({parity}) failed: {exc}")
+                continue
+
+            a_mat = transform.params[:2, :2]
+            shift = transform.params[:2, 2]
+            s = np.sqrt(abs(np.linalg.det(a_mat)))
+            if not 0.9 < s < 1.1:
+                self.log.debug(f"{' ':<4}Asterism match ({parity}) rejected: scale {s:.3f}")
+                continue
+            m_mat = a_mat @ mirror
+
+            # rotate() applies CD0 @ inv(rot); the orthogonal part of m_mat is (m_mat / s)
+            wcsprm_new = rotate(copy(initial_wcsprm), (m_mat / s).T)
+            wcsprm_new = scale(wcsprm_new, s)
+            wcsprm_new.crpix = np.linalg.solve(m_mat, crpix0 - shift) + 1.
+
+            rot = m_mat @ mirror / s  # rotation part
+            angle = np.degrees(np.arctan2(rot[1, 0], rot[0, 0]))
+            if parity == 'normal':
+                name = 'identity' if abs(angle) < 90. else 'rotate_180'
+            else:
+                name = 'reflect_x' if abs(angle) < 90. else 'reflect_y'
+            orientation = [h for h in self.orientation_hypotheses if h['name'] == name][0]
+            self.log.debug(f"{' ':<4}Asterism match ({parity}): scale {s:.4f}, rotation {angle:.2f} deg")
+
+            candidates.append({
+                'rotation_idx': -1,
+                'orientation_name': orientation['name'],
+                'parity': orientation['parity'],
+                'orientation_determinant': orientation['determinant'],
+                'rotation_deg': angle,
+                'method': 'asterism',
+                'search': 'asterism',
+                'Nobs_matched': 0,
+                'score': 0.,
+                'completeness': 0.,
+                'wcsprm': wcsprm_new,
+                'match_radius': self.match_radius_px,
+                'rms_dist': np.inf,
+                'std_x': np.inf,
+                'std_y': np.inf
+            })
+        return candidates
 
     def print_final_summary(self, solution, Nobs_total, Nref_total):
         """
