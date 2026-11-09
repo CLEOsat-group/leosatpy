@@ -185,6 +185,10 @@ class CalibrateObsWCS(object):
         self._wcsprm = None
         self._fov_radius = 0.5
         self._bin_str = None
+        # Last accepted plate solution per instrument setup (telescope, binning, frame shape):
+        # its parity is searched first for the next frame, its orientation is the reference for the
+        # rotator check
+        self._wcs_memory = {}
 
         # Run calibration
         self.run_calibration_all(silent=silent, verbose=verbose)
@@ -242,6 +246,7 @@ class CalibrateObsWCS(object):
                 multiple = False
                 if len(list(files)) > 1:
                     multiple = True
+                    self.prefetch_reference_catalogs(files)
                 # not_converged = []
                 converged_counter = 0
                 progress_counter = 0
@@ -280,6 +285,34 @@ class CalibrateObsWCS(object):
 
         self._log.info(f"Program execution time in hh:mm:ss: {td}")
         self._log.info('====>  Astrometric calibration finished <====')
+
+    def prefetch_reference_catalogs(self, files):
+        """Download the Gaia cones of all frames of a group once, merged where the pointings are close.
+
+        Only the headers are read; pointing and cone radius come from ``prepare_image_wcs``, as for
+        the frames themselves, which then take their catalogs from the shared cache.
+        """
+        if not bool(self._config.get('REF_CAT_PREFETCH', True)):
+            return
+        config = dict(self._config, force_download=self.force_download)
+        if sext.ref_cache.get_cache(config) is None:
+            return
+        cones = []
+        for _, file_df in files.iterrows():
+            try:
+                hdr = fits.getheader(file_df['input'], self._hdu_idx)
+                self.prepare_image_wcs(wcsprm=WCS(hdr).wcs, hdr=hdr, obsparams=self._obsparams,
+                                       radius=self._radius)
+                ra, dec = self._wcsprm.wcs.crval
+                cones.append((float(ra), float(dec), float(self._fov_radius)))
+            except Exception as exc:  # the frame reports its own problem later
+                self._log.debug(f"    No prefetch cone for {file_df['file_name']}: {exc}")
+        try:
+            merge_max = float(self._config.get('REF_CAT_MERGE_MAX', 1.1))
+        except (TypeError, ValueError):
+            merge_max = 1.1
+        sext.prefetch_astro_ref_cat(cones, config, mag_lim=self._config['REF_CATALOG_MAG_LIM'],
+                                    merge_max=merge_max, silent=self._silent)
 
     def run_calibration_single(self, file_src_path, file_df, progress, hdu_idx=0):
         """Run astrometric calibration on a given data set.
@@ -341,7 +374,7 @@ class CalibrateObsWCS(object):
             hdr = hdul[hdu_idx].header
             imgarr = hdul[hdu_idx].data.astype('float32')
 
-            if 'mask' in hdul or 'MASK' in hdul and obsparams['apply_mask']:
+            if ('mask' in hdul or 'MASK' in hdul) and obsparams['apply_mask']:
                 img_mask = hdul['MASK'].data.astype(bool)
 
         sat_id, _ = self._obsTable.get_satellite_id(hdr[obsparams['object']])
@@ -446,12 +479,21 @@ class CalibrateObsWCS(object):
         # Get the default PC matrix
         self._config['pc_matrix'] = obsparams['pc_matrix']
 
+        # Parity of the last accepted solution of the same setup is searched first (order only)
+        setup_key = (self._telescope, self._bin_str, tuple(imgarr.shape))
+        wcs_ref = self._wcs_memory.get(setup_key)
+        config['wcs_prior'] = {'parity': wcs_ref['parity']} if wcs_ref else None
+
         # Initialize find WCS object
         get_wcs = imtrans.FindWCS(src_tbl, ref_tbl, hdr, config, self._log)
 
         # Run the WCS analysis
         wcs_res = get_wcs.find_wcs(init_wcs, imgarr, match_radius)
         has_solution, best_wcsprm, dict_rms = wcs_res
+
+        # Remember an accepted solution and compare its orientation with the rotator, if available
+        if has_solution and best_wcsprm is not None and dict_rms.get('accepted', False):
+            self.check_orientation(best_wcsprm, dict_rms, hdr, obsparams, setup_key, wcs_ref)
 
         # Check the result state
         if not has_solution or best_wcsprm is None:
@@ -462,8 +504,10 @@ class CalibrateObsWCS(object):
             wcsprm = best_wcsprm
             wcs_summary = (f"{dict_rms['matches']}/{dict_rms['n_src_total']} sources matched, "
                            f"RMS {dict_rms['rms']:.2f} px")
-            if not dict_rms['converged']:
-                wcs_summary += ' (best available, not fully converged)'
+            if not dict_rms.get('accepted', True):
+                wcs_summary += ' (best available, not accepted)'
+            elif not dict_rms['converged']:
+                wcs_summary += ' (accepted, not fully converged)'
 
         if not self._silent:
             self._log.info(f"> WCS solution: {wcs_summary}")
@@ -490,6 +534,12 @@ class CalibrateObsWCS(object):
             report["pix_scale"] = np.mean(wcs_pixscale) * 3600. if wcs_pixscale is not np.nan else np.nan
             report["scale_x"] = wcs_pixscale[0] * 3600.
             report["scale_y"] = wcs_pixscale[1] * 3600.
+            method = dict_rms.get('method', 'fft')
+            report["method"] = f"{method}-prior" if method == 'fft' and dict_rms.get('prior_used') else method
+            report["orientation"] = dict_rms.get('orientation', '')
+            report["parity"] = dict_rms.get('parity', '')
+            report["log10_fap"] = dict_rms.get('log10_fap', np.nan)
+            report["accepted"] = bool(dict_rms.get('accepted', False))
 
             # Save the result to the FITS-file
             self.write_wcs_to_hdr(original_filename=abs_file_path,
@@ -546,6 +596,46 @@ class CalibrateObsWCS(object):
                             kernel_fwhm, extraction_result, report,
                             state)
 
+    def check_orientation(self, wcsprm, dict_rms, hdr, obsparams, setup_key, wcs_ref):
+        """Log the orientation of an accepted solution and check it against the field rotator.
+
+        With ``obsparams['orientation'] = {'key': <header keyword>, 'sign': +1 or -1}`` the
+        position angle predicted from the previous accepted solution of the same setup is
+        PA_ref + sign * (ROT - ROT_ref). A difference of more than 1 deg is reported. The
+        solution itself is not changed.
+        """
+        pa, parity = imtrans.get_position_angle(wcsprm)
+        parity_str = 'normal' if parity > 0 else 'reflected'
+        dict_rms['position_angle'] = pa
+
+        rot = None
+        orient_conf = obsparams.get('orientation') or {}
+        rot_key = orient_conf.get('key')
+        if rot_key and rot_key in hdr:
+            try:
+                rot = float(hdr[rot_key])
+            except (TypeError, ValueError):
+                rot = None
+
+        msg = f"  Orientation: {dict_rms.get('orientation', '-')}, PA {pa:.2f} deg, parity {parity_str}"
+        if rot is not None:
+            msg += f", {rot_key} {rot:.2f} deg"
+        if dict_rms.get('prior_used'):
+            msg += ", parity of the previous frame"
+        if not self._silent:
+            self._log.info(msg)
+
+        if rot is not None and wcs_ref is not None and wcs_ref.get('rot') is not None:
+            pred = wcs_ref['pa'] + float(orient_conf.get('sign', 1)) * (rot - wcs_ref['rot'])
+            diff = (pa - pred + 180.) % 360. - 180.
+            dict_rms['pa_vs_rotator'] = diff
+            if wcs_ref['parity'] != parity_str or abs(diff) > 1.:
+                self._log.warning(f"  Orientation differs from the rotator prediction: PA {pa:.2f} deg "
+                                  f"({parity_str}), expected {pred % 360.:.2f} deg ({wcs_ref['parity']}) "
+                                  f"from {rot_key}")
+
+        self._wcs_memory[setup_key] = {'parity': parity_str, 'pa': pa, 'rot': rot}
+
     def prepare_image_wcs(self, wcsprm, hdr, obsparams,
                         radius=-1.):
         """Check and prepare the WCS coordinate system for a given image.
@@ -588,8 +678,9 @@ class CalibrateObsWCS(object):
             log.error("NAXIS1 or NAXIS2 missing in file. Please add!")
             sys.exit(1)
         else:
-            axis1 = obsparams['image_size_1x1'][0] // bin_x
-            axis2 = obsparams['image_size_1x1'][1] // bin_y
+            # Size of the actual frame (windowed, trimmed or a single extension), not the full detector
+            axis1 = int(hdr['NAXIS1'])
+            axis2 = int(hdr['NAXIS2'])
 
         # Read out RA and Dec from header
         if obsparams['radec_separator'] == 'XXX':
@@ -659,7 +750,9 @@ class CalibrateObsWCS(object):
         x_size = axis1 * pixscale_x / 60.  # arcmin
         y_size = axis2 * pixscale_y / 60.  # arcmin
 
-        # Set the central pixel to the image center pixel
+        # The pointing is placed at the centre of the actual frame. A header reference pixel is not
+        # used: it can be far off the frame (e.g. DK154 CRPIX2 = 3073 on a 1024 px frame), and the
+        # orientation of a header WCS is ignored as well (PC is the identity above).
         wcsprm.crpix = [axis1 // 2, axis2 // 2]
 
         # Check sky position
@@ -740,7 +833,7 @@ class CalibrateObsWCS(object):
             hdr_file.update(wcs.to_header())
 
             # Get the transformation matrix
-            matrix = wcsprm.pc * wcsprm.cdelt[:, np.newaxis]
+            matrix = imtrans.get_effective_cd_matrix(wcsprm)  # CD = diag(CDELT) @ PC
 
             # Rotation angle
             theta = np.rad2deg(-np.arctan2(matrix[1, 0], matrix[1, 1]))
@@ -760,6 +853,14 @@ class CalibrateObsWCS(object):
             hdr_file['AST_MAT'] = (report["matches"], 'Number of catalog matches')
             hdr_file['AST_RAD'] = (f'{report["match_radius"]:.3f}', 'match radius in pixel')
             hdr_file['AST_CONV'] = (report["converged"], "T or F for astrometry converged or not")
+            if "method" in report:
+                fap = report["log10_fap"]
+                hdr_file['AST_METH'] = (report["method"], 'Plate solving: fft, fft-prior or asterism')
+                hdr_file['AST_ORI'] = (report["orientation"], 'Detector orientation found')
+                hdr_file['AST_PAR'] = (report["parity"], 'Parity of the solution (normal/reflected)')
+                hdr_file['AST_FAP'] = (f'{max(fap, -999.):.1f}' if np.isfinite(fap) or fap < 0 else 'nan',
+                                       'log10 false-alarm probability of the solution')
+                hdr_file['AST_ACC'] = (report["accepted"], 'T or F for solution passed acceptance')
             hdr_file['AST_CAL'] = (True, "T or F for astrometric calibration executed or not")
 
             if 'HISTORY' in hdr_file:
@@ -820,10 +921,10 @@ class CalibrateObsWCS(object):
         imgarr -= bkg_background
 
         # Get y-axis length as limit
-        matrix = wcsprm.pc * wcsprm.cdelt[:, np.newaxis]
+        matrix = imtrans.get_effective_cd_matrix(wcsprm)  # CD = diag(CDELT) @ PC
 
         # Scale
-        scale_x = np.sqrt(matrix[0, 0] ** 2 + matrix[0, 1] ** 2)
+        scale_x = np.sqrt(matrix[0, 0] ** 2 + matrix[1, 0] ** 2)  # step along detector x
 
         # Rotation angle
         theta = -np.arctan2(matrix[1, 0], matrix[1, 1])

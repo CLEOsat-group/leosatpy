@@ -4118,10 +4118,10 @@ class AnalyseSatObs(object):
         scale_arrow = self._config['ARROW_LENGTH']  # in percent
 
         wcsprm = wcs.WCS(wcs.WCS(hdr).to_header()).wcs
-        matrix = wcsprm.pc * wcsprm.cdelt[:, np.newaxis]
+        matrix = imtrans.get_effective_cd_matrix(wcsprm)  # CD = diag(CDELT) @ PC
 
         # Scale
-        scale_x = np.sqrt(matrix[0, 0] ** 2 + matrix[0, 1] ** 2)
+        scale_x = np.sqrt(matrix[0, 0] ** 2 + matrix[1, 0] ** 2)  # step along detector x
 
         # Rotation angle
         theta_rad = -np.arctan2(matrix[1, 0], matrix[1, 1])
@@ -4250,10 +4250,10 @@ class AnalyseSatObs(object):
         # plt.figure()
         # plt.imshow(image, origin='lower')
 
-        matrix = wcsprm.pc * wcsprm.cdelt[:, np.newaxis]
+        matrix = imtrans.get_effective_cd_matrix(wcsprm)  # CD = diag(CDELT) @ PC
 
         # Scale
-        scale_x = np.sqrt(matrix[0, 0] ** 2 + matrix[0, 1] ** 2)
+        scale_x = np.sqrt(matrix[0, 0] ** 2 + matrix[1, 0] ** 2)  # step along detector x
 
         # Rotation angle
         theta_rad = -np.arctan2(matrix[1, 0], matrix[1, 1])

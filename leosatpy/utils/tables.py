@@ -751,15 +751,10 @@ class ObsTables(object):
         # Exposure time
         expt = kwargs['EXPTIME']
 
-        # Update the columns in case the table was changed
-        for col in self.def_cols:
-            if col not in obs_info.columns:
-                # insert column at the end
-                obs_info.insert(len(obs_info.columns), col, '')
-
-        # Reorder columns; keep generic object dtype so mixed values can be stored
-        # (pandas >= 3 would otherwise infer a strict string dtype)
-        obs_info = obs_info[self.def_cols].astype(object)
+        # Add columns missing in older tables and reorder in one step; inserting them one by
+        # one fragments the frame (pandas PerformanceWarning). Keep generic object dtype so
+        # mixed values can be stored (pandas >= 3 would otherwise infer a strict string dtype)
+        obs_info = obs_info.reindex(columns=self.def_cols, fill_value='').astype(object)
 
         # Replace all None values with NAN
         obs_info = obs_info.replace(to_replace=[None], value=np.nan)

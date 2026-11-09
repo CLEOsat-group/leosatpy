@@ -131,9 +131,36 @@ class FindWCS(object):
 
         self.orientation_hypotheses = build_orientation_hypotheses(
             config['pc_matrix'])
+
+        # 'parity': one search per parity; the FFT gives the rotation modulo 180 deg, and both
+        # branches are tested, so the four named orientations are covered with half the FFTs.
+        # 'legacy': search all four orientations separately (version 0.5.x).
+        self.search_mode = str(config.get('WCS_SEARCH', 'parity')).strip().strip("'\"").lower()
+        if self.search_mode not in ('parity', 'legacy'):
+            self.log.warning(f"Unknown WCS_SEARCH '{self.search_mode}', using 'parity'")
+            self.search_mode = 'parity'
+        if self.search_mode == 'parity':
+            self.search_hypotheses = []
+            for hypothesis in self.orientation_hypotheses:
+                if hypothesis['parity'] not in [h['parity'] for h in self.search_hypotheses]:
+                    self.search_hypotheses.append(hypothesis)
+        else:
+            self.search_hypotheses = list(self.orientation_hypotheses)
+
         # Backwards-compatible matrix view used by the existing search loop.
         self.rotations = np.array([hypothesis['matrix']
-                                   for hypothesis in self.orientation_hypotheses])
+                                   for hypothesis in self.search_hypotheses])
+
+        # True: only return a solution that passes the acceptance criteria (assess_solution);
+        # False: return the best available solution as in version 0.5.x, with a warning
+        # True: match asterisms (astroalign) if the correlation search gives no accepted solution
+        asterism = config.get('WCS_ASTERISM', True)
+        self.use_asterism = asterism if isinstance(asterism, bool) else \
+            str(asterism).strip().strip("'\"").lower() not in ('false', '0', 'no', 'off')
+
+        strict = config.get('WCS_STRICT', True)
+        self.strict = strict if isinstance(strict, bool) else \
+            str(strict).strip().strip("'\"").lower() not in ('false', '0', 'no', 'off')
 
         self.apply_rot = True
         self.match_radius_px = 5  # Default value
@@ -149,11 +176,17 @@ class FindWCS(object):
 
         self.bin_x = bin_x
         self.bin_y = bin_y
-        self.image_shape_full = config['image_size_1x1']
 
-        search_area_shape = (self.image_shape_full[0] // self.bin_x,
-                             self.image_shape_full[1] // self.bin_y)
-        center_coords = [(search_area_shape[1] // 2, search_area_shape[0] // 2)]
+        # Footprint of the actual frame as (ny, nx); filter_df_within_bounds expects (y, x) sizes and
+        # an (x, y) centre. Fall back to the binned detector size if the frame shape is unknown.
+        if config.get('image_shape') is not None:
+            ny, nx = (int(v) for v in config['image_shape'][:2])
+        else:
+            nx = int(config['image_size_1x1'][0]) // self.bin_x
+            ny = int(config['image_size_1x1'][1]) // self.bin_y
+        self.image_shape_full = (nx * self.bin_x, ny * self.bin_y)
+        search_area_shape = (ny, nx)
+        center_coords = [(nx / 2., ny / 2.)]
 
         self.search_area_shape = search_area_shape
         self.search_area_additional_width = (10, 10)
@@ -178,6 +211,11 @@ class FindWCS(object):
         """
         Run the plate-solve algorithm to find the best WCS transformation.
 
+        If ``config['wcs_prior']`` gives the parity of a validated solution of the same instrument
+        setup, that parity is searched first, and the search stops there if it gives an accepted
+        solution; otherwise both parities are searched. The prior only changes the order of the
+        search, never the acceptance.
+
         Parameters
         ----------
         input_wcsprm : WCS.wcs
@@ -187,9 +225,30 @@ class FindWCS(object):
         match_radius_px : float, optional
             The matching radius in pixels. Default is 1.
         """
+        prior_parity = (self.config.get('wcs_prior') or {}).get('parity')
+        if prior_parity and self.strict and len(self.search_hypotheses) > 1:
+            first = [h for h in self.search_hypotheses if h['parity'] == prior_parity]
+            if first:
+                self.log.debug(f"  Search the {prior_parity} parity of the previous solution first")
+                result = self._search(input_wcsprm, image, match_radius_px, first, allow_asterism=False)
+                if result[0] and result[2].get('accepted'):
+                    result[2]['prior_used'] = True
+                    return result
+                self.log.debug("  No accepted solution with the previous parity, search all orientations")
+
+        result = self._search(input_wcsprm, image, match_radius_px, self.search_hypotheses)
+        result[2]['prior_used'] = False
+        return result
+
+    def _search(self, input_wcsprm, image, match_radius_px, hypotheses, allow_asterism=True):
+        """Search the given orientation hypotheses; see find_wcs.
+
+        If no candidate of the correlation search is accepted, asterisms are matched as a fallback
+        (``allow_asterism`` and WCS_ASTERISM).
+        """
         # Initialization
         self.image = image
-        rotations = self.rotations
+        rotations = np.array([hypothesis['matrix'] for hypothesis in hypotheses])
         self.match_radius_px = match_radius_px
         match_radius_limit_px = self.config['MATCH_RADIUS_LIM'] * match_radius_px
         num_ref_samples = self.config['NUM_REF_SAMPLES']  # Number of samples to draw from the reference catalog
@@ -229,6 +288,11 @@ class FindWCS(object):
         self.log.debug(f"  > Search possible solutions (This may take a second.)")
 
         total_iterations = len(rotations) * num_ref_samples
+
+        # Independent alignments the search can pick from, for the false-alarm probability:
+        # offsets within the frame (one per match area) for each rotation candidate tested
+        n_trials = (self.search_area_shape[0] * self.search_area_shape[1] / (np.pi * match_radius_px ** 2)
+                    * len(rotations) * 2 * (num_ref_samples + 1))
         rot_matrix_idx = 0
 
         # Loop possible initial rotations of the WCS
@@ -240,7 +304,7 @@ class FindWCS(object):
             # Apply rotation matrix
             current_rotMatrix = rotations[rot_matrix_idx]
 
-            orientation = self.orientation_hypotheses[rot_matrix_idx]
+            orientation = hypotheses[rot_matrix_idx]
             self.log.debug(
                 f"{' ':<4}Testing orientation {rot_matrix_idx + 1}/{len(rotations)} "
                 f"({orientation['name']}, parity={orientation['parity']}, "
@@ -297,6 +361,11 @@ class FindWCS(object):
                     # Unpack and compute metrics
                     Nobs_matched, score, wcsprm_out, result_info, src_cat_match, ref_cat_match = sample_result
 
+                    # In the parity search the 180 deg branch is the partner orientation
+                    found_orientation = orientation
+                    if result_info[5]:
+                        found_orientation = get_partner_orientation(orientation, self.orientation_hypotheses)
+
                     completeness = Nobs_matched / Nobs_current
 
                     self.log.debug(
@@ -310,9 +379,10 @@ class FindWCS(object):
                     # Store the possible solution
                     possible_solutions.append({
                         'rotation_idx': rot_matrix_idx,
-                        'orientation_name': orientation['name'],
-                        'parity': orientation['parity'],
-                        'orientation_determinant': orientation['determinant'],
+                        'orientation_name': found_orientation['name'],
+                        'parity': found_orientation['parity'],
+                        'orientation_determinant': found_orientation['determinant'],
+                        'rotation_deg': np.degrees(result_info[4]),
                         'method': 'fft',
                         'Nobs_matched': Nobs_matched,
                         'score': score,
@@ -354,151 +424,100 @@ class FindWCS(object):
         # After the main loop
         if possible_solutions:
             self.log.debug(f"{' ':<2}>> Possible solutions: {len(possible_solutions)}")
-            # Sort possible solutions by completeness, number of matches, and score
+            # Sort possible solutions by number of matches and score
             possible_solutions.sort(key=lambda x: (x['Nobs_matched'], x['score']),
                                     reverse=True)
 
-            # Select the top n solutions
-            top_solutions = possible_solutions[:max_num_top_solution]
+        # Select the top n solutions
+        top_solutions = possible_solutions[:max_num_top_solution]
 
-            confirmed_solutions = []
-            best_overall_completeness = 0.
-            best_overall_rms = np.inf
-            best_overall_solution = None
-            best_solution = None
+        # Use all sources for the refit
+        if has_large_src_cat and top_solutions:
+            self.source_cat = self.source_cat_full
+            self.get_source_cat_variables()
 
+        if top_solutions:
             self.log.debug(f"{' ':<2}> Analysing top {len(top_solutions)} solutions")
+        confirmed_solutions = [self._refine_candidate(solution, match_radius_px, match_radius_limit_px,
+                                                      initial_wcsprm, n_trials,
+                                                      label=f"{idx + 1}/{len(top_solutions)}")
+                               for idx, solution in enumerate(top_solutions)]
 
-            # Loop over top solutions
-            for idx, solution in enumerate(top_solutions):
+        # Asterism matching (astroalign) if the correlation search gave no accepted solution
+        if allow_asterism and self.use_asterism and not any(sol['accepted'] for sol in confirmed_solutions):
+            candidates = self.asterism_candidates(initial_wcsprm, hypotheses)
+            if candidates:
+                self.source_cat = self.source_cat_full
+                self.log.debug(f"{' ':<2}> Analysing {len(candidates)} asterism solution(s)")
+            confirmed_solutions += [self._refine_candidate(solution, match_radius_px, match_radius_limit_px,
+                                                           initial_wcsprm, n_trials * 10,
+                                                           label=f"asterism {idx + 1}/{len(candidates)}")
+                                    for idx, solution in enumerate(candidates)]
 
-                solution['has_converged'] = False
+        best_solution = None
+        if confirmed_solutions:
+            # Check if any solution converged
+            converged_solutions = [sol for sol in confirmed_solutions if sol['has_converged']]
+            accepted_solutions = [sol for sol in confirmed_solutions if sol['accepted']]
+            # Best non-converged fallback: highest completeness, then lowest rms
+            best_overall_solution = max(confirmed_solutions,
+                                        key=lambda x: (x['completeness'], -x['rms_dist']))
 
-                self.log.debug(f"{' ':<4}Run WCS fit [{idx + 1}/{len(top_solutions)}]")
-
-                current_wcsprm = solution['wcsprm']
-
-                # Update source catalog to include all sources if necessary
-                if has_large_src_cat:
-                    self.source_cat = self.source_cat_full
-                    self.get_source_cat_variables()
-
-                # Create a new index column
-                source_df = self.source_cat.reset_index(drop=False).rename(columns={'index': 'obs_idx'})
-
-                # Apply WCS and get matched data
-                matched_src_df, ref_cat_filtered, has_m_before, dist_mask_before = (
-                    self.apply_wcs_and_filter_sources(current_wcsprm=current_wcsprm,
-                                                      source_df=source_df,
-                                                      match_radius=match_radius_limit_px))
-
-                # Prepare data for fitting
-                src_df_fit, ref_df_fit = extract_sources_subset(matched_src_df,
-                                                                ref_cat_filtered,
-                                                                has_m_before)
-
-                # Fit possible WCS solution using least-squares
-                fit_status, refined_wcs, fit_pars = self.refine_wcs_fit(obs_df=src_df_fit,
-                                                                        ref_df=ref_df_fit,
-                                                                        wcsprm_in=current_wcsprm,
-                                                                        match_radius=match_radius_px)
-
-                # Apply WCS and get matched data for fitted WCS
-                matched_src_df_after, ref_cat_filtered_after, has_m_after, dist_mask_after = (
-                    self.apply_wcs_and_filter_sources(current_wcsprm=refined_wcs,
-                                                      source_df=source_df,
-                                                      match_radius=match_radius_limit_px))
-
-                # Extract matched sources
-                src_df_after, ref_df_after = extract_sources_subset(matched_src_df_after,
-                                                                    ref_cat_filtered_after,
-                                                                    has_m_after, dist_mask_after)
-
-                # Compute residual statistics for the fit results
-                residual_stats_after = compute_residual_stats(src_df_after, ref_df_after)
-
-                Nobs_matched_r_lim_after = float(has_m_after.sum())
-                Nobs_matched_r_after = float(dist_mask_after.sum())
-
-                # Update solution metrics
-                rms_after = residual_stats_after['rms']
-                completeness_after = Nobs_matched_r_after / Nobs_matched_r_lim_after
-
-                solution.update({
-                    'Nobs_matched': Nobs_matched_r_after,
-                    'Nobs_lim': Nobs_matched_r_lim_after,
-                    'rms_dist': rms_after,
-                    'completeness': completeness_after,
-                    'wcsprm': copy(refined_wcs),
-                    'src_cat_match': src_df_after,
-                    'ref_cat_match': ref_df_after,
-                    'std_x': residual_stats_after['std_x'],
-                    'std_y': residual_stats_after['std_y']
-                })
-
-                if fit_status:
-                    solution.update({'method': 'WCS_fit',
-                                     'fit_status': fit_status,
-                                     'fit_params': fit_pars})
-
-                if rms_after <= best_overall_rms or completeness_after >= best_overall_completeness:
-                    best_overall_rms = rms_after
-                    best_overall_completeness = completeness_after
-                    best_overall_solution = copy(solution)
-
-                # Check for convergence
-                if completeness_after >= self.config['THRESHOLD_CONVERGENCE']:
-                    solution['has_converged'] = True
-
-                confirmed_solutions.append(solution)
-
-            if confirmed_solutions:
-                # Check if any solution converged
-                converged_solutions = [sol for sol in confirmed_solutions if sol['has_converged']]
-
-                if converged_solutions:
-                    # Sort converged solutions and select the best one
-                    converged_solutions.sort(key=lambda x: (x['rms_dist'], -x['Nobs_matched'], -x['score']),
-                                             reverse=False)
-                    best_solution = converged_solutions[0]
-                    self.log.debug(
-                        f"{' ':<2}>> " + bc.BCOLORS.PASS + "Solution found." + bc.BCOLORS.OKGREEN)
-                else:
-                    # No solution fully converged
-                    self.log.debug(f"{' ':<2}>> No solution fully converged.")
-                    # Use best overall solution if available
-                    if best_overall_solution is not None:
-                        best_solution = best_overall_solution
-                        self.log.debug(f"{' ':<2}>> Using the best available solution.")
-                    else:
-                        best_solution = None
-
-            if best_solution is not None:
-
-                # Prepare final results
-                final_wcsprm = best_solution['wcsprm']
-
-                # Bootstrap the result to get uncertainties
-                # self.bootstrap_solution(best_solution, num_bootstraps=100)
-
-                # Print final summary
-                self.print_final_summary(best_solution, Nobs_total, Nref_total)
-
-                result_dict = {"radius_px": self.match_radius_px,
-                               "matches": best_solution['Nobs_matched'],
-                               "rms": best_solution['rms_dist'],
-                               'std_x': best_solution['std_x'],
-                               'std_y': best_solution['std_y'],
-                               'n_src_total': Nobs_total,
-                               'converged': bool(best_solution['has_converged'])}
-                has_solution = True
-
+            if accepted_solutions:
+                # Most significant first, then most matches and lowest rms
+                accepted_solutions.sort(key=lambda x: (x['diagnostics']['log10_fap'],
+                                                       -x['diagnostics']['n_match'],
+                                                       x['diagnostics']['rms']))
+                best_solution = accepted_solutions[0]
+                self.log.debug(
+                    f"{' ':<2}>> " + bc.BCOLORS.PASS + "Solution found and accepted." + bc.BCOLORS.OKGREEN)
+            elif self.strict:
+                best = max(confirmed_solutions, key=lambda x: x['diagnostics']['n_match'])
+                self.log.warning(f"{' ':<2}No plate solution passed the acceptance criteria "
+                                 f"(best candidate: {'; '.join(best['reject_reasons'])})")
+            elif converged_solutions:
+                # Sort converged solutions and select the best one
+                converged_solutions.sort(key=lambda x: (x['rms_dist'], -x['Nobs_matched'], -x['score']),
+                                         reverse=False)
+                best_solution = converged_solutions[0]
+                self.log.debug(
+                    f"{' ':<2}>> " + bc.BCOLORS.PASS + "Solution found." + bc.BCOLORS.OKGREEN)
             else:
-                # No solutions found
-                has_solution = False
-                final_wcsprm = None
-                result_dict = result_dict_fail
-                self.log.debug("  No solution found after testing all rotation matrices.")
+                # No solution fully converged, use the best available
+                self.log.debug(f"{' ':<2}>> No solution fully converged.")
+                best_solution = best_overall_solution
+                self.log.debug(f"{' ':<2}>> Using the best available solution.")
+
+        if best_solution is not None:
+
+            # Prepare final results
+            final_wcsprm = best_solution['wcsprm']
+
+            # Bootstrap the result to get uncertainties
+            # self.bootstrap_solution(best_solution, num_bootstraps=100)
+
+            # Print final summary
+            self.print_final_summary(best_solution, Nobs_total, Nref_total)
+
+            result_dict = {"radius_px": self.match_radius_px,
+                           "matches": best_solution['Nobs_matched'],
+                           "rms": best_solution['rms_dist'],
+                           'std_x': best_solution['std_x'],
+                           'std_y': best_solution['std_y'],
+                           'n_src_total': Nobs_total,
+                           'converged': bool(best_solution['has_converged']),
+                           'accepted': bool(best_solution['accepted']),
+                           'reject_reasons': best_solution['reject_reasons'],
+                           'log10_fap': best_solution['diagnostics']['log10_fap'],
+                           'orientation': best_solution['orientation_name'],
+                           'parity': best_solution['parity'],
+                           'method': best_solution.get('search', 'fft')}
+            if not best_solution['accepted']:
+                self.log.warning(f"{' ':<2}The plate solution did not pass the acceptance criteria "
+                                 f"({'; '.join(best_solution['reject_reasons'])}); "
+                                 f"it is kept because WCS_STRICT is off")
+            has_solution = True
+
         else:
             # No solutions found
             has_solution = False
@@ -508,6 +527,177 @@ class FindWCS(object):
 
         # Return the final results
         return has_solution, final_wcsprm, result_dict
+
+    def _refine_candidate(self, solution, match_radius_px, match_radius_limit_px, initial_wcsprm,
+                          n_trials, label=''):
+        """Refit a candidate solution with all sources and assess it (assess_solution)."""
+        solution['has_converged'] = False
+
+        self.log.debug(f"{' ':<4}Run WCS fit [{label}]")
+
+        current_wcsprm = solution['wcsprm']
+
+        # Create a new index column
+        source_df = self.source_cat.reset_index(drop=False).rename(columns={'index': 'obs_idx'})
+
+        # Apply WCS and get matched data
+        matched_src_df, ref_cat_filtered, has_m_before, dist_mask_before = (
+            self.apply_wcs_and_filter_sources(current_wcsprm=current_wcsprm,
+                                              source_df=source_df,
+                                              match_radius=match_radius_limit_px))
+
+        # Prepare data for fitting
+        src_df_fit, ref_df_fit = extract_sources_subset(matched_src_df,
+                                                        ref_cat_filtered,
+                                                        has_m_before)
+
+        # Fit possible WCS solution using least-squares
+        fit_status, refined_wcs, fit_pars = self.refine_wcs_fit(obs_df=src_df_fit,
+                                                                ref_df=ref_df_fit,
+                                                                wcsprm_in=current_wcsprm,
+                                                                match_radius=match_radius_px)
+
+        # Apply WCS and get matched data for fitted WCS
+        matched_src_df_after, ref_cat_filtered_after, has_m_after, dist_mask_after = (
+            self.apply_wcs_and_filter_sources(current_wcsprm=refined_wcs,
+                                              source_df=source_df,
+                                              match_radius=match_radius_limit_px))
+
+        # Extract matched sources
+        src_df_after, ref_df_after = extract_sources_subset(matched_src_df_after,
+                                                            ref_cat_filtered_after,
+                                                            has_m_after, dist_mask_after)
+
+        # Compute residual statistics for the fit results
+        residual_stats_after = compute_residual_stats(src_df_after, ref_df_after)
+
+        Nobs_matched_r_lim_after = float(has_m_after.sum())
+        Nobs_matched_r_after = float(dist_mask_after.sum())
+
+        # Update solution metrics
+        rms_after = residual_stats_after['rms']
+        completeness_after = Nobs_matched_r_after / Nobs_matched_r_lim_after \
+            if Nobs_matched_r_lim_after > 0 else 0.
+
+        # Acceptance diagnostics with all sources and all reference stars on the frame
+        ref_on_frame = self.get_filtered_ref_cat(current_wcsprm=refined_wcs, origin=0)
+        diag = solution_diagnostics(
+            self.source_cat_full[['xcentroid', 'ycentroid']].to_numpy(),
+            ref_on_frame[['xcentroid', 'ycentroid']].to_numpy(),
+            ref_on_frame['mag'].to_numpy(),
+            self.search_area_shape, match_radius_px, n_trials=n_trials)
+        scale_ratio = np.sqrt(abs(np.linalg.det(get_effective_cd_matrix(refined_wcs))) /
+                              abs(np.linalg.det(get_effective_cd_matrix(initial_wcsprm))))
+        accepted, reasons = assess_solution(diag, scale_ratio, match_radius_px)
+        self.log.debug(f"{' ':<6}N_match={diag['n_match']}/{diag['n_obs']} "
+                       f"(expected {diag['n_exp']}), rms={diag['rms']:.2f} px, "
+                       f"log10 FAP={diag['log10_fap']:.1f}, scale={scale_ratio:.4f}, "
+                       f"quadrants={diag['n_quadrants']}, parity={solution['parity']} => "
+                       f"{'accepted' if accepted else 'rejected: ' + '; '.join(reasons)}")
+
+        solution.update({
+            'Nobs_matched': Nobs_matched_r_after,
+            'Nobs_lim': Nobs_matched_r_lim_after,
+            'rms_dist': rms_after,
+            'completeness': completeness_after,
+            'wcsprm': copy(refined_wcs),
+            'src_cat_match': src_df_after,
+            'ref_cat_match': ref_df_after,
+            'std_x': residual_stats_after['std_x'],
+            'std_y': residual_stats_after['std_y'],
+            'diagnostics': diag,
+            'scale_ratio': scale_ratio,
+            'accepted': accepted,
+            'reject_reasons': reasons
+        })
+
+        if fit_status:
+            solution.update({'method': 'WCS_fit',
+                             'fit_status': fit_status,
+                             'fit_params': fit_pars})
+
+        # Check for convergence
+        if completeness_after >= self.config['THRESHOLD_CONVERGENCE']:
+            solution['has_converged'] = True
+
+        return solution
+
+    def asterism_candidates(self, initial_wcsprm, hypotheses, n_src=50, n_ref=150):
+        """Candidate solutions from asterism (triangle) matching with astroalign, for each parity.
+
+        The brightest sources are matched to the brightest reference stars projected with the
+        initial WCS. astroalign finds the similarity transform q = A p + t (A = s R) from the
+        (mirrored, for the reflected parity) detector positions p to the projected positions q.
+        With the mirror P, the solution is CD = CD0 (A P) and CRPIX = (A P)^-1 (CRPIX0 - 1 - t) + 1.
+        """
+        import astroalign
+
+        src = self.source_cat_full.head(n_src)[['xcentroid', 'ycentroid']].to_numpy(dtype=float)
+        if len(src) < 5:
+            return []
+
+        ny, nx = self.search_area_shape
+        centre = np.array([nx / 2., ny / 2.])
+        ref = update_catalog_positions(self.ref_cat_full, initial_wcsprm, origin=0)
+        ref_xy = ref[['xcentroid', 'ycentroid']].to_numpy(dtype=float)
+        # References within the circle around the frame (any rotation) plus a margin for the pointing
+        inside = np.hypot(*(ref_xy - centre).T) <= 0.6 * np.hypot(nx, ny)
+        ref_xy = ref_xy[inside & np.all(np.isfinite(ref_xy), axis=1)][:n_ref]
+        if len(ref_xy) < 5:
+            return []
+
+        crpix0 = np.asarray(initial_wcsprm.crpix, dtype=float) - 1.
+        candidates = []
+        for parity, mirror in (('normal', np.eye(2)), ('reflected', np.diag([-1., 1.]))):
+            if parity not in [h['parity'] for h in hypotheses]:
+                continue
+            try:
+                transform, _ = astroalign.find_transform(src @ mirror.T, ref_xy,
+                                                         max_control_points=max(n_src, 50))
+            except Exception as exc:  # astroalign raises MaxIterError and others if nothing matches
+                self.log.debug(f"{' ':<4}Asterism match ({parity}) failed: {exc}")
+                continue
+
+            a_mat = transform.params[:2, :2]
+            shift = transform.params[:2, 2]
+            s = np.sqrt(abs(np.linalg.det(a_mat)))
+            if not 0.9 < s < 1.1:
+                self.log.debug(f"{' ':<4}Asterism match ({parity}) rejected: scale {s:.3f}")
+                continue
+            m_mat = a_mat @ mirror
+
+            # rotate() applies CD0 @ inv(rot); the orthogonal part of m_mat is (m_mat / s)
+            wcsprm_new = rotate(copy(initial_wcsprm), (m_mat / s).T)
+            wcsprm_new = scale(wcsprm_new, s)
+            wcsprm_new.crpix = np.linalg.solve(m_mat, crpix0 - shift) + 1.
+
+            rot = m_mat @ mirror / s  # rotation part
+            angle = np.degrees(np.arctan2(rot[1, 0], rot[0, 0]))
+            if parity == 'normal':
+                name = 'identity' if abs(angle) < 90. else 'rotate_180'
+            else:
+                name = 'reflect_x' if abs(angle) < 90. else 'reflect_y'
+            orientation = [h for h in self.orientation_hypotheses if h['name'] == name][0]
+            self.log.debug(f"{' ':<4}Asterism match ({parity}): scale {s:.4f}, rotation {angle:.2f} deg")
+
+            candidates.append({
+                'rotation_idx': -1,
+                'orientation_name': orientation['name'],
+                'parity': orientation['parity'],
+                'orientation_determinant': orientation['determinant'],
+                'rotation_deg': angle,
+                'method': 'asterism',
+                'search': 'asterism',
+                'Nobs_matched': 0,
+                'score': 0.,
+                'completeness': 0.,
+                'wcsprm': wcsprm_new,
+                'match_radius': self.match_radius_px,
+                'rms_dist': np.inf,
+                'std_x': np.inf,
+                'std_y': np.inf
+            })
+        return candidates
 
     def print_final_summary(self, solution, Nobs_total, Nref_total):
         """
@@ -634,11 +824,9 @@ class FindWCS(object):
         best_match_radius = self.match_radius_px
         best_rms = np.inf
         best_std_xy = (np.inf, np.inf)
+        best_is_partner = False
 
-        rot_multiplier_list = [1., -1.]
-        for n in rot_multiplier_list:
-
-            self.angles_obs = n * self.angles_obs
+        for _ in (0,):
 
             # Use FFT to find the rotation and scaling first
             self.compute_cross_corr()
@@ -657,9 +845,16 @@ class FindWCS(object):
             if result_signal == 0. or result_scaling < 0.9 or 1.1 < result_scaling:
                 continue
 
-            # Test for reflection
-            for m in rot_multiplier_list:
-                result_rot_rad = m * result_scale_rot[2]
+            # Rotation candidates as (angle, is the 180 deg partner orientation).
+            # The FFT shift is the change of the pair angle (measured from the y-axis), so the
+            # detector rotation is its negative. It is known modulo 180 deg: 'parity' tests both
+            # branches; 'legacy' tests both signs (version 0.5.x).
+            if self.search_mode == 'parity':
+                candidates = [(-result_scale_rot[2], False), (-result_scale_rot[2] + np.pi, True)]
+            else:
+                candidates = [(result_scale_rot[2], False), (-result_scale_rot[2], False)]
+
+            for result_rot_rad, is_partner in candidates:
 
                 # Apply rotation and scale
                 rot_mat = rotation_to_matrix(result_rot_rad)
@@ -684,12 +879,15 @@ class FindWCS(object):
                                        wcsprm_in=wcsprm_shifted,
                                        threshold=self.match_radius_px)
 
-                # Unpack result
-                source_cat_matched, ref_cat_matched, obs_xy, cat_xy, _, current_score, _ = matches
+                # Unpack result; no match possible if a catalogue is empty
+                source_cat_matched, ref_cat_matched, obs_xy, cat_xy, _, current_score, success = matches
+                if not success:
+                    del wcsprm_shifted
+                    continue
                 Nobs_matched = len(obs_xy)
 
-                # Update the best result
-                if best_Nobs_matched <= Nobs_matched or best_score <= current_score[0]:
+                # Update the best result: most matches, then the highest score
+                if (Nobs_matched, current_score[0]) > (best_Nobs_matched, best_score):
                     best_Nobs_matched = Nobs_matched
                     best_score = current_score[0]
                     best_scaling = result_scaling
@@ -700,6 +898,7 @@ class FindWCS(object):
                     best_match_radius = self.match_radius_px
                     best_rms = current_score[1]
                     best_std_xy = (current_score[2], current_score[3])
+                    best_is_partner = is_partner
 
                 if self._debug:
                     plot_catalog_positions(self.source_cat,
@@ -709,7 +908,7 @@ class FindWCS(object):
                 del wcsprm_shifted
 
         return (best_Nobs_matched, best_score, best_wcsprm,
-                [best_match_radius, best_rms, best_std_xy, best_scaling, best_rotation],
+                [best_match_radius, best_rms, best_std_xy, best_scaling, best_rotation, best_is_partner],
                 best_source_cat_match, best_ref_cat_match)
 
     def compute_cross_corr(self):
@@ -739,77 +938,72 @@ class FindWCS(object):
 
         self.cross_corr = cross_corr
 
-    def find_offset(self, catalog, wcsprm_in, offset_binwidth=1):
-        """Find offset
+    def find_offset(self, catalog, wcsprm_in, offset_binwidth=1, coarse_binwidth=8):
+        """Find the translation between the detected sources and the projected catalogue.
+
+        All source-reference differences are histogrammed; matching pairs pile up at the offset.
+        A coarse histogram over the full range of differences locates the peak (a 2x2 bin sum
+        keeps a peak on a bin edge together), then a fine histogram around it gives the offset.
+        This keeps the histograms small (a 1 px histogram over a whole frame has ~10^7 bins).
 
         Parameters
         ----------
-        catalog
-        wcsprm_in
-        offset_binwidth : int, optional
-            test
+        catalog : pd.DataFrame
+            Reference catalogue with RA, DEC.
+        wcsprm_in : astropy.wcs.Wcsprm
+            WCS used to project the catalogue.
+        offset_binwidth : float, optional
+            Bin width of the fine histogram in pixel.
+        coarse_binwidth : float, optional
+            Bin width of the coarse histogram in pixel.
 
         Returns
         -------
-
+        tuple
+            Signal (pairs within 3x3 fine bins of the peak), x shift and y shift in pixel.
         """
         # Apply the wcs to the catalog
         cat_x, cat_y = process_catalog(catalog, wcsprm_in)
 
         # Get distances
-        dist_x = (self.obs_x - cat_x.T).flatten()
-        dist_y = (self.obs_y - cat_y.T).flatten()
+        dist_x = (self.obs_x - cat_x.T).flatten().astype(np.float64)
+        dist_y = (self.obs_y - cat_y.T).flatten().astype(np.float64)
 
         del cat_x, cat_y
 
-        # Compute the minimum and maximum values for both axes
-        min_x, max_x = dist_x.min(), dist_x.max()
-        min_y, max_y = dist_y.min(), dist_y.max()
+        coarse = max(float(coarse_binwidth), float(offset_binwidth))
+        min_x, min_y = dist_x.min(), dist_y.min()
+        nx = max(1, int(np.ceil((dist_x.max() - min_x) / coarse + 1e-9)))
+        ny = max(1, int(np.ceil((dist_y.max() - min_y) / coarse + 1e-9)))
+        H = fhist.histogram2d(dist_x, dist_y, bins=[nx, ny],
+                              range=[[min_x, min_x + nx * coarse], [min_y, min_y + ny * coarse]])
 
-        # Compute the number of bins for both axes
-        num_bins_x = int(np.ceil((max_x - min_x) / offset_binwidth)) + 1
-        num_bins_y = int(np.ceil((max_y - min_y) / offset_binwidth)) + 1
+        # Sum over 2x2 bins; the peak lies in the window of bins (i, i + 1) x (j, j + 1)
+        Hp = np.pad(H, ((0, 1), (0, 1)))
+        H2 = Hp[:-1, :-1] + Hp[1:, :-1] + Hp[:-1, 1:] + Hp[1:, 1:]
+        i, j = np.unravel_index(np.argmax(H2), H2.shape)
+        centre_x = min_x + (i + 1) * coarse
+        centre_y = min_y + (j + 1) * coarse
 
-        # Compute the edges for both axes
-        x_edges = np.linspace(min_x, max_x, num_bins_x)
-        y_edges = np.linspace(min_y, max_y, num_bins_y)
+        # Fine histogram within two coarse bins of the window centre
+        half = 2 * coarse
+        sel = (np.abs(dist_x - centre_x) <= half) & (np.abs(dist_y - centre_y) <= half)
+        n_fine = int(np.ceil(2 * half / offset_binwidth))
+        lo_x = centre_x - half
+        lo_y = centre_y - half
+        H = fhist.histogram2d(dist_x[sel], dist_y[sel], bins=[n_fine, n_fine],
+                              range=[[lo_x, lo_x + n_fine * offset_binwidth],
+                                     [lo_y, lo_y + n_fine * offset_binwidth]])
+        peak = np.unravel_index(np.argmax(H), H.shape)
 
-        # Prepare histogram
-        vals = [dist_x, dist_y]
-        bins = [num_bins_x, num_bins_y]
-        ranges = [[min_x, max_x], [min_y, max_y]]
+        # Sum up the signal in the fixed aperture 1 bin in each direction around the peak
+        signal = np.sum(H[max(peak[0] - 1, 0):peak[0] + 2, max(peak[1] - 1, 0):peak[1] + 2])
 
-        # Compute the histogram
-        H = fhist.histogram2d(*vals, bins=bins, range=ranges)
+        # Bin centre of the peak
+        x_shift = lo_x + (peak[0] + 0.5) * offset_binwidth
+        y_shift = lo_y + (peak[1] + 0.5) * offset_binwidth
 
-        # Find the peak for the x and y distance where the two sets overlap and take the first peak
-        highest_peak = np.argwhere(H == np.max(H))[0]
-
-        # Check if the highest peak is out of bounds in x_edges or y_edges
-        if highest_peak[0] >= len(x_edges) - 1 or highest_peak[1] >= len(y_edges) - 1:
-            # Mask the highest peak to discard it
-            H[highest_peak[0], highest_peak[1]] = -np.inf
-
-            # Find the next highest peak
-            next_peak = np.argwhere(H == np.max(H))[0]
-
-            # Use the next highest peak
-            peak = next_peak
-        else:
-            # Use the highest peak
-            peak = highest_peak
-
-        # Sum up the signal in the fixed aperture 1 pixel in each direction around the peak,
-        # so a 3x3 array, total 9 pixel
-        signal = np.sum(H[peak[0] - 1:peak[0] + 2, peak[1] - 1:peak[1] + 2])
-        # signal_wide = np.sum(H[peak[0] - 4:peak[0] + 5, peak[1] - 4:peak[1] + 5])
-
-        x_shift = (x_edges[peak[0]] + x_edges[peak[0] + 1]) / 2
-        y_shift = (y_edges[peak[1]] + y_edges[peak[1] + 1]) / 2
-
-        # print(signal, signal_wide - signal, x_shift, y_shift)
-
-        del x_edges, y_edges, H, vals, dist_x, dist_y
+        del H, Hp, H2, dist_x, dist_y, sel
         return signal, x_shift, y_shift
 
     def calc_cross_corr(self, log_dist_obs, angles_obs, log_dist_cat, angles_cat):
@@ -1180,14 +1374,14 @@ def find_peaks_2d(inv_cross_power_spec, threshold_multiplier=5., apply_gaussian_
 
     if apply_gaussian_filter:
         # Apply a Gaussian filter for smoothing
-        smoothed = gaussian_filter(inv_cross_power_spec, sigma=gauss_sigma)
+        smoothed = gaussian_filter(inv_cross_power_spec, sigma=gauss_sigma, mode=('nearest', 'wrap'))
     else:
         # Skip Gaussian filtering
         smoothed = inv_cross_power_spec
 
     # Find local maxima
     local_max = maximum_filter(smoothed, size=size,
-                               mode='constant', origin=0) == smoothed
+                               mode=('constant', 'wrap'), origin=0) == smoothed
 
     # Apply the threshold
     detected_peaks = smoothed > adaptive_threshold
@@ -1204,7 +1398,8 @@ def find_peaks_2d(inv_cross_power_spec, threshold_multiplier=5., apply_gaussian_
 
     # Convert to array if not empty
     if peak_coords:
-        peak_coords = np.array(peak_coords, dtype=int)
+        # Round, not truncate: a centre of mass of 2.9999 belongs to bin 3
+        peak_coords = np.rint(np.array(peak_coords)).astype(int) % np.array(smoothed.shape)
 
     bc.clean_up(inv_cross_power_spec, smoothed, detected_peaks, labeled, num_features)
 
@@ -1294,33 +1489,36 @@ def get_shift_from_peak(inv_cross_power_spec, peak):
     tuple
         A tuple containing the x shift, y shift, and signal strength.
     """
-    n_1 = 1
-    n_2 = 2
-    n = n_1 + n_2
+    n_rows, n_cols = inv_cross_power_spec.shape
+    peak = [int(peak[0]), int(peak[1])]
 
-    # Sum up the signal in a fixed aperture 1 pixel in each direction around the peak,
-    # so a 3x3 array, total 9 pixel
-    signal = np.nansum(inv_cross_power_spec[peak[0] - n_1:peak[0] + n_2,
-                       peak[1] - n_1:peak[1] + n_2])
-
-    around_peak = inv_cross_power_spec[peak[0] - n_1:peak[0] + n_2, peak[1] - n_1:peak[1] + n_2]
-    # print(signal, around_peak)
-    if around_peak.shape != (n, n):
+    # Move to the maximum of the unsmoothed spectrum next to the detected peak, so the sub-bin fit
+    # below is centred on it
+    for _ in range(3):
+        if peak[0] < 1 or peak[0] > n_rows - 2:
+            return 0, 0, -1.
+        rows = np.arange(peak[0] - 1, peak[0] + 2)
+        cols = np.arange(peak[1] - 1, peak[1] + 2) % n_cols
+        i, j = np.unravel_index(np.argmax(inv_cross_power_spec[np.ix_(rows, cols)]), (3, 3))
+        if i == 1 and j == 1:
+            break
+        peak = [peak[0] + i - 1, (peak[1] + j - 1) % n_cols]
+    if peak[0] < 1 or peak[0] > n_rows - 2:
         return 0, 0, -1.
-    peak_x_subpixel = cosine_interpolation_1d(around_peak[:, 1]) + 0.5
-    peak_y_subpixel = cosine_interpolation_1d(around_peak[1, :]) + 0.5
 
-    # Get mid-point
-    middle_x = inv_cross_power_spec.shape[0] / 2.
-    middle_y = inv_cross_power_spec.shape[1] / 2.
+    # 3x3 neighbourhood; the angle axis (columns) is periodic and wraps around
+    rows = np.arange(peak[0] - 1, peak[0] + 2)
+    cols = np.arange(peak[1] - 1, peak[1] + 2) % n_cols
+    around_peak = inv_cross_power_spec[np.ix_(rows, cols)]
+    signal = np.nansum(around_peak)
 
-    # Find the sub pixel shift of the true peak
-    # peak_x_subpixel, peak_y_subpixel = subpixel_peak_position(around_peak)
-    # print(peak_x_subpixel, peak_y_subpixel)
+    # Sub-bin peak position relative to the peak bin
+    peak_x_subpixel = gaussian_interpolation_1d(around_peak[:, 1])
+    peak_y_subpixel = gaussian_interpolation_1d(around_peak[1, :])
 
-    # Calculate final shift
-    x_shift = peak[0] - middle_x + peak_x_subpixel
-    y_shift = peak[1] - middle_y + peak_y_subpixel
+    # After fftshift the zero shift lies at index N // 2 (for even and odd N)
+    x_shift = peak[0] - n_rows // 2 + peak_x_subpixel
+    y_shift = peak[1] - n_cols // 2 + peak_y_subpixel
 
     del inv_cross_power_spec
 
@@ -1422,15 +1620,15 @@ def find_matches(obs, cat, wcsprm_in=None, threshold=10., sort=True):
     obs_idx = idx_arr[1][mask]
     min_dist_xy = min_dist_xy[mask]
 
-    obs_matched = obs.iloc[obs_idx]
-    cat_matched = cat.iloc[cat_idx]
-
-    obs_matched = obs_matched.sort_values(by='mag', ascending=True)
-    obs_matched = obs_matched.reset_index(drop=True)
-
+    # Keep the pairs together: both tables are ordered the same way (by the observed magnitude)
     if sort:
-        cat_matched = cat_matched.sort_values(by='mag', ascending=True)
-    cat_matched = cat_matched.reset_index(drop=True)
+        order = np.argsort(obs['mag'].to_numpy()[obs_idx], kind='stable')
+        obs_idx = obs_idx[order]
+        cat_idx = cat_idx[order]
+        min_dist_xy = min_dist_xy[order]
+
+    obs_matched = obs.iloc[obs_idx].reset_index(drop=True)
+    cat_matched = cat.iloc[cat_idx].reset_index(drop=True)
 
     columns_to_add = ['xcentroid', 'ycentroid', 'fwhm', 'include_fwhm']
     cat_matched = cat_matched.assign(**obs_matched[columns_to_add].to_dict(orient='series'))
@@ -1462,13 +1660,114 @@ def find_matches(obs, cat, wcsprm_in=None, threshold=10., sort=True):
     return obs_matched, cat_matched, obs_xy, cat_xy, min_dist_xy, (score, rms, std_x, std_y), True
 
 
+def solution_diagnostics(obs_xy, ref_xy, ref_mag, shape, match_radius, n_trials=1.):
+    """Quality and significance of a plate solution, independent of how it was found.
+
+    Each detected source is matched to the nearest projected reference star within
+    ``match_radius``. The chance of a random coincidence is p = 1 - exp(-rho_ref * pi * r^2) per
+    source, so the number of chance matches is binomial with N_obs trials; the false-alarm
+    probability is the binomial tail at the observed number of matches times the number of
+    independent alignments the search could have picked (``n_trials``).
+
+    Parameters
+    ----------
+    obs_xy : np.ndarray
+        (N, 2) positions of the detected sources (pixel).
+    ref_xy : np.ndarray
+        (M, 2) positions of the reference stars projected with the solution (pixel).
+    ref_mag : np.ndarray
+        (M,) magnitudes of the reference stars.
+    shape : tuple
+        Frame shape (ny, nx).
+    match_radius : float
+        Match radius in pixel (typically the FWHM).
+    n_trials : float, optional
+        Number of independent alignments tested by the search.
+
+    Returns
+    -------
+    dict
+        n_obs, n_ref, n_match, n_exp (references on the frame down to the 90th percentile of
+        the matched magnitudes), rms (px), n_quadrants (frame quadrants with a match) and
+        log10_fap.
+    """
+    from scipy.stats import binom
+
+    ny, nx = shape[:2]
+    obs_xy = np.asarray(obs_xy, dtype=float).reshape(-1, 2)
+    ref_xy = np.asarray(ref_xy, dtype=float).reshape(-1, 2)
+    ref_mag = np.asarray(ref_mag, dtype=float).reshape(-1)
+
+    on_frame = ((ref_xy[:, 0] >= -0.5) & (ref_xy[:, 0] <= nx - 0.5) &
+                (ref_xy[:, 1] >= -0.5) & (ref_xy[:, 1] <= ny - 0.5) & np.all(np.isfinite(ref_xy), axis=1))
+    ref_xy = ref_xy[on_frame]
+    ref_mag = ref_mag[on_frame]
+
+    result = {'n_obs': len(obs_xy), 'n_ref': len(ref_xy), 'n_match': 0, 'n_exp': 0,
+              'rms': np.inf, 'n_quadrants': 0, 'log10_fap': 0.}
+    if len(obs_xy) == 0 or len(ref_xy) == 0:
+        return result
+
+    dist, idx = cKDTree(ref_xy).query(obs_xy, k=1, distance_upper_bound=match_radius)
+    matched = np.isfinite(dist)
+    n_match = int(matched.sum())
+    result['n_match'] = n_match
+    if n_match == 0:
+        return result
+
+    result['rms'] = float(np.sqrt(np.mean(dist[matched] ** 2)))
+    mag_lim = np.nanpercentile(ref_mag[idx[matched]], 90)
+    result['n_exp'] = int(np.sum(ref_mag <= mag_lim))
+
+    xy = obs_xy[matched]
+    quadrant = (xy[:, 0] >= nx / 2.).astype(int) + 2 * (xy[:, 1] >= ny / 2.).astype(int)
+    result['n_quadrants'] = int(len(np.unique(quadrant)))
+
+    # Chance matches are counted against the reference stars down to the matched magnitude limit:
+    # a true solution matches the bright stars, a chance alignment mostly hits faint ones (a deep
+    # catalogue would otherwise make every sparse field insignificant). The limit is chosen from
+    # the data, so the number of possible limits (n_match) is added to the trials.
+    n_match_bright = int(np.sum(ref_mag[idx[matched]] <= mag_lim))
+    p_chance = 1. - np.exp(-result['n_exp'] / float(nx * ny) * np.pi * match_radius ** 2)
+    log_sf = binom.logsf(n_match_bright - 1, len(obs_xy), p_chance) / np.log(10.)
+    result['log10_fap'] = float(min(0., log_sf + np.log10(max(n_trials, 1.) * n_match)))
+
+    return result
+
+
+def assess_solution(diag, scale_ratio, fwhm, strict_limits=None):
+    """Acceptance of a plate solution from :func:`solution_diagnostics`.
+
+    Returns (accepted, reasons), where reasons lists the failed criteria.
+    """
+    lim = {'min_match': 6, 'min_frac_exp': 0.3, 'max_log10_fap': -6., 'max_rms_fwhm': 0.55,
+           'max_scale_dev': 0.02, 'min_quadrants': 3}
+    if strict_limits:
+        lim.update(strict_limits)
+
+    reasons = []
+    if diag['n_match'] < max(lim['min_match'], lim['min_frac_exp'] * diag['n_exp']):
+        reasons.append(f"matches {diag['n_match']} < max({lim['min_match']}, "
+                       f"{lim['min_frac_exp']:g} x {diag['n_exp']} expected)")
+    if diag['log10_fap'] > lim['max_log10_fap']:
+        reasons.append(f"false-alarm probability 10^{diag['log10_fap']:.1f} > 10^{lim['max_log10_fap']:g}")
+    if not diag['rms'] <= lim['max_rms_fwhm'] * fwhm:
+        reasons.append(f"rms {diag['rms']:.2f} px > {lim['max_rms_fwhm']:g} x FWHM ({fwhm:.2f} px)")
+    if not abs(scale_ratio - 1.) < lim['max_scale_dev']:
+        reasons.append(f"scale {scale_ratio:.4f} differs from the nominal by more than {lim['max_scale_dev']:g}")
+    if diag['n_quadrants'] < lim['min_quadrants']:
+        reasons.append(f"matches in {diag['n_quadrants']} of 4 quadrants")
+
+    return not reasons, reasons
+
+
 def cross_corr_to_fourier_space(a):
     """Transform 2D array into fourier space. Use padding and normalization."""
 
     aa = (a - np.nanmean(a)) / np.nanstd(a)
 
-    # Wraps around so half the size should be fine, pads 2D array with zeros
-    aaa = np.pad(aa, (5, 5), 'constant')
+    # Pad only the distance axis; the angle axis is periodic and must wrap around
+    aaa = np.pad(aa, ((5, 5), (0, 0)), 'constant')
     ff_a = np.fft.fft2(aaa)
 
     del a, aa, aaa
@@ -1479,19 +1778,15 @@ def cross_corr_to_fourier_space(a):
 def create_bins(min_value, max_value, bin_size, is_distance=True):
     """Create bins for the histogram """
 
-    bin_step = np.deg2rad(bin_size)
-    diff = max_value - min_value
-
     if is_distance:
-        bin_step = bin_size
-        diff = (np.e ** max_value - np.e ** min_value)
+        # Resolution chosen in linear pixels, histogram in log distance
+        N = math.ceil((np.e ** max_value - np.e ** min_value) / bin_size) + 1
+    else:
+        N = max(1, int(round((max_value - min_value) / np.deg2rad(bin_size))))
 
-    N = math.ceil(diff / bin_step)
-    N += 1
+    binwidth = (max_value - min_value) / N
 
-    bins, binwidth = np.linspace(min_value, max_value, N, retstep=True, dtype='float32')
-
-    return bins, binwidth
+    return N, binwidth
 
 
 def frange(x, y, jump=1.0):
@@ -1541,17 +1836,15 @@ def prepare_histogram_bins_and_ranges(log_distance_obs, angle_obs,
     # Broader distance range if the scale is just a guess
     maximum_distance = max(max(log_distance_cat), max(log_distance_obs))
 
-    minimum_ang = min(min(angle_cat), min(angle_obs))
-    maximum_ang = max(max(angle_cat), max(angle_obs))
-
     del log_distance_obs, angle_obs, log_distance_cat, angle_cat
 
-    # Create bins and ranges for histogram
-    bins_dist, binwidth_dist = create_bins(minimum_distance, maximum_distance, dist_bin_size, is_distance=True)
-    bins_ang, binwidth_ang = create_bins(minimum_ang, maximum_ang, ang_bin_size, is_distance=False)
+    # Number of bins and the matching bin width (range / N): the histogram has N bins over the
+    # range, so a shift of k bins is k * range / N. Angles are periodic over [0, pi).
+    n_dist, binwidth_dist = create_bins(minimum_distance, maximum_distance, dist_bin_size, is_distance=True)
+    n_ang, binwidth_ang = create_bins(0., np.pi, ang_bin_size, is_distance=False)
 
-    bins = [len(bins_dist), len(bins_ang)]
-    ranges = [[minimum_distance, maximum_distance], [minimum_ang, maximum_ang]]
+    bins = [n_dist, n_ang]
+    ranges = [[minimum_distance, maximum_distance], [0., np.pi]]
 
     return bins, ranges, binwidth_dist, binwidth_ang
 
@@ -1564,9 +1857,10 @@ def calculate_dist(data_x, data_y):
     dist_x = (data_x - data_x.T)
     dist_y = (data_y - data_y.T)
 
-    # Only use off diagonal elements
-    dist_x = dist_x[np.where(~np.eye(dist_x.shape[0], dtype=bool))]
-    dist_y = dist_y[np.where(~np.eye(dist_y.shape[0], dtype=bool))]
+    # Each unordered pair once (upper triangle); the reversed pair carries no extra information
+    iu = np.triu_indices(dist_x.shape[0], k=1)
+    dist_x = dist_x[iu]
+    dist_y = dist_y[iu]
 
     dist = np.sqrt(dist_x ** 2 + dist_y ** 2)
 
@@ -1588,24 +1882,36 @@ def calculate_angles(data_x, data_y):
     data_x = np.array(data_x)
     data_y = np.array(data_y)
 
-    # Get all pairs: vector differences
+    # Each unordered pair once (same order as calculate_dist)
     vec_x = data_x - data_x.T
     vec_y = data_y - data_y.T
-    vec_x = vec_x[np.where(~np.eye(vec_x.shape[0], dtype=bool))]
-    vec_y = vec_y[np.where(~np.eye(vec_y.shape[0], dtype=bool))]
+    iu = np.triu_indices(vec_x.shape[0], k=1)
+    vec_x = vec_x[iu]
+    vec_y = vec_y[iu]
 
-    # Get the angle with x-axis.
-    angles = np.arctan2(vec_x, vec_y)
-
-    # Make sure angles are between 0 and 2 Pi
-    angles = angles % (2. * np.pi)
-
-    # Shift to -pi to pi
-    angles[np.where(angles > np.pi)] = -1 * (2. * np.pi - angles[np.where(angles > np.pi)])
+    # Pair orientation folded to [0, pi): a pair has no direction, so the angle histogram is
+    # periodic with pi and a rotation is recovered modulo 180 deg (the 180 deg tie is resolved
+    # by the orientation hypotheses)
+    angles = np.arctan2(vec_x, vec_y) % np.pi
 
     bc.clean_up(data_x, data_y, vec_x, vec_y)
 
     return angles
+
+
+def get_position_angle(wcsprm):
+    """Position angle (deg, east of north) of the detector +y axis and the parity (+1 / -1)."""
+    cd = get_effective_cd_matrix(wcsprm)
+    pa = np.degrees(np.arctan2(cd[0, 1], cd[1, 1]))
+    return float(pa), int(np.sign(np.linalg.det(cd)))
+
+
+def get_partner_orientation(orientation, hypotheses):
+    """Return the orientation rotated by 180 deg (identity <-> rotate_180, reflect_x <-> reflect_y)."""
+    for hypothesis in hypotheses:
+        if np.allclose(hypothesis['matrix'], -np.asarray(orientation['matrix']), rtol=0., atol=1e-12):
+            return hypothesis
+    return orientation
 
 
 def build_orientation_hypotheses(preferred_pc=None):
@@ -1635,16 +1941,24 @@ def build_orientation_hypotheses(preferred_pc=None):
 
 
 def get_effective_cd_matrix(wcsprm):
-    """Return the effective two-dimensional CD matrix in deg/pixel."""
+    """Return the effective two-dimensional CD matrix in deg/pixel.
+
+    FITS convention (Calabretta & Greisen 2002, as used by astropy):
+    CD_ij = CDELT_i * PC_ij, i.e. CD = diag(CDELT) @ PC.
+    """
     pc = np.asarray(wcsprm.get_pc(), dtype=float)
     cdelt = np.asarray(wcsprm.get_cdelt(), dtype=float)
     if pc.shape != (2, 2) or cdelt.shape != (2,):
         raise ValueError("Only two-dimensional celestial WCS linear terms are supported.")
-    return pc @ np.diag(cdelt)
+    return np.diag(cdelt) @ pc
 
 
 def get_wcs_linear_diagnostics(wcsprm):
-    """Return scale, determinant, handedness, and conditioning diagnostics."""
+    """Return scale, determinant, handedness, and conditioning diagnostics.
+
+    The pixel scales are the lengths of the CD columns, i.e. the angular size of a step
+    along the detector x and y axes.
+    """
     pc = np.asarray(wcsprm.get_pc(), dtype=float)
     cd = get_effective_cd_matrix(wcsprm)
     scales = np.linalg.norm(cd, axis=0)
@@ -1664,7 +1978,13 @@ def get_wcs_linear_diagnostics(wcsprm):
 
 
 def validate_wcs_linear_convention(wcsprm, *, atol=1e-10):
-    """Validate the frozen PC/CDELT/CD representation invariant."""
+    """Validate the PC/CDELT/CD representation.
+
+    CDELT holds the pixel scale along each detector axis (CD column lengths) and PC the
+    rest; for square pixels PC is then a pure rotation or reflection. For non-square
+    pixels with a rotation PC is not orthogonal, which FITS allows, so only finiteness,
+    positive scales and a non-singular matrix are required.
+    """
     diagnostics = get_wcs_linear_diagnostics(wcsprm)
     values = np.concatenate((
         diagnostics['cd'].ravel(),
@@ -1675,11 +1995,6 @@ def validate_wcs_linear_convention(wcsprm, *, atol=1e-10):
         raise ValueError("WCS linear terms contain non-finite values.")
     if diagnostics['scale_x'] <= 0. or diagnostics['scale_y'] <= 0.:
         raise ValueError("WCS pixel scales must be strictly positive.")
-    if diagnostics['pc_orthogonality_error'] > atol:
-        raise ValueError(
-            "PC must contain orientation only; scale or skew remains in PC.")
-    if not np.isclose(abs(diagnostics['pc_determinant']), 1., atol=atol, rtol=0.):
-        raise ValueError("PC determinant must be +1 or -1.")
     if diagnostics['handedness'] == 0:
         raise ValueError("The effective CD matrix is singular.")
     return diagnostics
@@ -1697,7 +2012,7 @@ def rotation_to_matrix(angle):
 def rotate(wcsprm_rot, rot):
     """Apply an active detector-coordinate orientation transformation.
 
-    For CD = PC @ diag(CDELT), an active detector transformation ``rot``
+    With CD = diag(CDELT) @ PC, an active detector transformation ``rot``
     is represented by CD_new = CD_old @ inv(rot). This preserves scale and
     changes handedness only when ``rot`` is a reflection.
     """
@@ -1712,7 +2027,7 @@ def rotate(wcsprm_rot, rot):
 
     cdelt = np.asarray(wcsprm_rot.get_cdelt(), dtype=float)
     cd_rotated = get_effective_cd_matrix(wcsprm_rot) @ np.linalg.inv(rot)
-    pc_rotated = cd_rotated @ np.diag(1. / cdelt)
+    pc_rotated = np.diag(1. / cdelt) @ cd_rotated
     wcsprm_rot.pc = pc_rotated
     validate_wcs_linear_convention(wcsprm_rot, atol=1e-8)
     return wcsprm_rot
@@ -1733,10 +2048,10 @@ def scale(wcsprm, scale_factor):
 def translate_wcsprm(wcsprm):
     """Normalize a WCS so PC stores orientation and CDELT stores scale.
 
-    The effective CD matrix is preserved exactly within floating-point
-    precision. Existing CDELT signs are retained, so handedness is not
-    silently changed. Skewed linear transformations are rejected because
-    they cannot satisfy the frozen orthogonal-PC convention.
+    CDELT gets the pixel scale along each detector axis (the CD column
+    lengths) and PC = diag(1 / CDELT) @ CD the rest, so the effective CD
+    matrix is preserved exactly within floating-point precision. Existing
+    CDELT signs are retained, so handedness is not silently changed.
     """
     wcsprm = deepcopy(wcsprm)
     cd = get_effective_cd_matrix(wcsprm)
@@ -1748,7 +2063,7 @@ def translate_wcsprm(wcsprm):
     signs = np.sign(old_cdelt)
     signs[signs == 0.] = 1.
     normalized_cdelt = signs * scales
-    normalized_pc = cd @ np.diag(1. / normalized_cdelt)
+    normalized_pc = np.diag(1. / normalized_cdelt) @ cd
 
     wcsprm.pc = normalized_pc
     wcsprm.cdelt = normalized_cdelt
@@ -1953,6 +2268,30 @@ def cosine_interpolation_1d(v):
         return 0
     else:
         return (v[0] - v[2]) / (2 * denom)
+
+
+def gaussian_interpolation_1d(v):
+    """
+    Sub-bin peak position from three samples, assuming a Gaussian peak (parabola in log).
+
+    A parabola fitted to the samples pulls the estimate towards the bin centre (about 0.13 deg mean
+    error at 1 deg bins in the rotation search); the Gaussian estimate is unbiased for a smooth
+    peak. Falls back to the parabola if a sample is not positive.
+
+    :param v: 1D array of three values, the maximum in the middle
+    :return: Sub-pixel position of the peak relative to the middle sample
+    """
+    v = np.asarray(v, dtype=float)
+    if len(v) != 3:
+        raise ValueError("Input array must have exactly three elements.")
+    if np.any(v <= 0):
+        return cosine_interpolation_1d(v)
+
+    log_v = np.log(v)
+    denom = log_v[0] - 2 * log_v[1] + log_v[2]
+    if denom >= 0:
+        return 0
+    return float(np.clip((log_v[0] - log_v[2]) / (2 * denom), -0.5, 0.5))
 
 # def bootstrap_solution(solution, num_bootstraps=100):
 #     """

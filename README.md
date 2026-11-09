@@ -186,6 +186,16 @@ Header dates are interpreted as observing nights running from noon to
 noon local time (derived from the telescope longitude) and labelled by
 the date of the evening.
 
+> [!NOTE]
+> Each calibration product (bias, each dark exposure, each flat filter)
+is taken from the best night, i.e. the observing night or the closest
+night within `TIMEDELTA_DAYS`. For cameras with a temperature setpoint,
+calibration frames at the CCD temperature of the science frames are
+preferred (±1 °C by default). A mismatch never stops the reduction; it is
+reported in the log, the FITS header and the result table (`TempMatch`).
+See the documentation for the options `TEMP_MATCH`, `TEMP_MISMATCH`,
+`DARK_OPTIMIZE` and `HOTPIX_MASK`.
+
 It is also recommended to separate the raw calibration files, i.e.,
 bias, darks, and flats from the science observation files and place them
 into separate folder, named accordingly `/bias`, `/darks`, `/flats`, and

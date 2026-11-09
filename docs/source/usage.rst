@@ -43,6 +43,42 @@ Valid formats include: ``20221110``, ``2022-11-20``, ``tel_20221011_satxy``, ``2
    Header dates are interpreted as observing nights running from noon to noon local time
    (derived from the telescope longitude) and labelled by the date of the evening.
 
+Each calibration product (bias, each dark exposure, each flat filter) is taken from the best night:
+the observing night itself when it has the frames, otherwise the closest night within ``TIMEDELTA_DAYS``
+(see :ref:`calib_source <calib_source>`). The calibration summary of each pass names the night of every product.
+
+.. _ccd_temperature:
+
+CCD temperature
+^^^^^^^^^^^^^^^
+
+Dark current, hot pixels and, to a small degree, the bias depend on the CCD temperature. For cameras with a
+regulated setpoint, LEOSatpy groups the science frames by their setpoint and prefers calibration frames taken at
+the same temperature (within ``TEMP_TOLERANCE``, default ±1 °C):
+
+* the bias comes from the observing night whenever that night has bias frames (with several temperatures in the
+  night, the closest one); a bias has no exposure time, so its level hardly depends on the temperature. Only when
+  the night has none is a bias at the matching temperature preferred among the neighbouring nights,
+* darks for the science frames are matched to the science temperature,
+* the bias and darks used to build a flat follow the same rules, with the night and the temperature of the flat,
+* flats may come from another temperature (their response hardly depends on it),
+* darks are only ranked by temperature when their hot pixels are significant at the science exposure time.
+
+The temperature is a preference, never a requirement: if no calibration exists at the science temperature, the
+closest one is used and the mismatch is reported in the log, in the header (``TEMPMTCH = 'F'``) and in the
+``TempMatch`` column of the result table. With ``TEMP_MISMATCH = 'strict'`` darks outside the tolerance are not
+used. ``DARK_OPTIMIZE`` and ``HOTPIX_MASK`` reduce the residuals of a dark taken at another temperature.
+
+How the temperature is read is configured per telescope:
+
+* **match**: cameras with a setpoint keyword (CKOIR 0.5 m and 0.6 m, CBNUO, OUKA, CA 1.23 m),
+* **record**: the temperature is only written to the headers (DK 1.54 m and CTIO 0.9 m with LN2 cooling and
+  unreliable or Kelvin readings, FUT without setpoint),
+* **off**: no usable temperature keyword (CTIO 4 m DECam, DDOTI).
+
+Master calibrations carry the temperature and, if taken from another night, the source night in their name,
+e.g. ``master_bias_2x2_Tm10.fits`` or ``master_dark_4x4_1p0_Tm10_s20260914.fits``.
+
 .. tip::
 
    It is recommended to separate raw calibration files (bias, darks, and flats) from science observation files
@@ -157,9 +193,33 @@ First, the initial WCS guess is applied to the reference catalog to transform th
 The logarithm of the distances (log(`d`)) and angles (θ) between each source and every other source are calculated for each dataset. These values are then combined using a 2D histogram, forming an image representation of the dataset's.
 The Fourier transform of each image is computed, and the cross-power spectrum is formed by multiplying the Fourier transform of source image by the complex conjugate of the reference image.
 The inverse Fourier transform of the cross-power spectrum yields an image containing Dirac delta-like peaks. The peak with the highest signal is identified, and the scale and rotation are determined from its location.
-The WCS guess is then updated and the translation shifts are determined by performing a phase correlation in the spatial domain.
-This process is repeated for multiple rotation patterns, and possible solutions are collected.
-These solutions are then analyzed individually, the transformation refined using LMFIT least-squares optimization, and the best solution selected based on the highest quality metrics, such as number of matched sources, completeness, and positional accuracy (RMS error).
+The WCS guess is then updated and the translation shifts are determined from a histogram of the position differences between the detected and the projected reference sources (coarse to fine).
+Only the pointing (RA/Dec) and the nominal pixel scale are taken from the header and the telescope configuration; the orientation of the detector is found by the search.
+The pair angles are periodic with 180 deg, so the search runs once for each parity (normal or reflected) and tests both 180 deg branches of the found rotation, which covers the four standard orientations for any rotation angle, e.g. of a field rotator.
+These solutions are then analyzed individually, the transformation refined using LMFIT least-squares optimization, and checked with statistical acceptance criteria: enough matches compared with the expected number, a false-alarm probability below 1e-6, an rms below 0.55 FWHM, a pixel scale within 2 % of the nominal one and matches across the frame (see :ref:`wcs_strict <WCS calibration options>`).
+The most significant accepted solution is kept. If the correlation search gives no accepted solution, triangles of the brightest stars are matched with `astroalign <https://astroalign.quatrope.org>`_ as a fallback, with the same criteria.
+If no solution is accepted, no WCS is written and the frame is marked as not calibrated.
+Within a run, the parity of the previous accepted frame of the same setup is searched first, and if the telescope records a field rotator angle (``ROTATANG`` for CDK20), the found orientation is compared with it.
+
+.. _Reference catalogs:
+
+Reference catalogs
+^^^^^^^^^^^^^^^^^^
+
+Downloaded reference catalogs are kept in a shared cache (:file:`ref_catalogs` in ``WORKING_DIR_PATH``, see
+:ref:`ref_cat_cache_path <ref_cat_cache_path>`) and reused by every night and data set. A frame takes its stars from
+any cached cone that contains its own cone, cut to its cone and magnitude limit, so the result is the same as for a
+download of that cone. A standard field or a deep-sky object observed on several nights is downloaded once.
+Downloads are made 2 % larger in radius than needed (``REF_CAT_PAD``), which covers small pointing offsets, and before the calibration of a data set the
+pointings of all frames are read and close pointings share one download (``REF_CAT_PREFETCH``).
+
+The Gaia archive returns at most 50000 stars and the GSC service at most 5000 per query. A larger download that
+reaches this limit is not used, since its faintest stars are missing; the frame's own cone is downloaded instead and
+only reused for that cone. If the frame's own cone reaches the limit, a warning is written: a brighter
+``REF_CATALOG_MAG_LIM`` avoids it.
+
+``-d`` (``--force-download``) replaces the cached cones a frame would use with a new download; within one run each
+region is downloaded only once. The cache can be cleared at any time by deleting the folder.
 
 Once a solution is found, LEOSatpy updates the FITS header with the new WCS information, saves the calibrated FITS files in the ``calibrated/`` subdirectory, and updates the result table with the calibration results.
 
