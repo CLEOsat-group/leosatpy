@@ -201,6 +201,26 @@ The most significant accepted solution is kept. If the correlation search gives 
 If no solution is accepted, no WCS is written and the frame is marked as not calibrated.
 Within a run, the parity of the previous accepted frame of the same setup is searched first, and if the telescope records a field rotator angle (``ROTATANG`` for CDK20), the found orientation is compared with it.
 
+.. _Reference catalogs:
+
+Reference catalogs
+^^^^^^^^^^^^^^^^^^
+
+Downloaded reference catalogs are kept in a shared cache (:file:`ref_catalogs` in ``WORKING_DIR_PATH``, see
+:ref:`ref_cat_cache_path <ref_cat_cache_path>`) and reused by every night and data set. A frame takes its stars from
+any cached cone that contains its own cone, cut to its cone and magnitude limit, so the result is the same as for a
+download of that cone. A standard field or a deep-sky object observed on several nights is downloaded once.
+Downloads are made 2 % larger in radius than needed (``REF_CAT_PAD``), which covers small pointing offsets, and before the calibration of a data set the
+pointings of all frames are read and close pointings share one download (``REF_CAT_PREFETCH``).
+
+The Gaia archive returns at most 50000 stars and the GSC service at most 5000 per query. A larger download that
+reaches this limit is not used, since its faintest stars are missing; the frame's own cone is downloaded instead and
+only reused for that cone. If the frame's own cone reaches the limit, a warning is written: a brighter
+``REF_CATALOG_MAG_LIM`` avoids it.
+
+``-d`` (``--force-download``) replaces the cached cones a frame would use with a new download; within one run each
+region is downloaded only once. The cache can be cleared at any time by deleting the folder.
+
 Once a solution is found, LEOSatpy updates the FITS header with the new WCS information, saves the calibrated FITS files in the ``calibrated/`` subdirectory, and updates the result table with the calibration results.
 
 .. important::

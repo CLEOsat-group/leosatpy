@@ -246,6 +246,7 @@ class CalibrateObsWCS(object):
                 multiple = False
                 if len(list(files)) > 1:
                     multiple = True
+                    self.prefetch_reference_catalogs(files)
                 # not_converged = []
                 converged_counter = 0
                 progress_counter = 0
@@ -284,6 +285,34 @@ class CalibrateObsWCS(object):
 
         self._log.info(f"Program execution time in hh:mm:ss: {td}")
         self._log.info('====>  Astrometric calibration finished <====')
+
+    def prefetch_reference_catalogs(self, files):
+        """Download the Gaia cones of all frames of a group once, merged where the pointings are close.
+
+        Only the headers are read; pointing and cone radius come from ``prepare_image_wcs``, as for
+        the frames themselves, which then take their catalogs from the shared cache.
+        """
+        if not bool(self._config.get('REF_CAT_PREFETCH', True)):
+            return
+        config = dict(self._config, force_download=self.force_download)
+        if sext.ref_cache.get_cache(config) is None:
+            return
+        cones = []
+        for _, file_df in files.iterrows():
+            try:
+                hdr = fits.getheader(file_df['input'], self._hdu_idx)
+                self.prepare_image_wcs(wcsprm=WCS(hdr).wcs, hdr=hdr, obsparams=self._obsparams,
+                                       radius=self._radius)
+                ra, dec = self._wcsprm.wcs.crval
+                cones.append((float(ra), float(dec), float(self._fov_radius)))
+            except Exception as exc:  # the frame reports its own problem later
+                self._log.debug(f"    No prefetch cone for {file_df['file_name']}: {exc}")
+        try:
+            merge_max = float(self._config.get('REF_CAT_MERGE_MAX', 1.1))
+        except (TypeError, ValueError):
+            merge_max = 1.1
+        sext.prefetch_astro_ref_cat(cones, config, mag_lim=self._config['REF_CATALOG_MAG_LIM'],
+                                    merge_max=merge_max, silent=self._silent)
 
     def run_calibration_single(self, file_src_path, file_df, progress, hdu_idx=0):
         """Run astrometric calibration on a given data set.

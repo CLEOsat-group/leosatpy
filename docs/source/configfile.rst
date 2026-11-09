@@ -211,6 +211,38 @@ General options
 
    Default timeout (in seconds) for selection dialogs in the user interface. Set to ``-1`` to disable the timeout and wait indefinitely for user input.
 
+.. _ref_cat_cache_path:
+
+.. py:function:: ref_cat_cache_path:
+
+   ``'auto'``, ``str``, ``''`` (default = ``'auto'``)
+
+   Folder of the shared cache of downloaded reference catalogs (Gaia DR3 for the astrometry, GSC 2.4.3 for the
+   photometry). ``'auto'`` uses :file:`ref_catalogs` in working_dir_path_. With an empty value no shared cache is
+   used, and the astrometric catalog is stored per pointing in the :file:`catalogs` folder of the data set.
+   See :ref:`Reference catalogs`.
+
+.. py:function:: ref_cat_pad:
+
+   ``float`` (default = ``1.02``)
+
+   A catalog is downloaded for a cone with this many times the radius the frame needs (1.02: 4 % more area), so
+   that frames with nearby pointings (offsets up to 2 % of the radius) are served from the same download.
+
+.. py:function:: ref_cat_prefetch:
+
+   ``True``, ``False`` (default = ``True``)
+
+   Before the WCS calibration of a data set, read the pointings of all frames and download one Gaia cone for
+   each group of close pointings.
+
+.. py:function:: ref_cat_merge_max:
+
+   ``float`` (default = ``1.1``)
+
+   Largest merged cone of the prefetch, in multiples of the cone radius of a single frame. Pointings farther apart
+   are downloaded separately.
+
 Reduction options
 -----------------
 

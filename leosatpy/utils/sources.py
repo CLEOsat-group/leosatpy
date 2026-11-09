@@ -98,6 +98,7 @@ else:
 from . import photometry as phot
 from .compat import PHOTUTILS_GE_3, catalog_to_pandas, make_background2d
 from . import base_conf as bc
+from . import ref_cache
 from . import transformations as imtrans
 
 # -----------------------------------------------------------------------------
@@ -1207,9 +1208,13 @@ def download_astro_ref_cat(ra, dec, sr=0.5,
             ORDER BY phot_g_mean_mag ASC    
         """
 
-        # Run the query
-        j = Gaia.launch_job_async(query)
-        ref_table = j.get_results()
+        # Run the query as a job and delete the job afterwards: the archive allows an
+        # anonymous user only 50 jobs in its queue, and finished jobs stay there otherwise
+        j = Gaia.launch_job_async(query, background=True)
+        try:
+            ref_table = j.get_results()
+        finally:
+            delete_gaia_job(j)
 
     # Add the catalog name as metadata
     ref_table.meta['catalog'] = catalog
@@ -1222,6 +1227,25 @@ def download_astro_ref_cat(ra, dec, sr=0.5,
     ref_table.sort('mag', reverse=True)
 
     return ref_table[['RA', 'DEC', 'mag', 'objID']].to_pandas(), catalog
+
+
+def delete_gaia_job(job):
+    """Remove an async job from the Gaia archive queue (best effort).
+
+    Returns True if the archive accepted the deletion.
+    """
+    location = getattr(job, 'remoteLocation', None)
+    if not location:
+        return False
+    try:
+        response = requests.post(location, data={'ACTION': 'DELETE'}, timeout=30, allow_redirects=False)
+    except requests.RequestException as exc:
+        log.debug(f"    Gaia job {getattr(job, 'jobid', '?')} not deleted: {exc}")
+        return False
+    deleted = response.status_code in (200, 204, 303)
+    log.debug(f"    Gaia job {getattr(job, 'jobid', '?')} "
+              f"{'deleted' if deleted else 'not deleted'} (HTTP {response.status_code})")
+    return deleted
 
 
 def download_phot_ref_cat(ra, dec, sr=0.1, epoch=None,
@@ -1333,6 +1357,158 @@ def download_phot_ref_cat(ra, dec, sr=0.1, epoch=None,
     return ref_table.to_pandas(), catalog
 
 
+def _cache_pad(config):
+    try:
+        return max(1., float(config.get('REF_CAT_PAD', 1.02)))
+    except (TypeError, ValueError):
+        return 1.02
+
+
+def fetch_astro_ref_cat(ra, dec, sr, config, epoch=None, mag_lim=-1, silent=False):
+    """Gaia DR3 cone from the shared cache, or downloaded and added to the cache.
+
+    The returned rows equal those of a direct query of this cone. A download is made
+    ``REF_CAT_PAD`` times larger than requested, so neighbouring pointings are served too.
+    A padded download that hits the Gaia row limit (``GAIA_MAXROWS``) is not used; the
+    exact cone is downloaded instead and cached for this cone only.
+
+    Returns
+    -------
+    ref_df, catalog, origin : DataFrame, str, str
+        ``origin`` is ``'cache'`` or ``'downloaded'``.
+    """
+    force_download = bool(config.get('force_download', False))
+    cache = ref_cache.get_cache(config)
+    if cache is None:
+        df, catalog = download_astro_ref_cat(ra=ra, dec=dec, sr=sr, epoch=epoch, catalog='GAIAdr3',
+                                             mag_lim=mag_lim, silent=silent)
+        return df, catalog, 'downloaded'
+
+    df, entry = cache.lookup('GAIADR3', ra, dec, sr, mag_lim=mag_lim, fresh_only=force_download)
+    if df is not None:
+        log.debug(f"    Gaia cone RA={ra:.5f} DEC={dec:.5f} r={sr:.4f} deg from cache {entry['file']}")
+        return df, 'GAIAdr3', 'cache'
+
+    if force_download:
+        removed = cache.discard_covering('GAIADR3', ra, dec, sr, mag_lim=mag_lim)
+        if removed:
+            log.debug(f"    Forced download, removed cached cone(s): {removed}")
+    r_dl = sr * _cache_pad(config)
+    df, catalog = download_astro_ref_cat(ra=ra, dec=dec, sr=r_dl, epoch=epoch, catalog='GAIAdr3',
+                                         mag_lim=mag_lim, silent=silent)
+    truncated = len(df) >= ref_cache.GAIA_MAXROWS
+    if truncated and r_dl > sr:
+        # The padded cone hit the row limit: its faintest stars are missing, so get the exact cone
+        log.debug("    Gaia padded cone hit the row limit; downloading the exact cone")
+        r_dl = sr
+        df, catalog = download_astro_ref_cat(ra=ra, dec=dec, sr=r_dl, epoch=epoch, catalog='GAIAdr3',
+                                             mag_lim=mag_lim, silent=True)
+        truncated = len(df) >= ref_cache.GAIA_MAXROWS
+    _warn_truncated('Gaia DR3', truncated, len(df))
+    try:
+        cache.store(df, 'GAIADR3', ra, dec, r_dl, mag_lim=mag_lim, truncated=truncated)
+    except OSError as exc:
+        log.warning(f"Reference catalog not cached ({exc})")
+    return ref_cache.RefCatalogCache.cut(df, ra, dec, sr, mag_lim), catalog, 'downloaded'
+
+
+def _warn_truncated(name, truncated, n_rows):
+    if truncated:
+        log.warning(f"{name} returned its row limit ({n_rows} stars) for this field; the faintest stars "
+                    f"are missing. A brighter REF_CATALOG_MAG_LIM avoids this.")
+
+
+def prefetch_astro_ref_cat(cones, config, mag_lim=-1, merge_max=1.1, silent=False):
+    """Download the Gaia DR3 cones of a set of frames once, merged where they are close.
+
+    Parameters
+    ----------
+    cones : list of tuple
+        (ra, dec, radius) in degrees, one per frame.
+
+    Returns
+    -------
+    n_downloads : int
+        Number of downloads made (0 if everything was cached).
+    """
+    force_download = bool(config.get('force_download', False))
+    cache = ref_cache.get_cache(config)
+    if cache is None or not cones:
+        return 0
+    ras, decs, radii = (list(x) for x in zip(*cones))
+    n_dl = 0
+    for members in ref_cache.cluster_pointings(ras, decs, radii, merge_max):
+        if all(cache.find('GAIADR3', ras[k], decs[k], radii[k], mag_lim=mag_lim, fresh_only=force_download)
+               for k in members):
+            continue
+        ra_c, dec_c, r_c = ref_cache.enclosing_cone([ras[k] for k in members], [decs[k] for k in members],
+                                                    [radii[k] for k in members])
+        if len(members) == 1:
+            # A single frame is fetched by the frame itself (with the usual padding)
+            continue
+        if not silent:
+            log.info(f"> Prefetch Gaia cone for {len(members)} frame(s): RA={ra_c:.4f}, DEC={dec_c:.4f}, "
+                     f"r={r_c:.3f} deg")
+        try:
+            if force_download:
+                cache.discard_covering('GAIADR3', ra_c, dec_c, r_c, mag_lim=mag_lim)
+            df, _ = download_astro_ref_cat(ra=ra_c, dec=dec_c, sr=r_c, catalog='GAIAdr3',
+                                           mag_lim=mag_lim, silent=True)
+            n_dl += 1
+            if len(df) >= ref_cache.GAIA_MAXROWS:
+                # Incomplete merged cone: the frames download their own cones
+                log.debug(f"    Gaia prefetch hit the row limit ({len(df)} rows), not cached")
+                continue
+            cache.store(df, 'GAIADR3', ra_c, dec_c, r_c, mag_lim=mag_lim)
+        except Exception as exc:  # the frames download their own cones then
+            log.warning(f"Gaia prefetch failed ({exc}); the frames download their own cones")
+    return n_dl
+
+
+def fetch_phot_ref_cat(ra, dec, sr, config, catalog='GSC243', silent=False):
+    """Photometric reference cone (full columns) from the shared cache, or downloaded and cached.
+
+    The GSC service returns at most ``GSC_MAXOBJ`` rows. A padded download that hits
+    this limit is not used; the exact cone is downloaded instead and cached for this
+    cone only.
+
+    Returns
+    -------
+    ref_df, catalog, origin : DataFrame, str, str
+    """
+    force_download = bool(config.get('force_download', False))
+    cache = ref_cache.get_cache(config)
+    if cache is None:
+        ref_df, catalog = download_phot_ref_cat(ra=ra, dec=dec, sr=sr, catalog=catalog,
+                                                full_catalog=True, silent=silent)
+        return ref_df, catalog, 'downloaded'
+
+    df, entry = cache.lookup(catalog, ra, dec, sr, fresh_only=force_download)
+    if df is not None:
+        log.debug(f"    {catalog} cone RA={ra:.5f} DEC={dec:.5f} r={sr:.4f} deg from cache {entry['file']}")
+        return df, catalog, 'cache'
+
+    if force_download:
+        cache.discard_covering(catalog, ra, dec, sr)
+    r_dl = sr * _cache_pad(config)
+    ref_df, catalog = download_phot_ref_cat(ra=ra, dec=dec, sr=r_dl, catalog=catalog,
+                                            full_catalog=True, silent=silent)
+    truncated = len(ref_df) >= ref_cache.GSC_MAXOBJ
+    if truncated and r_dl > sr:
+        log.debug(f"    {catalog} padded cone hit the row limit; downloading the exact cone")
+        r_dl = sr
+        ref_df, catalog = download_phot_ref_cat(ra=ra, dec=dec, sr=r_dl, catalog=catalog,
+                                                full_catalog=True, silent=True)
+        truncated = len(ref_df) >= ref_cache.GSC_MAXOBJ
+    _warn_truncated(catalog, truncated, len(ref_df))
+    if len(ref_df) > 0:
+        try:
+            cache.store(ref_df, catalog, ra, dec, r_dl, truncated=truncated)
+        except OSError as exc:
+            log.warning(f"Reference catalog not cached ({exc})")
+    return ref_cache.RefCatalogCache.cut(ref_df, ra, dec, sr), catalog, 'downloaded'
+
+
 def get_photometric_catalog(fname, loc, imgarr, hdr, wcsprm,
                             catalog, silent=False, **config):
     """ Get photometric reference catalog.
@@ -1410,11 +1586,10 @@ def get_photometric_catalog(fname, loc, imgarr, hdr, wcsprm,
         log.debug("> Load photometric reference catalog from file")
         ref_tbl_photo, _, ref_catalog_photo = read_catalog(photo_ref_cat_fname)
     else:
-        # Get reference catalog
-        ref_tbl_photo, ref_catalog_photo = \
-            download_phot_ref_cat(ra=ra, dec=dec, sr=fov_radius,
-                                  catalog=catalog,
-                                  full_catalog=True, silent=silent)
+        # Get reference catalog from the shared cache or the web
+        ref_tbl_photo, ref_catalog_photo, ref_origin_photo = \
+            fetch_phot_ref_cat(float(ra), float(dec), float(fov_radius),
+                               config, catalog=catalog, silent=silent)
 
         # Add positions to table
         pos_on_det = wcs.wcs_world2pix(ref_tbl_photo[["RA", "DEC"]].values, 0)  # ['pixcrd']
@@ -1437,8 +1612,9 @@ def get_photometric_catalog(fname, loc, imgarr, hdr, wcsprm,
                      mode='ref_photo', catalog=ref_catalog_photo)
 
     if not silent:
-        log.info(f"> Photometric reference: {ref_catalog_photo}, {len(ref_tbl_photo)} stars "
-                 f"({'loaded from file' if read_ref_cat_photo else 'downloaded'})")
+        origin = 'loaded from file' if read_ref_cat_photo else \
+            ('loaded from cache' if ref_origin_photo == 'cache' else 'downloaded')
+        log.info(f"> Photometric reference: {ref_catalog_photo}, {len(ref_tbl_photo)} stars ({origin})")
     df, std_fkeys, mag_conv, exec_state, fail_msg = select_std_stars(ref_tbl_photo,
                                                                      ref_catalog_photo,
                                                                      config['_filter_val'],
@@ -1567,18 +1743,18 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
         ref_tbl_astro, _, ref_catalog_astro = read_catalog(astro_ref_cat_fname)
 
     else:
-        # Get reference catalog for precise positions from the web
-        ref_tbl_astro, ref_catalog_astro = \
-            download_astro_ref_cat(ra=ra, dec=dec, sr=fov_radius,
-                                   epoch=epoch,
-                                   catalog='GAIAdr3',
-                                   mag_lim=config['ref_cat_mag_lim'],
-                                   silent=silent)
+        # Get reference catalog for precise positions from the shared cache or the web
+        ref_tbl_astro, ref_catalog_astro, ref_origin_astro = \
+            fetch_astro_ref_cat(float(ra), float(dec), float(fov_radius),
+                                config, epoch=epoch,
+                                mag_lim=config['ref_cat_mag_lim'],
+                                silent=silent)
 
-        log.debug("> Save astrometric reference catalog")
-        save_catalog(cat=ref_tbl_astro, wcsprm=wcsprm,
-                     out_name=astro_ref_cat_fname,
-                     mode='ref_astro', catalog=ref_catalog_astro)
+        if ref_cache.get_cache(config) is None:
+            log.debug("> Save astrometric reference catalog")
+            save_catalog(cat=ref_tbl_astro, wcsprm=wcsprm,
+                         out_name=astro_ref_cat_fname,
+                         mode='ref_astro', catalog=ref_catalog_astro)
 
         # Add positions to table
         pos_on_det = wcsprm.s2p(ref_tbl_astro[["RA", "DEC"]].values, 0)['pixcrd']
@@ -1588,8 +1764,9 @@ def get_src_and_cat_info(fname, loc, imgarr, hdr, wcsprm,
         del pos_on_det
 
     if not silent:
-        log.info(f"> Astrometric reference: {ref_catalog_astro}, {len(ref_tbl_astro)} stars "
-                 f"({'loaded from file' if read_ref_cat_astro else 'downloaded'})")
+        origin = 'loaded from file' if read_ref_cat_astro else \
+            ('loaded from cache' if ref_origin_astro == 'cache' else 'downloaded')
+        log.info(f"> Astrometric reference: {ref_catalog_astro}, {len(ref_tbl_astro)} stars ({origin})")
 
     del imgarr
     if len(src_tbl) == 0:
