@@ -288,7 +288,8 @@ Reduction options
 
        - ``'nearest'`` : use the closest temperature and flag the mismatch (``TEMPMTCH = 'F'``).
        - ``'strict'`` : treat darks outside the tolerance as unavailable (the bias-only correction is used, as for
-         a missing dark). Bias and flats are always used with the closest temperature.
+         a missing dark). Bias and flats are always used; the bias comes from the observing night when it has bias
+         frames, otherwise from the closest temperature.
 
 .. py:function:: min_calib_frames:
 

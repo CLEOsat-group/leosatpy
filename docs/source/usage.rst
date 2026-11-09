@@ -56,8 +56,11 @@ Dark current, hot pixels and, to a small degree, the bias depend on the CCD temp
 regulated setpoint, LEOSatpy groups the science frames by their setpoint and prefers calibration frames taken at
 the same temperature (within ``TEMP_TOLERANCE``, default ±1 °C):
 
-* bias and darks for the science frames are matched to the science temperature,
-* bias and darks used to build a flat are matched to the temperature of the flat,
+* the bias comes from the observing night whenever that night has bias frames (with several temperatures in the
+  night, the closest one); a bias has no exposure time, so its level hardly depends on the temperature. Only when
+  the night has none is a bias at the matching temperature preferred among the neighbouring nights,
+* darks for the science frames are matched to the science temperature,
+* the bias and darks used to build a flat follow the same rules, with the night and the temperature of the flat,
 * flats may come from another temperature (their response hardly depends on it),
 * darks are only ranked by temperature when their hot pixels are significant at the science exposure time.
 
