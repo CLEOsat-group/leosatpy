@@ -26,6 +26,13 @@ result tables from the two versions.
   limit) and the Poisson term of the flux errors. The unit is now read from `BUNIT`
   (`adu`, `counts`, `electron`, `e-`, ...), and images are converted to electrons once.
   Background files written before 0.7.0 are re-estimated automatically.
+- **Trail quality checks.** A detected trail is rejected, and no magnitude is reported,
+  if the TLE prediction does not put the satellite on the detector during the exposure,
+  if its direction differs from the predicted one by more than `TRAIL_TLE_ANG_TOL`
+  (default 5 deg), or if more than `TRAIL_MASK_FRAC_MAX` (default 50 %) of the trail
+  aperture is masked. Found in an end-to-end run: the bleed column of a saturated star
+  was taken as a trail, and 95 % of its aperture was masked (fill factor 0.036). New
+  result columns: `QlfTrail`, `TrailTleAngDiff`.
 - A saturation limit taken from a header keyword no longer fails.
 - The trail aperture correction no longer becomes `-inf` when the flux ratio is not positive.
 

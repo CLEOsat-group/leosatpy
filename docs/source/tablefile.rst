@@ -656,6 +656,20 @@ Additional information
 
    Flag indicating optimum aperture radius determination applied.
 
+.. py:function:: QlfTrail:
+
+   ``bool``
+
+   Trail quality flag (since 0.7.0). F if the TLE prediction does not put the satellite on the detector,
+   the detected direction differs from the predicted one by more than TRAIL_TLE_ANG_TOL, or more than
+   TRAIL_MASK_FRAC_MAX of the trail aperture is masked. No magnitudes are reported for such trails.
+
+.. py:function:: TrailTleAngDiff:
+
+   ``deg``
+
+   Difference between the detected trail direction and the direction predicted from the TLE.
+
 .. py:function:: TrailDetMethod:
 
    ``str``

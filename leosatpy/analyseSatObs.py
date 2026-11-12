@@ -1460,6 +1460,14 @@ class AnalyseSatObs(object):
         for i in range(n_trails_max):
             reg_info = img_dict["trail_data"][hidx]['reg_info_lst'][i]
             self._log.debug("  > Combine data to calculate angles and magnitudes")
+
+            # Quality checks of the trail: consistent with the TLE prediction and not mostly masked.
+            # Magnitudes of trails that fail are not reported.
+            qlf_trail, tle_ang_diff, fail_reasons = self.check_trail_quality(reg_info, tle_pos_df,
+                                                                             sat_apphot[i])
+            if not qlf_trail:
+                self._log.warning(f"{' ':<4}Trail #{i + 1:02d} rejected, no magnitude reported: "
+                                  f"{'; '.join(fail_reasons)}")
             self._log.debug(f"    Trail region info: {reg_info['width']} +- {reg_info['e_width']} pixels")
 
             # Observed trail length
@@ -1531,7 +1539,7 @@ class AnalyseSatObs(object):
             est_mag_zp_scaled = None
             est_mag_zp_err_scaled = None
 
-            if obs_trail_count > 0.:
+            if qlf_trail and obs_trail_count > 0.:
                 # Observed satellite magnitude relative to std stars
                 obs_mag_avg = sats.get_average_magnitude(flux=obs_trail_count,
                                                          flux_err=obs_trail_count_err,
@@ -1591,8 +1599,12 @@ class AnalyseSatObs(object):
                                                                                         mag_scale=mag_scale)
 
             if not self._silent:
-                mag_text = (f"mag {obs_mag_avg_w:.3f} ± {obs_mag_avg_err:.3f}" if obs_mag_avg_w is not None
-                            else 'no magnitude (trail flux <= 0)')
+                if obs_mag_avg_w is not None:
+                    mag_text = f"mag {obs_mag_avg_w:.3f} ± {obs_mag_avg_err:.3f}"
+                elif not qlf_trail:
+                    mag_text = 'no magnitude (trail rejected)'
+                else:
+                    mag_text = 'no magnitude (trail flux <= 0)'
                 self._log.info(f"> Trail #{i + 1:02d}: {mag_text}, length {obs_trail_len:.2f} ± "
                                f"{obs_trail_len_err:.2f} arcsec, time on detector {time_on_det:.3f} ± "
                                f"{time_on_det_err:.3f} s")
@@ -1658,6 +1670,8 @@ class AnalyseSatObs(object):
 
             result['RADEC_Separator'] = obsparams['radec_separator']
             result['HDU_IDX'] = hdu_idx
+            result['QlfTrail'] = 'T' if qlf_trail else 'F'
+            result['TrailTleAngDiff'] = tle_ang_diff
 
             self._obsTable.update_obs_table(file=file_name,
                                             kwargs=result, obsparams=obsparams)
@@ -1677,6 +1691,50 @@ class AnalyseSatObs(object):
                     obj_info, hdr, obsparams, img_dict, sat_apphot, std_apphot)
 
         return True
+
+    def check_trail_quality(self, reg_info: dict, tle_pos_df: pd.DataFrame, sat_phot: pd.DataFrame):
+        """Check that a detected trail can be the satellite and that its flux can be measured.
+
+        - The TLE prediction must put the satellite on the detector during the exposure, and the
+          predicted direction must agree with the detected trail orientation within
+          TRAIL_TLE_ANG_TOL degrees (rejects e.g. bleed columns of saturated stars).
+        - At most TRAIL_MASK_FRAC_MAX of the trail aperture may be masked, and the trail core must not
+          be masked along its full length, since the fill-factor correction is then unreliable.
+
+        Returns
+        -------
+        tuple
+            (passed, angle difference to the TLE direction in deg or NaN, list of failure reasons)
+        """
+        ang_tol = float(self._config.get('TRAIL_TLE_ANG_TOL', 5.))
+        mask_frac_max = float(self._config.get('TRAIL_MASK_FRAC_MAX', 0.5))
+        reasons = []
+        ang_diff = np.nan
+
+        if tle_pos_df is not None and {'x', 'y', 'PosMask'}.issubset(tle_pos_df.columns):
+            on_det = tle_pos_df[tle_pos_df['PosMask'].astype(bool)]
+            if on_det.shape[0] < 2:
+                reasons.append('the TLE prediction does not put the satellite on the detector '
+                               'during the exposure')
+            else:
+                dx = float(on_det['x'].values[-1] - on_det['x'].values[0])
+                dy = float(on_det['y'].values[-1] - on_det['y'].values[0])
+                ang_tle = np.degrees(np.arctan2(dy, dx)) % 180.
+                ang_det = float(reg_info['orient_deg']) % 180.
+                diff = abs(ang_tle - ang_det)
+                ang_diff = float(min(diff, 180. - diff))
+                if ang_diff > ang_tol:
+                    reasons.append(f'trail direction differs from the TLE prediction by {ang_diff:.1f} deg '
+                                   f'(> {ang_tol:.1f} deg)')
+
+        masked_frac = float(sat_phot['masked_frac'].values[0]) if 'masked_frac' in sat_phot else 0.
+        if masked_frac > mask_frac_max:
+            reasons.append(f'{masked_frac * 100:.0f}% of the trail aperture is masked '
+                           f'(> {mask_frac_max * 100:.0f}%)')
+        if 'core_lost' in sat_phot and bool(sat_phot['core_lost'].values[0]):
+            reasons.append('the trail core is masked along its full length')
+
+        return len(reasons) == 0, ang_diff, reasons
 
     def run_satellite_photometry(self,
                                  data_dict: dict,
@@ -1971,6 +2029,7 @@ class AnalyseSatObs(object):
             sat_phot['aperture_sum_bkgsub_raw'] = float(np.ravel(phot_df['flux_counts_raw_aper'])[0])
             sat_phot['fill_factor'] = fill_factor
             sat_phot['masked_frac'] = masked_frac
+            sat_phot['core_lost'] = bool(phot_df['core_lost_aper'])
 
             # Add the estimated magnitude correction to the photometry table
             sat_phot['mag_corr'] = mag_corr
