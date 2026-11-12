@@ -1780,8 +1780,19 @@ class AnalyseSatObs(object):
             rdnoise = 0.
         self._log.debug("> Perform photometry on satellite trail(s)")
 
-        # Choose reference image if available (only first at the moment)
-        idx_list = list(data_dict['ref_img_idx'][img_idx])
+        # Choose reference image if available (only first at the moment). Only exposures of the same pointing
+        # without a detected trail in this HDU are used: a trail in the reference image would be detected as a
+        # source and masked in the trail image.
+        idx_list = []
+        for j in data_dict['ref_img_idx'][img_idx]:
+            hdus_j = list(data_dict['hdus'][j])
+            if hdu_idx not in hdus_j:
+                continue
+            if bool(data_dict['has_trail'][j][hdus_j.index(hdu_idx)]):
+                self._log.debug(f"{' ':<4}{data_dict['file_names'][j]} has a trail; not used as reference image")
+                continue
+            idx_list.append(j)
+
         if idx_list:
             ref_image_idx = idx_list[0]
             if len(idx_list) > 1:
@@ -1789,7 +1800,7 @@ class AnalyseSatObs(object):
                 data = np.array(data_dict['file_names'])[idx_list]
                 _, idx = self._dataset_all.select_file_from_list(data=data,
                                                                  config=config['DEF_SELECT_TIMEOUT'])
-                ref_image_idx = data_dict['ref_img_idx'][img_idx][np.array(idx)]
+                ref_image_idx = np.array(idx_list)[np.array(idx)]
 
             # Select reference image HDU
             ref_image_hdu_idx = np.where(hdu_idx == np.array(data_dict['hdus'][ref_image_idx]))[0]

@@ -255,6 +255,7 @@ Each group is then converted into a binary image, and a vectorized Hough transfo
 Peaks in the Hough space are identified, indicating potential trails, and a sub-region around each peak is extracted and analysed to determine the trail parameters, employing the `Xu et al. (2015) <https://ui.adsabs.harvard.edu/abs/2015PatRe..48.4012X/abstract>`_ algorithm.
 Their algorithm uses a statistical approach to analyse the voting distribution in the Hough space, which allows to estimate the trail center position using a linear model, while a quadratic model is used to estimate trail parameters such as length, width, and orientation.
 If no trails are detected, the FITS-image is flagged as a reference image that is used to improve the trail photometry.
+Only exposures of the same pointing without a detected trail are used as reference images.
 
 The brightness of the satellite in the observed filter band is evaluated using aperture photometry, including aperture correction, adopting the `AutoPhOT <https://github.com/Astro-Sean/autophot>`_ algorithm by `Brennan & Fraser (2022) <https://ui.adsabs.harvard.edu/abs/2022A%26A...667A..62B/abstract>`_.
 For this, LEOSatpy compiles a list of sources from the `GSC 2.4.3 <https://ui.adsabs.harvard.edu/#abs/2008AJ....136..735L>`_ catalog that are located within the field of view of the observation.

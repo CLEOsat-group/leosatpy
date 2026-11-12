@@ -33,6 +33,13 @@ result tables from the two versions.
   aperture is masked. Found in an end-to-end run: the bleed column of a saturated star
   was taken as a trail, and 95 % of its aperture was masked (fill factor 0.036). New
   result columns: `QlfTrail`, `TrailTleAngDiff`.
+- **Reference images.** Only exposures of the same pointing without a detected trail
+  (in the same HDU) are used as reference images, as the documentation describes.
+  Before, every other exposure was used, and a trail in the reference image could be
+  detected as a source and mask a band of the trail image. Exposures without such a
+  reference fall back to masking the catalogue stars, which leaves fainter stars
+  along the trail unmasked (in the test night 0.03 mag for one trail). A reference
+  image without the HDU of the trail image is skipped instead of failing.
 - A saturation limit taken from a header keyword no longer fails.
 - The trail aperture correction no longer becomes `-inf` when the flux ratio is not positive.
 
