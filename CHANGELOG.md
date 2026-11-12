@@ -48,6 +48,13 @@ result tables from the two versions.
   ended the analysis run (`sys.exit`), and a server that never answered hung the run.
   A GSC cone without stars no longer raises an error.
 - A saturation limit taken from a header keyword no longer fails.
+- Reduced images and all later products (calibrated images, catalogs, figures, the
+  `File` column of the result table) get clean names: spaces become `_` and brackets
+  and similar characters are removed (`STARLINK-11190 [DTC]-0001` →
+  `STARLINK-11190_DTC-0001`). The raw name is kept in the `RAWFILE` header keyword;
+  the raw files are not renamed. A reduced image written under the old name is
+  replaced. Entries in the ROI, glint-mask and faint-trail tables must use the clean
+  names for data reduced with 0.7.0.
 - Figures whose file names contain spaces or brackets (e.g. `STARLINK-11190 [DTC]-0001`)
   are trimmed correctly. `mogrify` and `pdfcrop` were called through the shell with an
   unquoted path, which split such names and would have run shell characters in a file

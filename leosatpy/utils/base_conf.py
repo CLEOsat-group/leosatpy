@@ -245,6 +245,22 @@ def bkg_file_is_current(bkg_fname) -> bool:
             and str(bkg_hdr.get('BUNIT', '')).lower() in BUNIT_ELECTRON)
 
 
+def safe_file_stem(stem: str) -> str:
+    """File name stem without characters that break shells, LaTeX or wildcard patterns.
+
+    Whitespace becomes '_', characters other than letters, digits, '-', '+', '.' and '_' are
+    removed, and repeated '_' are collapsed, e.g.
+    'STARLINK-11190 [DTC]-0001_4x4_i_500ms' -> 'STARLINK-11190_DTC-0001_4x4_i_500ms'."""
+    import re
+    import unicodedata
+    s = unicodedata.normalize('NFKD', str(stem)).encode('ascii', 'ignore').decode('ascii')
+    s = re.sub(r'\s+', '_', s.strip())
+    s = re.sub(r'[^A-Za-z0-9_.+-]', '', s)
+    s = re.sub(r'_+', '_', s)
+    s = s.strip('_')
+    return s or 'image'
+
+
 def trim_figure(path) -> bool:
     """Remove the white border of a saved figure in place (mogrify for PNG, pdfcrop for PDF).
 

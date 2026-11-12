@@ -25,7 +25,10 @@ Observation information
 
     **Type**: ``str``
 
-    Source file name.
+    Source file name. Since 0.7.0 the products are named after the raw file without characters that break
+    shells, LaTeX or wildcards (spaces become ``_``, brackets and similar characters are removed, e.g.
+    ``STARLINK-11190 [DTC]-0001`` becomes ``STARLINK-11190_DTC-0001``). The raw file name is kept in the
+    ``RAWFILE`` header keyword of the reduced and calibrated images.
 
 .. py:function:: Object:
 
