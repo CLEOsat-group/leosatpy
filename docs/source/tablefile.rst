@@ -390,7 +390,8 @@ Trail properties
 
 .. py:function:: FluxScale:
 
-   Scale factor used to correct the observed magnitude.
+   Flux scale t_EXP / ToD used to correct the observed magnitude for the time on the detector.
+   Since 0.7.0, values below 1 (unphysical) are set to 1.
 
 .. py:function:: MagScale:
 
@@ -400,19 +401,22 @@ Trail properties
 
    ``mag``
 
-   Estimated magnitude correction for referecne stars.
+   Aperture correction of the reference stars, -2.5 log10(F_inf / F_aper) (negative).
+   It is subtracted from the zero point derived from the aperture fluxes.
+   Magnitudes from leosatpy <= 0.6.0 added it instead and are too bright by 2 x abs(MagCorrect).
 
 .. py:function:: e_MagCorrect:
 
    ``mag``
 
-   1σ uncertainty of MagCorrect.
+   1σ uncertainty of MagCorrect (standard error of the median, since 0.7.0; the scatter of the
+   individual stars before).
 
 .. py:function:: MagCorrectSat:
 
    ``mag``
 
-   Estimated magnitude correction for satellite.
+   Aperture correction of the trail, -2.5 log10(F_inf / F_aper), with both fluxes corrected for masked pixels.
 
 .. py:function:: e_MagCorrectSat:
 
@@ -519,6 +523,15 @@ Trail properties
    ``px``
 
    Trail aperture height.
+
+.. py:function:: TrailMaskFrac:
+
+   Fraction of the pixels in the trail aperture that are masked (stars along the trail, saturated or bad pixels).
+
+.. py:function:: TrailFillFactor:
+
+   Profile-weighted fraction of the trail flux on unmasked pixels. The trail flux is divided by this
+   factor to correct for the masked pixels (since 0.7.0).
 
 
 .. _additional_info:
