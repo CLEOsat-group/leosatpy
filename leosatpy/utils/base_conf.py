@@ -140,6 +140,11 @@ BINNING_DKEYS = ('BINX', 'BINY')
 
 SAT_LIM_FAC = 0.95  # Factor to calculate the saturation limit from the maximum ADU value
 
+# Reference catalog downloads (Gaia, GSC): attempts, timeout per attempt (s), pause between attempts (s)
+CAT_DL_ATTEMPTS = 3
+CAT_DL_TIMEOUT = 600.
+CAT_DL_RETRY_WAIT = 15.
+
 # Recognised values of the BUNIT header keyword (lower case, without spaces)
 BUNIT_ADU = ('adu', 'adus', 'count', 'counts', 'dn', 'data number')
 BUNIT_ELECTRON = ('electron', 'electrons', 'e-', 'e', 'el')

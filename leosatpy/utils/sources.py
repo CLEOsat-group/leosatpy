@@ -27,6 +27,7 @@ from __future__ import annotations
 import gc
 import os
 import sys
+import threading
 import time
 from typing import Optional
 
@@ -1146,7 +1147,7 @@ def extract_source_catalog(imgarr,
     return source_cat, fwhm, True, None
 
 
-def download_astro_ref_cat(ra, dec, sr=0.5,
+def _download_astro_ref_cat_once(ra, dec, sr=0.5,
                            epoch=None, catalog='GAIADR3',
                            mag_lim=-1, silent=False):
     """ Download reference catalog via VO web service.
@@ -1250,7 +1251,7 @@ def delete_gaia_job(job):
     return deleted
 
 
-def download_phot_ref_cat(ra, dec, sr=0.1, epoch=None,
+def _download_phot_ref_cat_once(ra, dec, sr=0.1, epoch=None,
                           num_sources=None,
                           catalog='GSC243',
                           full_catalog=False, silent=False):
@@ -1304,15 +1305,15 @@ def download_phot_ref_cat(ra, dec, sr=0.1, epoch=None,
 
     url_chk = url_checker(f'{bc.SERVICELOCATION}/{serviceType}')
     if not url_chk[0]:
-        log.error(f"  {url_chk[1]}. ")
-        sys.exit(1)
+        raise ConnectionError(url_chk[1])
     if not silent:
         log.info(f"> Download {catalog} photometric reference catalog (this may take a while)")
     log.debug(f"{' ':<4}{url_chk[1]}")
 
     serviceUrl = f'{bc.SERVICELOCATION}/{serviceType}?{spec}'
     log.debug(f"{' ':<4}Catalog query: {serviceUrl}")
-    rawcat = requests.get(serviceUrl, headers=headers)
+    rawcat = requests.get(serviceUrl, headers=headers, timeout=bc.CAT_DL_TIMEOUT)
+    rawcat.raise_for_status()
 
     # Convert from bytes to a String
     r_contents = rawcat.content.decode()
@@ -1324,7 +1325,8 @@ def download_phot_ref_cat(ra, dec, sr=0.1, epoch=None,
         # Try again without EPOCH
         serviceUrl = f'{bc.SERVICELOCATION}/{serviceType}?{base_spec}'
         log.debug(f"{' ':<4}Catalog query (without epoch): {serviceUrl}")
-        rawcat = requests.get(serviceUrl, headers=headers)
+        rawcat = requests.get(serviceUrl, headers=headers, timeout=bc.CAT_DL_TIMEOUT)
+        rawcat.raise_for_status()
         r_contents = rawcat.content.decode()  # Convert from bytes to a String
         rstr = r_contents.split('\r\n')
 
@@ -1338,7 +1340,8 @@ def download_phot_ref_cat(ra, dec, sr=0.1, epoch=None,
     ref_table = Table.read(rstr, format='ascii.csv')
 
     if not ref_table:
-        return ref_table
+        # No sources in the cone: return an empty table with the standard columns
+        return pd.DataFrame(columns=['RA', 'DEC', 'mag', 'objID']), catalog
 
     # Add catalog name as metadata
     ref_table.meta['catalog'] = catalog
@@ -1357,6 +1360,81 @@ def download_phot_ref_cat(ra, dec, sr=0.1, epoch=None,
         idx = -1 * num_sources
         ref_table = ref_table[:idx] if num_sources < 0 else ref_table[idx:]
     return ref_table.to_pandas(), catalog
+
+
+class CatalogDownloadError(RuntimeError):
+    """A reference catalog could not be downloaded after all attempts."""
+
+
+def _run_with_timeout(func, timeout, **kwargs):
+    """Run func(**kwargs) in a daemon thread and give up after `timeout` seconds.
+
+    A hanging request cannot be interrupted; the daemon thread is abandoned and does not
+    keep the program alive."""
+    result = {}
+
+    def _target():
+        try:
+            result['value'] = func(**kwargs)
+        except BaseException as exc:  # noqa: B902 - re-raised in the caller
+            result['error'] = exc
+
+    thread = threading.Thread(target=_target, daemon=True)
+    thread.start()
+    thread.join(timeout)
+    if thread.is_alive():
+        raise TimeoutError(f'no answer within {timeout:.0f} s')
+    if 'error' in result:
+        raise result['error']
+    return result['value']
+
+
+def _download_with_retries(func, what, attempts=None, timeout=None, wait=None, **kwargs):
+    """Call a catalog download with a timeout per attempt and retries.
+
+    Raises
+    ------
+    CatalogDownloadError
+        If all attempts fail.
+    """
+    attempts = max(1, int(bc.CAT_DL_ATTEMPTS if attempts is None else attempts))
+    timeout = float(bc.CAT_DL_TIMEOUT if timeout is None else timeout)
+    wait = float(bc.CAT_DL_RETRY_WAIT if wait is None else wait)
+    last_exc = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return _run_with_timeout(func, timeout, **kwargs)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception as exc:
+            last_exc = exc
+            if attempt < attempts:
+                log.warning(f"{what}: download attempt {attempt}/{attempts} failed ({exc}); "
+                            f"retrying in {wait:.0f} s")
+                time.sleep(wait)
+    raise CatalogDownloadError(f"{what}: download failed after {attempts} attempt(s) ({last_exc})")
+
+
+def download_astro_ref_cat(ra, dec, sr=0.5, epoch=None, catalog='GAIADR3', mag_lim=-1, silent=False,
+                           attempts=None, timeout=None):
+    """Download an astrometric reference catalog (see `_download_astro_ref_cat_once`)
+    with a timeout per attempt and retries; raises CatalogDownloadError if all attempts fail."""
+    return _download_with_retries(_download_astro_ref_cat_once,
+                                  f"{catalog} cone RA={ra:.4f} DEC={dec:.4f} r={sr:.3f} deg",
+                                  attempts=attempts, timeout=timeout,
+                                  ra=ra, dec=dec, sr=sr, epoch=epoch, catalog=catalog,
+                                  mag_lim=mag_lim, silent=silent)
+
+
+def download_phot_ref_cat(ra, dec, sr=0.1, epoch=None, num_sources=None, catalog='GSC243',
+                          full_catalog=False, silent=False, attempts=None, timeout=None):
+    """Download a photometric reference catalog (see `_download_phot_ref_cat_once`)
+    with a timeout per attempt and retries; raises CatalogDownloadError if all attempts fail."""
+    return _download_with_retries(_download_phot_ref_cat_once,
+                                  f"{catalog} cone RA={ra:.4f} DEC={dec:.4f} r={sr:.3f} deg",
+                                  attempts=attempts, timeout=timeout,
+                                  ra=ra, dec=dec, sr=sr, epoch=epoch, num_sources=num_sources,
+                                  catalog=catalog, full_catalog=full_catalog, silent=silent)
 
 
 def _cache_pad(config):
@@ -1467,7 +1545,7 @@ def prefetch_astro_ref_cat(cones, config, mag_lim=-1, merge_max=1.1, silent=Fals
             if force_download:
                 cache.discard_covering('GAIADR3', ra_c, dec_c, r_c, mag_lim=mag_lim)
             df, _ = download_astro_ref_cat(ra=ra_c, dec=dec_c, sr=r_c, catalog='GAIAdr3',
-                                           mag_lim=mag_lim, silent=True)
+                                           mag_lim=mag_lim, silent=True, attempts=1)
             n_dl += 1
             if len(df) >= ref_cache.GAIA_MAXROWS:
                 # Incomplete merged cone: the frames download their own cones
@@ -2213,7 +2291,7 @@ def url_checker(url: str) -> tuple[bool, str]:
     """
     try:
         # Get Url
-        get = requests.get(url)
+        get = requests.get(url, timeout=30)
     # Exception
     except requests.exceptions.RequestException as e:
         # print URL with Errs

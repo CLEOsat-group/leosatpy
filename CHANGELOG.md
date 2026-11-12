@@ -40,10 +40,18 @@ result tables from the two versions.
   reference fall back to masking the catalogue stars, which leaves fainter stars
   along the trail unmasked (in the test night 0.03 mag for one trail). A reference
   image without the HDU of the trail image is skipped instead of failing.
+- **Failed catalog downloads no longer stop a run.** Gaia and GSC downloads have a
+  timeout per attempt (600 s) and are retried (3 attempts, 15 s apart). If all attempts
+  fail, only the affected frame (calibration) or satellite (analysis) fails, with
+  the reason in the log and the fails file, and the run continues. Before, one failed
+  per-frame Gaia download ended the calibration run, an unreachable GSC service
+  ended the analysis run (`sys.exit`), and a server that never answered hung the run.
+  A GSC cone without stars no longer raises an error.
 - A saturation limit taken from a header keyword no longer fails.
 - The trail aperture correction no longer becomes `-inf` when the flux ratio is not positive.
 
 ### Changed
+- The Gaia prefetch announces the number of downloads and shows `[i/N]` progress.
 - Figures show the actual image unit (e-) instead of "counts".
 - The S/N used to choose the optimum aperture is now the flux divided by its measured
   error, so it includes the sky noise from the annulus. Before, the sky term was about

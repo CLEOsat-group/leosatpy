@@ -699,6 +699,12 @@ class AnalyseSatObs(object):
                 # exec_state = self.analyse_sat_trails(files=files, sat_name=sat_name)
                 try:
                     exec_state = self.analyse_sat_trails(files=files, sat_name=sat_name)
+                except sext.CatalogDownloadError as e:
+                    # A failed reference catalog download fails this satellite only
+                    self._log.error(f"> {sat_name}: reference catalog download failed: {e}")
+                    exec_state = 0
+                    self.update_failed_processes(['CatalogDownloadError', str(e),
+                                                  'Check the network connection and rerun'])
                 except Exception as e:
                     # Report the frame where the exception was raised, not this one
                     origin = traceback.extract_tb(e.__traceback__)[-1]

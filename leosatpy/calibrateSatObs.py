@@ -254,8 +254,14 @@ class CalibrateObsWCS(object):
                 fail_str = bc.BCOLORS.FAIL + "FAIL" + bc.BCOLORS.ENDC
                 for _, file_df in files.iterrows():
                     progress = f"{progress_counter + 1}/{len(files)}"
-                    self.run_calibration_single(src_path, file_df, progress,
-                                                hdu_idx=self._hdu_idx)
+                    try:
+                        self.run_calibration_single(src_path, file_df, progress,
+                                                    hdu_idx=self._hdu_idx)
+                    except sext.CatalogDownloadError as exc:
+                        # A failed reference catalog download fails this frame only
+                        self._log.error(f"> {file_df['file_name']}: reference catalog download failed: {exc}")
+                        self._converged = False
+                        bc.clean_up()
 
                     result = self._converged
                     # In silent mode the image header is not shown, so name the file in the result line
