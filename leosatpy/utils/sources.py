@@ -772,7 +772,7 @@ def load_background_file(bkg_fname, silent=False):
 def compute_2d_background(imgarr, mask, box_size, win_size,
                           bkg_estimator=MMMBackground,
                           rms_estimator=MADStdBackgroundRMS,
-                          estimate_bkg=True, bkg_fname=Optional[list], bunit='adu', silent=False):
+                          estimate_bkg=True, bkg_fname=Optional[list], bunit='electron', silent=False):
     """Compute a 2D background for the input array.
 
     This function uses `~photutils.background.Background2D` to determine
@@ -919,6 +919,7 @@ def compute_2d_background(imgarr, mask, box_size, win_size,
     hdu1.header.set('BKGMED', bkg_median)
     hdu1.header.set('RMSMED', bkg_rms_median)
     hdu1.header.set('BUNIT', bunit)
+    hdu1.header.set('BKGVER', bc.BKG_FILE_VERSION, 'leosatpy background file version')
     hdu2 = fits.ImageHDU(data=bkg_rms)
     new_hdul = fits.HDUList([hdu1, hdu2])
     new_hdul.writeto(f'{bkg_fname[0]}.fits', output_verify='ignore', overwrite=True)

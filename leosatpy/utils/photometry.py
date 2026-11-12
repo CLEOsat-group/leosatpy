@@ -55,7 +55,7 @@ else:
     matplotlib.rc('figure', dpi=150, facecolor='w', edgecolor='k')
     matplotlib.rc('text.latex', preamble=r'\usepackage{sfmath}')
 
-from astropy.stats import sigma_clipped_stats
+from astropy.stats import sigma_clipped_stats, SigmaClip
 from photutils.aperture import (aperture_photometry,
                                 ApertureStats,
                                 CircularAperture,
@@ -117,13 +117,15 @@ def convert_sdss_to_BVRI_lupton(f, x1, x2, x3):
                    ((1 - coeff_dict[f][0][0]) * x2[:, 1]) ** 2 +
                    coeff_dict[f][0][2] ** 2)
     y2 = x2[:, 0] + coeff_dict[f][1][0] * (x2[:, 0] - x3[:, 0]) + coeff_dict[f][1][1]
+    # y2 = x2 + c (x2 - x3): d/dx2 = 1 + c, d/dx3 = -c
     e_y2 = np.sqrt((coeff_dict[f][1][0] * x3[:, 1]) ** 2 +
-                   ((1 - coeff_dict[f][1][0]) * x2[:, 1]) ** 2 +
+                   ((1 + coeff_dict[f][1][0]) * x2[:, 1]) ** 2 +
                    coeff_dict[f][1][2] ** 2)
     if f in ['B', 'I']:
         y1 = x1[:, 0] + coeff_dict[f][0][0] * (x1[:, 0] - x2[:, 0]) + coeff_dict[f][0][1]
+        # y1 = x1 + c (x1 - x2): d/dx1 = 1 + c, d/dx2 = -c
         e_y1 = np.sqrt((coeff_dict[f][0][0] * x2[:, 1]) ** 2 +
-                       ((1 - coeff_dict[f][0][0]) * x1[:, 1]) ** 2 +
+                       ((1 + coeff_dict[f][0][0]) * x1[:, 1]) ** 2 +
                        coeff_dict[f][0][2] ** 2)
 
     _mags = np.mean(list(zip(y1, y2)), axis=1)
@@ -156,8 +158,9 @@ def convert_sdss_to_U_jester(u, g, r):
     """
     B = g[:, 0] + 0.33 * (g[:, 0] - r[:, 0]) + 0.20
     U = 0.77 * (u[:, 0] - g[:, 0]) - 0.88 + B
+    # U = 0.77 u + 0.56 g - 0.33 r + const
     e_U = np.sqrt((0.77 * u[:, 1])**2 +
-                  (0.10 * g[:, 1])**2 +
+                  (0.56 * g[:, 1])**2 +
                   (0.33 * r[:, 1])**2)
 
     return U, e_U
@@ -214,32 +217,40 @@ def process_aper_photometry(r_aper, iteration, image, src_pos, mask, aper_mode, 
     snr_err : np.ndarray
         Error in Signal-to-Noise ratio.
     """
+    # Keep the sky annulus outside the aperture for large apertures
+    r_in_eff = max(r_in, r_aper + 1.)
+    r_out_eff = r_in_eff + (r_out - r_in)
+
     if aper_mode == 'circ':
         phot_res = get_aper_photometry(image, src_pos, mask=mask,
                                        aper_mode=aper_mode,
                                        r_aper=r_aper * fwhm,
-                                       r_in=r_in * fwhm,
-                                       r_out=r_out * fwhm)
+                                       r_in=r_in_eff * fwhm,
+                                       r_out=r_out_eff * fwhm)
     else:
         height = r_aper * fwhm * 2.
-        w_in = width + r_in * fwhm
-        w_out = width + r_out * fwhm
-        h_in = r_in * fwhm * 2.
-        h_out = r_out * fwhm * 2.
+        w_in = width + 2. * r_in_eff * fwhm
+        w_out = width + 2. * r_out_eff * fwhm
+        h_in = r_in_eff * fwhm * 2.
+        h_out = r_out_eff * fwhm * 2.
         phot_res = get_aper_photometry(image, src_pos, mask=mask,
                                        height=height,
                                        width=width, w_in=w_in, w_out=w_out, h_in=h_in,
                                        h_out=h_out, theta=theta, aper_mode='rect')
 
-    aper_flux_counts, _, _, aper_bkg_counts, _, area = phot_res
+    aper_flux_counts, aper_flux_err, _, aper_bkg_counts, _, area = phot_res
 
-    aper_flux = aper_flux_counts / exp_time #* gain
-    aper_bkg = aper_bkg_counts / exp_time #* gain
+    aper_flux = aper_flux_counts / exp_time
+    aper_bkg = aper_bkg_counts / exp_time
 
-    # Calculate the Signal-to-Noise ratio
-    snr, snr_err = get_snr(flux_star=aper_flux, flux_bkg=aper_bkg,
-                           t_exp=exp_time, area=area,
-                           gain=gain, rdnoise=rdnoise, dc=0.)
+    # Signal-to-noise ratio from the measured flux error. The error contains the source Poisson term
+    # and the pixel noise measured in the sky annulus (sky Poisson noise and read noise), so it is valid
+    # also for background-subtracted images. The gain and read noise arguments are kept for compatibility.
+    with np.errstate(divide='ignore', invalid='ignore'):
+        snr = np.asarray(aper_flux_counts, dtype=float) / np.asarray(aper_flux_err, dtype=float)
+    snr = np.where(np.isfinite(snr) & (snr > 0), snr, 0.)
+    with np.errstate(divide='ignore'):
+        snr_err = np.where(snr > 0, 2.5 * np.log10(1. + 1. / np.where(snr > 0, snr, 1.)), np.nan)
     del image, mask
 
     bc.print_progress_bar(iteration, total, length=80,
@@ -593,14 +604,15 @@ def get_aper_photometry(image: np.ndarray,
                                        theta=theta)
 
     # Get statistics with mask in mind
+    # Sigma clipping removes stars and other outliers in the annulus
     bkg_stats = ApertureStats(image, annulus_aperture,
                               mask=mask,
-                              # sigma_clip=sigclip,
+                              sigma_clip=SigmaClip(sigma=3., maxiters=10),
                               sum_method=sum_method)
 
-    # Background median and standard deviation of annulus
-    bkg_median = bkg_stats.mean
-    bkg_std = bkg_stats.std
+    # Background (sigma-clipped median) and standard deviation of annulus
+    bkg_median = np.asarray(bkg_stats.median)
+    bkg_std = np.asarray(bkg_stats.std)
     # print(bkg_std)
     # print(bkg_median, bkg_std)
 
@@ -687,13 +699,19 @@ def get_std_photometry(image, std_cat, src_pos, fwhm, config):
     aper_dict = dict(aper=config['APER_RAD_OPT'] * fwhm,
                      inf_aper=config['INF_APER_RAD_OPT'] * fwhm)
 
+    # Both apertures use the same sky annulus outside the large aperture.
+    # RSKYIN_OPT and RSKYOUT_OPT are radii in units of the FWHM.
+    r_in = config['RSKYIN_OPT'] * fwhm
+    r_out = config['RSKYOUT_OPT'] * fwhm
+    if r_in <= aper_dict['inf_aper']:
+        raise ValueError('Sky annulus overlaps the large aperture')
 
     for key, val in aper_dict.items():
         phot_res = get_aper_photometry(image, src_pos,
                                        mask=config['img_mask'],
                                        r_aper=val,
-                                       r_in=val + config['RSKYIN_OPT'] * fwhm,
-                                       r_out=val + config['RSKYOUT_OPT'] * fwhm
+                                       r_in=r_in,
+                                       r_out=r_out
                                        )
 
         aper_flux_counts, aper_flux_count_err, _, aper_bkg_counts, _, _ = phot_res
@@ -707,8 +725,111 @@ def get_std_photometry(image, std_cat, src_pos, fwhm, config):
     return res_cat
 
 
-def get_sat_photometry(image, img_mask, src_pos, fwhm, width, theta, config):
+def get_trail_fill_factor(image, mask, src_pos, width, height, theta, bkg_level=0.):
+    """Profile-weighted fraction of the trail flux that falls on unmasked pixels of a rectangular aperture.
+
+    Masked pixels (stars along the trail, saturated or bad pixels) are excluded from the aperture sum,
+    so the summed trail flux is too low by this fraction. The mean profile perpendicular to the trail
+    is measured from the unmasked pixels and used as a weight for each pixel of the aperture.
+
+    Parameters
+    ----------
+    image : np.ndarray
+        Image used for the photometry.
+    mask : np.ndarray or None
+        Boolean mask (True for masked pixels).
+    src_pos : array-like
+        Trail centre (x, y).
+    width, height : float
+        Length of the aperture along the trail and its full height in pixels.
+    theta : float or astropy.coordinates.Angle
+        Orientation of the trail.
+    bkg_level : float
+        Local background per pixel, subtracted before the profile is built.
+
+    Returns
+    -------
+    tuple
+        (fill factor f in (0, 1], masked pixel fraction, True if the trail core is masked along its
+        full length so that the flux cannot be recovered)
+    """
+    theta_rad = float(getattr(theta, 'radian', theta))
+    pos = np.asarray(src_pos, dtype=float).ravel()[:2]
+    aperture = RectangularAperture(pos, w=width, h=height, theta=theta)
+    aper_mask = aperture.to_mask(method='center')
+    if isinstance(aper_mask, list):
+        aper_mask = aper_mask[0]
+
+    cut_img = aper_mask.cutout(image, fill_value=np.nan)
+    if cut_img is None:
+        return 1., 0., False
+    if mask is not None:
+        cut_msk = aper_mask.cutout(np.asarray(mask, dtype=float), fill_value=0.).astype(bool)
+    else:
+        cut_msk = np.zeros(cut_img.shape, dtype=bool)
+
+    yy, xx = np.mgrid[aper_mask.bbox.iymin:aper_mask.bbox.iymax, aper_mask.bbox.ixmin:aper_mask.bbox.ixmax]
+    dist = -(xx - pos[0]) * np.sin(theta_rad) + (yy - pos[1]) * np.cos(theta_rad)
+
+    inside = (aper_mask.data > 0) & np.isfinite(cut_img)
+    valid = inside & ~cut_msk
+    n_inside = int(inside.sum())
+    if n_inside == 0:
+        return 1., 0., False
+    masked_frac = 1. - valid.sum() / n_inside
+    if masked_frac <= 0.:
+        return 1., 0., False
+
+    # Mean profile perpendicular to the trail in 1-pixel bins
+    edges = np.arange(-height / 2., height / 2. + 1., 1.)
+    centres = 0.5 * (edges[1:] + edges[:-1])
+    idx_all = np.clip(np.digitize(dist, edges) - 1, 0, len(centres) - 1)
+    prof = np.full(len(centres), np.nan)
+    n_valid = np.zeros(len(centres), dtype=int)
+    data = cut_img - bkg_level
+    for k in range(len(centres)):
+        sel = valid & (idx_all == k)
+        n_valid[k] = int(sel.sum())
+        if n_valid[k] >= 3:
+            prof[k] = np.nanmedian(data[sel])
+
+    core = np.abs(centres) <= max(height / 4., 1.)
+    core_lost = bool(np.any(n_valid[core] < 3))
+
+    good = np.isfinite(prof)
+    if good.sum() < 2:
+        return 1. - masked_frac, masked_frac, True
+    prof = np.interp(centres, centres[good], prof[good])
+    prof = np.clip(prof, 0., None)
+
+    w = prof[idx_all]
+    w_all = np.sum(w[inside])
+    if w_all <= 0.:
+        return 1. - masked_frac, masked_frac, core_lost
+    f = float(np.sum(w[valid]) / w_all)
+    f = min(max(f, 1.e-3), 1.)
+
+    return f, float(masked_frac), core_lost
+
+
+def get_trail_annulus(width, fwhm, r_in, r_out, h_offset=0.):
+    """Rectangular sky annulus around a trail aperture.
+
+    r_in and r_out are the half-heights of the inner and outer edge in units of the FWHM,
+    measured from the trail centre line. The annulus extends by the same distance beyond the
+    ends of the trail."""
+    w_in = width + 2. * r_in * fwhm
+    w_out = width + 2. * r_out * fwhm
+    h_in = 2. * r_in * fwhm + h_offset
+    h_out = 2. * r_out * fwhm + h_offset
+    return w_in, w_out, h_in, h_out
+
+
+def get_sat_photometry(image, img_mask, src_pos, fwhm, width, theta, config, h_offset=0.):
     """Perform aperture photometry on satellite.
+
+    Both apertures (optimum and large) use the same sky annulus, which lies outside the large aperture.
+    The fluxes are corrected for masked pixels with the profile-weighted fill factor.
 
     Parameters
     ----------
@@ -726,36 +847,51 @@ def get_sat_photometry(image, img_mask, src_pos, fwhm, width, theta, config):
         Angle of the rectangular aperture in degrees.
     config : dict
         Configuration dictionary with parameters for aperture photometry.
+        APER_RAD_RECT, INF_APER_RAD_RECT: half-heights of the apertures in FWHM.
+        RSKYIN_OPT_RECT, RSKYOUT_OPT_RECT: half-heights of the annulus edges in FWHM.
+    h_offset : float
+        Additional height of the annulus in pixels.
 
     Returns
     -------
-    pd.DataFrame
-        Aperture photometry results for satellite.
+    dict
+        Fluxes (flux_counts_<key>), errors, fill factors and masked fractions for the keys
+        'aper' and 'inf_aper'. Fluxes are in the unit of the image (electrons).
     """
     res_cat = {}
     aper_dict = dict(aper=config['APER_RAD_RECT'],
                      inf_aper=config['INF_APER_RAD_RECT'])
 
-    w_in = width + config['RSKYIN_OPT_RECT'] * fwhm
-    w_out = width + config['RSKYOUT_OPT_RECT'] * fwhm
-    h_in = config['RSKYIN_OPT_RECT']
-    h_out = config['RSKYOUT_OPT_RECT']
+    w_in, w_out, h_in, h_out = get_trail_annulus(width, fwhm,
+                                                 config['RSKYIN_OPT_RECT'],
+                                                 config['RSKYOUT_OPT_RECT'],
+                                                 h_offset=h_offset)
+    pos = np.atleast_2d(np.asarray(src_pos, dtype=float))
 
     for key, val in aper_dict.items():
-        phot_res = get_aper_photometry(image, src_pos,
+        height = val * 2. * fwhm
+        phot_res = get_aper_photometry(image, pos,
                                        mask=img_mask,
-                                       height=val * 2. * fwhm,
+                                       height=height,
                                        width=width,
-                                       h_in=(val + h_in) * 2. * fwhm,
-                                       h_out=(val + h_out) * 2. * fwhm,
-                                       w_in=val + w_in,
-                                       w_out=val + w_out,
+                                       h_in=h_in,
+                                       h_out=h_out,
+                                       w_in=w_in,
+                                       w_out=w_out,
                                        theta=theta,
                                        aper_mode='rect')
-        # print(phot_res)
-        aper_flux_counts, aper_flux_count_err, _, aper_bkg_counts, _, _ = phot_res
-        res_cat[f'flux_counts_{key}'] = aper_flux_counts
-        res_cat[f'flux_counts_err_{key}'] = aper_flux_count_err
+        aper_flux_counts, aper_flux_count_err, phot_table, aper_bkg_counts, _, _ = phot_res
+
+        fill, masked_frac, core_lost = get_trail_fill_factor(image, img_mask, pos[0], width, height, theta,
+                                                             bkg_level=float(np.ravel(aper_bkg_counts)[0]))
+
+        res_cat[f'flux_counts_{key}'] = np.asarray(aper_flux_counts, dtype=float) / fill
+        res_cat[f'flux_counts_err_{key}'] = np.asarray(aper_flux_count_err, dtype=float) / fill
+        res_cat[f'flux_counts_raw_{key}'] = np.asarray(aper_flux_counts, dtype=float)
+        res_cat[f'fill_factor_{key}'] = fill
+        res_cat[f'masked_frac_{key}'] = masked_frac
+        res_cat[f'core_lost_{key}'] = core_lost
+        res_cat[f'phot_table_{key}'] = phot_table
         del phot_res
 
     del src_pos, image

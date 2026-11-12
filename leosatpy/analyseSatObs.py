@@ -54,7 +54,7 @@ import multiprocessing
 import astropy.table
 from astropy.io import fits
 from astropy import units as u
-from astropy.stats import (sigma_clip, sigma_clipped_stats)
+from astropy.stats import (sigma_clip, sigma_clipped_stats, mad_std)
 from astropy.utils.exceptions import AstropyUserWarning
 from astropy import wcs
 from astropy.visualization import (LinearStretch, LogStretch, SqrtStretch, ZScaleInterval)
@@ -586,6 +586,7 @@ class AnalyseSatObs(object):
         self.sat_vel = None
         self.mag_scale = None
         self._silent = silent
+        self._bunit = 'electron'  # unit of the image data used in the analysis
         self._verbose = verbose
 
         self._instrument = None
@@ -1358,7 +1359,9 @@ class AnalyseSatObs(object):
         # Get additional info
         exptime = hdr['exptime']
         pixelscale = float(hdr['pixscale'])  # arcsec/pix
-        pixelscale_err = 0.05 * pixelscale
+        # The pixel scale from the astrometric solution is known to much better than 0.1 per cent,
+        # which is negligible against the uncertainty of the trail length (<= 0.6.0 used an arbitrary 5 %).
+        pixelscale_err = 0.
 
         self._log.debug("> Perform final analysis of satellite trail data")
 
@@ -1483,13 +1486,27 @@ class AnalyseSatObs(object):
             obs_trail_count = sat_apphot[i]['aperture_sum_bkgsub'].values[0]
             obs_trail_count_err = sat_apphot[i]['aperture_sum_bkgsub_err'].values[0]
 
+            # Flux scale: ratio of the exposure time to the time on the detector. The satellite cannot be
+            # on the detector longer than the exposure, so values < 1 come from the length estimate or the TLE
+            # (e.g. a trail with both ends on the detector) and the flux scale is set to 1.
+            flux_scale = est_trail_len / obs_trail_len
+            flux_scale_clamped = flux_scale < 1.
+            if flux_scale_clamped:
+                self._log.warning(f"{' ':<4}Estimated trail length ({est_trail_len:.2f} arcsec) is shorter than "
+                                  f"the observed length ({obs_trail_len:.2f} arcsec); flux scale "
+                                  f"{flux_scale:.3f} set to 1")
+                flux_scale = 1.
+
             # Calculating estimated trail count
-            est_trail_count = obs_trail_count * (est_trail_len / obs_trail_len)
+            est_trail_count = obs_trail_count * flux_scale
 
             # Calculating relative errors
-            rel_error = ((obs_trail_count_err / obs_trail_count) ** 2 +
-                         (est_trail_len_err / est_trail_len) ** 2 +
-                         (obs_trail_len_err / obs_trail_len) ** 2) ** 0.5
+            if flux_scale_clamped:
+                rel_error = obs_trail_count_err / obs_trail_count
+            else:
+                rel_error = ((obs_trail_count_err / obs_trail_count) ** 2 +
+                             (est_trail_len_err / est_trail_len) ** 2 +
+                             (obs_trail_len_err / obs_trail_len) ** 2) ** 0.5
 
             # Calculating absolute error in estimated trail count
             est_trail_count_err = est_trail_count * rel_error
@@ -1626,7 +1643,7 @@ class AnalyseSatObs(object):
                         obs_mag_zp, obs_mag_zp_err,
                         est_mag_zp, est_mag_zp_err,
                         est_mag_zp_scaled, est_mag_zp_err_scaled,
-                        sun_az, sun_alt, (est_trail_len / obs_trail_len), mag_scale,
+                        sun_az, sun_alt, flux_scale, mag_scale,
                         mag_corr[0], mag_corr[1], mag_corr_sat, mag_corr_sat_err,
                         mag_err_components['zp'] if mag_err_components else None,
                         mag_err_components['err_zp'] if mag_err_components else None,
@@ -1897,56 +1914,64 @@ class AnalyseSatObs(object):
                                           file_base=file_name_plot,
                                           mode='trail')
 
-            # Update aperture values with the optimum aperture
+            # Update aperture values with the optimum aperture (half-heights in units of the FWHM).
+            # The sky annulus lies outside the large aperture and is the same for both apertures.
             config['APER_RAD_RECT'] = opt_aprad
             config['INF_APER_RAD_RECT'] = opt_aprad + 5
-
-            config['RSKYIN_OPT_RECT'] = opt_aprad + 4.
-            config['RSKYOUT_OPT_RECT'] = opt_aprad + 6.
+            config['RSKYIN_OPT_RECT'] = config['INF_APER_RAD_RECT'] + 1.
+            config['RSKYOUT_OPT_RECT'] = config['INF_APER_RAD_RECT'] + 3.
 
             # Update the configuration
             self._config = config
 
-            phot_df = phot.get_sat_photometry(trail_img, image_mask_combined, [src_pos],
-                                              image_fwhm, width, ang,
-                                              config)
-
-            flux_ratios = phot_df['flux_counts_inf_aper'] / phot_df['flux_counts_aper']
-            mag_corr = -2.5 * np.log10(flux_ratios)
-
-            # Uncertainty of the aperture correction. The apertures are nested, so the flux in the
-            # outer ring is independent of the flux in the optimum aperture.
-            f_aper = np.asarray(phot_df['flux_counts_aper'], dtype=float)
-            f_aper_err = np.asarray(phot_df['flux_counts_err_aper'], dtype=float)
-            f_inf_err = np.asarray(phot_df['flux_counts_err_inf_aper'], dtype=float)
-            f_ring = np.asarray(phot_df['flux_counts_inf_aper'], dtype=float) - f_aper
-            f_ring_err = np.sqrt(np.clip(f_inf_err ** 2 - f_aper_err ** 2, 0., None))
-            ratio_err = np.sqrt((f_ring_err / f_aper) ** 2 + (f_ring * f_aper_err / f_aper ** 2) ** 2)
-            mag_corr_err = 2.5 / np.log(10) * ratio_err / np.asarray(flux_ratios, dtype=float)
-
-            self._log.debug(f'  > Aperture correction for satellite trail: {mag_corr[0]:.4f} mag')
-
-            # Set optimum aperture parameters
-            optimum_apheight = opt_aprad * image_fwhm * 2.
-            r_in = opt_aprad + 4.
-            r_out = opt_aprad + 6.
-            w_in = width + r_in * image_fwhm
-            w_out = width + r_out * image_fwhm
-
-            h_in = r_in * image_fwhm * 2. + h_offset
-            h_out = r_out * image_fwhm * 2. + h_offset
-
             self._log.debug('  > Measure photometry for satellite trail')
 
-            # Perform aperture photometry on satellite trail
-            _, _, sat_phot, _, _, _ = phot.get_aper_photometry(image=trail_img,
-                                                               src_pos=src_pos,
-                                                               mask=image_mask_combined,
-                                                               aper_mode='rect',
-                                                               width=width, height=optimum_apheight,
-                                                               w_in=w_in, w_out=w_out,
-                                                               h_in=h_in, h_out=h_out,
-                                                               theta=ang)
+            # Photometry in the optimum and the large aperture, corrected for masked pixels
+            phot_df = phot.get_sat_photometry(trail_img, image_mask_combined, [src_pos],
+                                              image_fwhm, width, ang,
+                                              config, h_offset=h_offset)
+
+            f_aper = float(np.ravel(phot_df['flux_counts_aper'])[0])
+            f_aper_err = float(np.ravel(phot_df['flux_counts_err_aper'])[0])
+            f_inf = float(np.ravel(phot_df['flux_counts_inf_aper'])[0])
+            f_inf_err = float(np.ravel(phot_df['flux_counts_err_inf_aper'])[0])
+            fill_factor = float(phot_df['fill_factor_aper'])
+            masked_frac = float(phot_df['masked_frac_aper'])
+
+            self._log.debug(f'    Masked fraction of the trail aperture: {masked_frac:.3f} '
+                            f'(flux fill factor {fill_factor:.3f})')
+            if masked_frac > 0.3:
+                self._log.warning(f"{' ':<4}{masked_frac * 100:.0f}% of the trail aperture is masked; "
+                                  f"the flux is corrected with a fill factor of {fill_factor:.3f}")
+            if phot_df['core_lost_aper']:
+                self._log.warning(f"{' ':<4}The trail core is masked along its full length (saturation?); "
+                                  f"the trail flux is a lower limit")
+
+            # Aperture correction of the trail. The apertures are nested, so the flux in the outer
+            # region is independent of the flux in the optimum aperture.
+            flux_ratio = f_inf / f_aper if f_aper > 0 else np.nan
+            if np.isfinite(flux_ratio) and flux_ratio > 0:
+                mag_corr = -2.5 * np.log10(flux_ratio)
+                f_ring = f_inf - f_aper
+                f_ring_err = np.sqrt(max(f_inf_err ** 2 - f_aper_err ** 2, 0.))
+                ratio_err = np.sqrt((f_ring_err / f_aper) ** 2 + (f_ring * f_aper_err / f_aper ** 2) ** 2)
+                mag_corr_err = 2.5 / np.log(10) * ratio_err / flux_ratio
+            else:
+                self._log.warning(f"{' ':<4}Trail aperture correction undefined (flux ratio {flux_ratio}); "
+                                  f"no correction applied")
+                mag_corr = 0.
+                mag_corr_err = np.nan
+
+            self._log.debug(f'  > Aperture correction for satellite trail: {mag_corr:.4f} mag')
+
+            # Photometry table of the optimum aperture, with fluxes corrected for masked pixels
+            sat_phot = phot_df['phot_table_aper'].copy()
+            sat_phot['aperture_sum_bkgsub'] = f_aper
+            sat_phot['aperture_sum_bkgsub_err'] = f_aper_err
+            sat_phot['aperture_sum_bkgsub_raw'] = float(np.ravel(phot_df['flux_counts_raw_aper'])[0])
+            sat_phot['fill_factor'] = fill_factor
+            sat_phot['masked_frac'] = masked_frac
+
             # Add the estimated magnitude correction to the photometry table
             sat_phot['mag_corr'] = mag_corr
             sat_phot['mag_corr_err'] = mag_corr_err
@@ -1995,7 +2020,9 @@ class AnalyseSatObs(object):
                       'e_TrailCDEC': wy_err,  # in arcseconds
                       'TrailANG': reg_info['orient_deg'],  # in deg
                       'e_TrailANG': reg_info['e_orient_deg'],  # in deg
-                      'OptAperHeight': '%3.2f' % optimum_apheight,
+                      'OptAperHeight': '%3.2f' % (opt_aprad * image_fwhm * 2.),
+                      'TrailMaskFrac': '%5.3f' % masked_frac,
+                      'TrailFillFactor': '%5.3f' % fill_factor,
                       'HasRef': 'T' if has_ref else 'F', 'NRef': n_refs,
                       'QlfAperRad': 'T' if qlf_aprad else 'F'}  # in px
 
@@ -2230,12 +2257,7 @@ class AnalyseSatObs(object):
 
         # Get exposure time, gain, and readnoise
         exp_time = hdr[obspar['exptime']]
-        if isinstance(obspar['gain'], str) and obspar['gain'] in hdr:
-            gain = hdr[obspar['gain']]
-        elif isinstance(obspar['gain'], float):
-            gain = obspar['gain']
-        else:
-            gain = 1.
+        gain = bc.get_detector_gain(obspar, hdr)
         if isinstance(obspar['readnoise'], str) and obspar['readnoise'] in hdr:
             rdnoise = hdr[obspar['readnoise']]
         elif isinstance(obspar['readnoise'], float):
@@ -2243,11 +2265,10 @@ class AnalyseSatObs(object):
         else:
             rdnoise = 0.
 
-        # Get bunit from header. If adu or counts, set apply_gain to True
-        if bunit.lower() in ['adu', 'counts']:
-            # At this point, this should not happen anymore
-            self._log.warning(f"{' ':<4}Image unit is ADU/counts; converting to electrons with the gain")
-            imgarr = imgarr * gain  # convert to electrons
+        # The image was converted to electrons when it was loaded (identify_trails)
+        if bunit != 'electron':
+            raise ValueError(f"Expected image in electrons, got '{bunit}'")
+        self._bunit = bunit
 
         # Get WCS parameters
         wcsprm = wcs.WCS(hdr)
@@ -2266,12 +2287,7 @@ class AnalyseSatObs(object):
 
         self._log.debug('  > Get optimum aperture from signal-to-noise ratio (S/N) of standard stars')
         # Get detector saturation limit and convert to electrons
-        sat_lim = obspar['saturation_limit'] * gain
-        if isinstance(obspar['saturation_limit'], str) and obspar['saturation_limit'] in hdr:
-            sat_lim = hdr[obspar['saturation_limit']]
-
-        # Set final saturation limit using scale factor
-        config['sat_lim'] = bc.SAT_LIM_FAC * sat_lim
+        config['sat_lim'] = bc.get_saturation_limit(obspar, hdr, gain)
         # Create a saturation mask
         mask = (imgarr >= config['sat_lim'])
         if img_mask is not None:
@@ -2308,8 +2324,9 @@ class AnalyseSatObs(object):
         # Update aperture values
         config['APER_RAD_OPT'] = opt_aprad
         config['INF_APER_RAD_OPT'] = opt_aprad + 1.5
-        config['RSKYIN_OPT'] = opt_aprad + 1.
-        config['RSKYOUT_OPT'] = opt_aprad + 2.
+        # Sky annulus (radii in FWHM) outside the large aperture, used for both apertures
+        config['RSKYIN_OPT'] = config['INF_APER_RAD_OPT'] + 1.
+        config['RSKYOUT_OPT'] = config['INF_APER_RAD_OPT'] + 2.
         self._config = config
 
         # Measure photometry for standard stars
@@ -2350,17 +2367,21 @@ class AnalyseSatObs(object):
         return std_cat, std_fkeys, opt_aprad, mag_conv, mag_corr, qlf_aprad, True
 
     def get_magnitude_correction(self, df: pd.DataFrame, file_base: str):
-        """Estimate magnitude correction"""
-        flux_ratios = df['flux_counts_inf_aper'] / df['flux_counts_aper']
+        """Estimate the stellar aperture correction.
 
-        corrections = np.array([-2.5 * np.log10(i) if i > 0.0 else np.nan for i in flux_ratios])
-        corrections = corrections[~np.isnan(corrections)]
-        mask = np.array(~sigma_clip(corrections, sigma=3.,
-                                    cenfunc=np.nanmedian).mask)
-        corrections_cleaned = corrections[mask]
+        The correction -2.5 log10(F_inf / F_aper) is measured for stars with S/N >= 50 in the
+        optimum aperture (or the brightest quarter of the stars, at least five, if fewer qualify),
+        since the ratio of faint stars is dominated by noise. The adopted value is the median after
+        3 sigma clipping, and its uncertainty is the standard error of the median,
+        1.253 * std / sqrt(N). The scatter of the individual values is logged.
+        """
+        corr_all, corrections_cleaned, aper_correction, aper_correction_err, scatter = \
+            get_aperture_correction_stats(df)
+        if corrections_cleaned.size == 0:
+            return None
 
-        aper_correction = np.nanmedian(corrections_cleaned, axis=None)
-        aper_correction_err = np.nanstd(corrections_cleaned, axis=None)
+        self._log.debug(f"    Aperture correction from {corrections_cleaned.size} stars: "
+                        f"{aper_correction:.4f} +- {aper_correction_err:.4f} mag (scatter {scatter:.4f} mag)")
 
         fig = plt.figure(figsize=self._figsize)
         gs = gridspec.GridSpec(1, 1)
@@ -2588,26 +2609,14 @@ class AnalyseSatObs(object):
             for key, value in self._config.items():
                 config[key] = value
 
-            # Get detector gain
-            if isinstance(obsparam['gain'], str) and obsparam['gain'] in hdr:
-                gain = hdr[obsparam['gain']]
-            elif isinstance(obsparam['gain'], float):
-                gain = obsparam['gain']
-            else:
-                gain = 1.  # assume gain = 1 if not found
-
-            if bunit.lower() in ['adu', 'counts']:
-                imgarr = imgarr * gain  # convert to electrons
-                bunit = 'electron'
-                config['estimate_bkg'] = True  # Force background estimation in electrons
+            # The images were converted to electrons when they were loaded (identify_trails)
+            gain = bc.get_detector_gain(obsparam, hdr)
+            if bunit != 'electron':
+                raise ValueError(f"Expected image in electrons, got '{bunit}'")
             config['bunit'] = bunit
 
-            # Set saturation limit
-            sat_lim = config['saturation_limit'] * gain
-            if isinstance(config['saturation_limit'], str) and config['saturation_limit'] in hdr:
-                sat_lim = hdr[obsparam['saturation_limit']]
-            # Apply saturation limit factor
-            config['sat_lim'] = bc.SAT_LIM_FAC * sat_lim
+            # Saturation limit in electrons
+            config['sat_lim'] = bc.get_saturation_limit(obsparam, hdr, gain)
 
             if self._telescope == 'CTIO 4.0-m telescope':
                 config['sky_noise'] = hdr['SKYNOISE']
@@ -2791,7 +2800,7 @@ class AnalyseSatObs(object):
 
                 estimate_bkg = True
                 bkg_fname = os.path.join(aux_path, bkg_fname_short)
-                if os.path.isfile(f'{bkg_fname}.fits') and not self.force_extract:
+                if bc.bkg_file_is_current(bkg_fname) and not self.force_extract:
                     estimate_bkg = False
 
                 # Add bkg data to dict
@@ -2807,21 +2816,13 @@ class AnalyseSatObs(object):
                     detect_mask = np.where(detect_mask == 1, True, False)
 
                 # Get detector gain
-                if isinstance(obspar['gain'], str) and obspar['gain'] in hdr:
-                    gain = hdr[obspar['gain']]
-                elif isinstance(obspar['gain'], float):
-                    gain = obspar['gain']
-                else:
-                    gain = 1.  # assume gain = 1 if not found
+                gain = bc.get_detector_gain(obspar, hdr)
 
-                # Check the image unit and convert if necessary. For version <= 0.4.1 the reduction was done in ADU.
-                # For backward compatibility we check this here and convert to electrons if needed.
-                bunit = 'adu'
-                if "BUNIT" in hdr and hdr["BUNIT"].lower() in ['adu', 'counts']:
-                    # Convert image and saturation limit to electrons
-                    imgarr = imgarr * gain
+                # Convert the image to electrons if necessary. Reductions with CORRECT_GAIN = True (default)
+                # are already in electrons; older reductions (<= 0.4.1) or CORRECT_GAIN = False are in ADU.
+                imgarr, bunit, converted = bc.to_electrons(imgarr, hdr, gain, log=self._log)
+                if converted:
                     estimate_bkg = True  # Force background estimation in electrons
-                    bunit = 'electron'
 
                 result_dict = {}
                 has_trail = False
@@ -2850,7 +2851,8 @@ class AnalyseSatObs(object):
                                                                   bkg_fname=(bkg_fname,
                                                                              bkg_fname_short),
                                                                   box_size=box_size,
-                                                                  win_size=win_size, mask=img_mask)
+                                                                  win_size=win_size, mask=img_mask,
+                                                                  bunit=bunit)
 
                         # Subtract background
                         img = imgarr - bkg
@@ -2915,10 +2917,7 @@ class AnalyseSatObs(object):
                     if file_name_clean == 'n2_028':
                         _config['use_sat_mask'] = True
 
-                    sat_lim = obspar['saturation_limit'] * gain
-                    if isinstance(obspar['saturation_limit'], str) and obspar['saturation_limit'] in hdr:
-                        sat_lim = hdr[obspar['saturation_limit']]
-                    _config['sat_lim'] = bc.SAT_LIM_FAC * sat_lim
+                    _config['sat_lim'] = bc.get_saturation_limit(obspar, hdr, gain)
                     if self._telescope == 'CTIO 4.0-m telescope':
                         _config['sky_noise'] = hdr['SKYNOISE']
 
@@ -4447,7 +4446,7 @@ class AnalyseSatObs(object):
 
         label_x = 'Major' if axis == 'major' else 'Minor'
         ax.set_xlabel(f'{label_x} axis position (pixel)')
-        ax.set_ylabel('Flux (counts)')
+        ax.set_ylabel(f'Flux ({bc.unit_label(self._bunit)})')
         ax.legend(loc=1, numpoints=1)
 
         plt.tight_layout()
@@ -4579,8 +4578,9 @@ class AnalyseSatObs(object):
 
         # ax1.axis('off')
 
-        ax1_B.set_ylabel(r'Flux (counts $\times 10^{%d}$)' % np.log10(scale))
-        ax1_R.set_xlabel(r'Flux (counts $\times 10^{%d}$)' % np.log10(scale))
+        unit_str = bc.unit_label(self._bunit)
+        ax1_B.set_ylabel(r'Flux (%s $\times 10^{%d}$)' % (unit_str, np.log10(scale)))
+        ax1_R.set_xlabel(r'Flux (%s $\times 10^{%d}$)' % (unit_str, np.log10(scale)))
 
         ax1_R.set_ylabel('Y pixel')
         ax1_B.set_xlabel('X pixel')
@@ -5113,6 +5113,52 @@ class AnalyseSatObs(object):
                     textcoords='data', ha='center', c=color)
 
         return ax
+
+
+def get_aperture_correction_stats(df: pd.DataFrame, snr_min: float = 50., n_min: int = 5):
+    """Statistics of the stellar aperture correction (see AnalyseSatObs.get_magnitude_correction).
+
+    Returns
+    -------
+    tuple
+        (all finite corrections, clipped corrections used, median, standard error of the median, scatter)
+    """
+    f_aper = np.asarray(df['flux_counts_aper'], dtype=float)
+    f_inf = np.asarray(df['flux_counts_inf_aper'], dtype=float)
+    f_err = np.asarray(df['flux_counts_err_aper'], dtype=float)
+
+    with np.errstate(divide='ignore', invalid='ignore'):
+        ratio = f_inf / f_aper
+        snr = f_aper / f_err
+        corr = np.where((ratio > 0) & (f_aper > 0), -2.5 * np.log10(ratio), np.nan)
+
+    finite = np.isfinite(corr) & np.isfinite(snr)
+    empty = np.array([])
+    if not finite.any():
+        return empty, empty, np.nan, np.nan, np.nan
+
+    sel = finite & (snr >= snr_min)
+    if sel.sum() < n_min:
+        # Use the brightest quarter of the stars, but at least n_min (or all if fewer)
+        n_take = min(int(finite.sum()), max(n_min, int(np.ceil(0.25 * finite.sum()))))
+        order = np.argsort(np.where(finite, snr, -np.inf))[::-1]
+        sel = np.zeros_like(finite)
+        sel[order[:n_take]] = True
+
+    corrections = corr[sel]
+    if corrections.size > 2:
+        clip = np.asarray(sigma_clip(corrections, sigma=3., cenfunc=np.nanmedian, stdfunc=mad_std).mask)
+        corrections_cleaned = corrections[~clip]
+    else:
+        corrections_cleaned = corrections
+
+    n = corrections_cleaned.size
+    median = float(np.nanmedian(corrections_cleaned))
+    scatter = float(np.nanstd(corrections_cleaned, ddof=1)) if n > 1 else np.nan
+    err = 1.253 * scatter / np.sqrt(n) if n > 1 else np.nan
+    if not np.isfinite(err):
+        err = 0.
+    return corr[finite], corrections_cleaned, median, float(err), scatter
 
 
 def plot_rectangular_apertures(image, src_pos, src_mask, width, height, w_in, w_out, h_in, h_out, theta,
