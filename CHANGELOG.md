@@ -51,7 +51,8 @@ result tables from the two versions.
 - The trail aperture correction no longer becomes `-inf` when the flux ratio is not positive.
 
 ### Changed
-- The Gaia prefetch announces the number of downloads and shows `[i/N]` progress.
+- The Gaia prefetch reports how many cones are already cached and how many will be
+  downloaded, and shows `[i/N]` progress.
 - Figures show the actual image unit (e-) instead of "counts".
 - The S/N used to choose the optimum aperture is now the flux divided by its measured
   error, so it includes the sky noise from the annulus. Before, the sky term was about

@@ -1519,19 +1519,26 @@ def prefetch_astro_ref_cat(cones, config, mag_lim=-1, merge_max=1.1, silent=Fals
 
     # Collect the merged cones that still have to be downloaded, so the progress can be shown as [i/N]
     todo = []
+    n_groups = n_cached = 0
     for members in ref_cache.cluster_pointings(ras, decs, radii, merge_max):
         if len(members) == 1:
             # A single frame is fetched by the frame itself (with the usual padding)
             continue
+        n_groups += 1
         if all(cache.find('GAIADR3', ras[k], decs[k], radii[k], mag_lim=mag_lim, fresh_only=force_download)
                for k in members):
+            n_cached += 1
             continue
         todo.append(members)
 
     n_todo = len(todo)
-    if n_todo and not silent:
-        n_frames = sum(len(m) for m in todo)
-        log.info(f"> Prefetch Gaia DR3 cones: {n_todo} download(s) for {n_frames} frame(s); this may take a while")
+    if n_groups and not silent:
+        if n_todo:
+            n_frames = sum(len(m) for m in todo)
+            log.info(f"> Prefetch Gaia DR3 cones: {n_groups} group(s) of nearby frames, {n_cached} already cached, "
+                     f"{n_todo} to download for {n_frames} frame(s); this may take a while")
+        else:
+            log.info(f"> Prefetch Gaia DR3 cones: all {n_groups} group(s) of nearby frames already cached")
 
     n_dl = 0
     t_start = time.time()
