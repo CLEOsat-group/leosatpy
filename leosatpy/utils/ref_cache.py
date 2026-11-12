@@ -22,6 +22,12 @@ fresh query of that cone returns.
 
 Gaia DR3 positions do not depend on the observing date (the query does not apply
 proper motions), so a cone is valid for every night.
+
+A Gaia query can be limited to the brightest ``max_rows`` stars of a cone
+(``REF_CAT_MAX_ROWS``). If a cone reaches that limit it is stored as *capped*: it is
+complete only down to the magnitude of its faintest row (``mag_complete``). A capped cone
+serves every request inside it with the same or a smaller row limit; such a request
+receives the stars of its cone brighter than ``mag_complete``.
 """
 # -----------------------------------------------------------------------------
 # Standard library imports
@@ -202,9 +208,10 @@ class RefCatalogCache:
             return self._read_index()
 
     # ---- public interface
-    def lookup(self, catalog, ra, dec, radius, mag_lim=-1, epoch=None, fresh_only=False):
+    def lookup(self, catalog, ra, dec, radius, mag_lim=-1, epoch=None, fresh_only=False, max_rows=None):
         """Return the rows of the requested cone as DataFrame and its entry, or (None, None) if no cone covers it."""
-        entry = self.find(catalog, ra, dec, radius, mag_lim=mag_lim, epoch=epoch, fresh_only=fresh_only)
+        entry = self.find(catalog, ra, dec, radius, mag_lim=mag_lim, epoch=epoch, fresh_only=fresh_only,
+                          max_rows=max_rows)
         if entry is None:
             return None, None
         try:
@@ -216,8 +223,12 @@ class RefCatalogCache:
         df = self.cut(df, ra, dec, radius, mag_lim)
         return df, entry
 
-    def find(self, catalog, ra, dec, radius, mag_lim=-1, epoch=None, fresh_only=False, stale_only=False):
-        """Smallest cached cone that covers the request, or None."""
+    def find(self, catalog, ra, dec, radius, mag_lim=-1, epoch=None, fresh_only=False, stale_only=False,
+             max_rows=None):
+        """Smallest cached cone that covers the request, or None.
+
+        A request with a row limit ``max_rows`` is also served by a capped cone (see module
+        docstring) whose own row limit is at least ``max_rows``."""
         cat = catalog.upper()
         query = QUERY_VERSION.get(cat, cat)
         best = None
@@ -228,6 +239,14 @@ class RefCatalogCache:
                 continue
             if not _mag_covers(e['mag_lim'], mag_lim):
                 continue
+            if e.get('capped'):
+                # Complete only down to its faintest row: usable for a request with a row limit
+                # that the cone's own limit covers, or a request that is shallower than the cone
+                capped_ok = max_rows is not None and int(e.get('max_rows') or 0) >= int(max_rows)
+                mag_complete = e.get('mag_complete')
+                shallow_ok = mag_complete is not None and float(mag_lim) >= 0 and mag_complete >= mag_lim - _EPS
+                if not (capped_ok or shallow_ok):
+                    continue
             sep = float(angular_separation(e['ra'], e['dec'], ra, dec))
             if e.get('truncated'):
                 # A cone cut by the service row limit only stands for exactly this query
@@ -251,8 +270,12 @@ class RefCatalogCache:
             keep &= ~(mag > mag_lim)
         return df.loc[keep].reset_index(drop=True)
 
-    def store(self, df, catalog, ra, dec, radius, mag_lim=-1, epoch=None, truncated=False):
-        """Save a downloaded cone and register it. Returns the index entry."""
+    def store(self, df, catalog, ra, dec, radius, mag_lim=-1, epoch=None, truncated=False,
+              max_rows=None, capped=False, mag_complete=None):
+        """Save a downloaded cone and register it. Returns the index entry.
+
+        ``capped``: the query was limited to the brightest ``max_rows`` stars and reached the limit;
+        the cone is complete down to ``mag_complete``."""
         cat = catalog.upper()
         name = (f"{cat}_{ra:08.4f}{dec:+08.4f}_r{radius:.4f}_m{float(mag_lim):g}_"
                 f"{uuid.uuid4().hex[:8]}.{TBL_FORMAT}")
@@ -260,6 +283,8 @@ class RefCatalogCache:
                  'ra': float(ra), 'dec': float(dec), 'radius': float(radius),
                  'mag_lim': float(mag_lim), 'epoch': _epoch_key(epoch),
                  'n_rows': int(len(df)), 'truncated': bool(truncated),
+                 'max_rows': None if max_rows is None else int(max_rows), 'capped': bool(capped),
+                 'mag_complete': None if mag_complete is None else float(mag_complete),
                  'created': time.strftime('%Y-%m-%dT%H:%M:%S')}
         drop = [c for c in ('xcentroid', 'ycentroid') if c in df.columns]
         tbl = Table.from_pandas(df.drop(columns=drop), index=False)

@@ -1149,7 +1149,7 @@ def extract_source_catalog(imgarr,
 
 def _download_astro_ref_cat_once(ra, dec, sr=0.5,
                            epoch=None, catalog='GAIADR3',
-                           mag_lim=-1, silent=False):
+                           mag_lim=-1, silent=False, max_rows=None):
     """ Download reference catalog via VO web service.
 
     Fetch astrometric source catalog entries from the specified ``SERVICELOCATION``
@@ -1199,8 +1199,9 @@ def _download_astro_ref_cat_once(ra, dec, sr=0.5,
         if mag_lim == -1:
             mag_lim_str = """"""
 
-        # Create the query
-        query = f"""SELECT * \
+        # Create the query; with a row limit only the brightest stars of the cone are returned
+        top_str = f"TOP {int(max_rows)} " if max_rows else ""
+        query = f"""SELECT {top_str}* \
             FROM {bc.DEF_ASTROQUERY_CATALOGS[catalog.upper()]} AS g
             WHERE 1 = CONTAINS(POINT('ICRS', g.ra, g.dec), CIRCLE('ICRS',
             {coord.ra.value}, {coord.dec.value}, {radius.value})) \
@@ -1416,14 +1417,14 @@ def _download_with_retries(func, what, attempts=None, timeout=None, wait=None, *
 
 
 def download_astro_ref_cat(ra, dec, sr=0.5, epoch=None, catalog='GAIADR3', mag_lim=-1, silent=False,
-                           attempts=None, timeout=None):
+                           attempts=None, timeout=None, max_rows=None):
     """Download an astrometric reference catalog (see `_download_astro_ref_cat_once`)
     with a timeout per attempt and retries; raises CatalogDownloadError if all attempts fail."""
     return _download_with_retries(_download_astro_ref_cat_once,
                                   f"{catalog} cone RA={ra:.4f} DEC={dec:.4f} r={sr:.3f} deg",
                                   attempts=attempts, timeout=timeout,
                                   ra=ra, dec=dec, sr=sr, epoch=epoch, catalog=catalog,
-                                  mag_lim=mag_lim, silent=silent)
+                                  mag_lim=mag_lim, silent=silent, max_rows=max_rows)
 
 
 def download_phot_ref_cat(ra, dec, sr=0.1, epoch=None, num_sources=None, catalog='GSC243',
@@ -1437,6 +1438,31 @@ def download_phot_ref_cat(ra, dec, sr=0.1, epoch=None, num_sources=None, catalog
                                   catalog=catalog, full_catalog=full_catalog, silent=silent)
 
 
+def _max_rows(config):
+    """Row limit of the Gaia queries (REF_CAT_MAX_ROWS), or None for no limit."""
+    try:
+        value = int(float(config.get('REF_CAT_MAX_ROWS', 5000)))
+    except (TypeError, ValueError):
+        value = 5000
+    return value if value > 0 else None
+
+
+def _capped_info(df, max_rows):
+    """(capped, mag_complete) of a downloaded cone limited to the brightest max_rows stars."""
+    if not max_rows or df is None or len(df) < max_rows:
+        return False, None
+    return True, float(pd.to_numeric(df['mag'], errors='coerce').max())
+
+
+def _brightest(df, max_rows):
+    """The brightest max_rows rows, in the stored order."""
+    if not max_rows or df is None or len(df) <= max_rows:
+        return df
+    mag = pd.to_numeric(df['mag'], errors='coerce')
+    keep = mag.rank(method='first', na_option='bottom') <= max_rows
+    return df.loc[keep.to_numpy()].reset_index(drop=True)
+
+
 def _cache_pad(config):
     try:
         return max(1., float(config.get('REF_CAT_PAD', 1.02)))
@@ -1447,8 +1473,10 @@ def _cache_pad(config):
 def fetch_astro_ref_cat(ra, dec, sr, config, epoch=None, mag_lim=-1, silent=False):
     """Gaia DR3 cone from the shared cache, or downloaded and added to the cache.
 
-    The returned rows equal those of a direct query of this cone. A download is made
-    ``REF_CAT_PAD`` times larger than requested, so neighbouring pointings are served too.
+    The returned rows equal those of a direct query of this cone, limited to the brightest
+    ``REF_CAT_MAX_ROWS`` stars (default 5000). A download is made ``REF_CAT_PAD`` times larger
+    than requested, so neighbouring pointings are served too; a cone that reaches the row
+    limit serves the frames inside it with its stars brighter than its faintest row.
     A padded download that hits the Gaia row limit (``GAIA_MAXROWS``) is not used; the
     exact cone is downloaded instead and cached for this cone only.
 
@@ -1458,16 +1486,18 @@ def fetch_astro_ref_cat(ra, dec, sr, config, epoch=None, mag_lim=-1, silent=Fals
         ``origin`` is ``'cache'`` or ``'downloaded'``.
     """
     force_download = bool(config.get('force_download', False))
+    max_rows = _max_rows(config)
     cache = ref_cache.get_cache(config)
     if cache is None:
         df, catalog = download_astro_ref_cat(ra=ra, dec=dec, sr=sr, epoch=epoch, catalog='GAIAdr3',
-                                             mag_lim=mag_lim, silent=silent)
+                                             mag_lim=mag_lim, silent=silent, max_rows=max_rows)
         return df, catalog, 'downloaded'
 
-    df, entry = cache.lookup('GAIADR3', ra, dec, sr, mag_lim=mag_lim, fresh_only=force_download)
+    df, entry = cache.lookup('GAIADR3', ra, dec, sr, mag_lim=mag_lim, fresh_only=force_download,
+                             max_rows=max_rows)
     if df is not None:
         log.debug(f"    Gaia cone RA={ra:.5f} DEC={dec:.5f} r={sr:.4f} deg from cache {entry['file']}")
-        return df, 'GAIAdr3', 'cache'
+        return _brightest(df, max_rows), 'GAIAdr3', 'cache'
 
     if force_download:
         removed = cache.discard_covering('GAIADR3', ra, dec, sr, mag_lim=mag_lim)
@@ -1475,21 +1505,25 @@ def fetch_astro_ref_cat(ra, dec, sr, config, epoch=None, mag_lim=-1, silent=Fals
             log.debug(f"    Forced download, removed cached cone(s): {removed}")
     r_dl = sr * _cache_pad(config)
     df, catalog = download_astro_ref_cat(ra=ra, dec=dec, sr=r_dl, epoch=epoch, catalog='GAIAdr3',
-                                         mag_lim=mag_lim, silent=silent)
-    truncated = len(df) >= ref_cache.GAIA_MAXROWS
+                                         mag_lim=mag_lim, silent=silent, max_rows=max_rows)
+    capped, mag_complete = _capped_info(df, max_rows)
+    truncated = not capped and len(df) >= ref_cache.GAIA_MAXROWS
     if truncated and r_dl > sr:
         # The padded cone hit the row limit: its faintest stars are missing, so get the exact cone
         log.debug("    Gaia padded cone hit the row limit; downloading the exact cone")
         r_dl = sr
         df, catalog = download_astro_ref_cat(ra=ra, dec=dec, sr=r_dl, epoch=epoch, catalog='GAIAdr3',
-                                             mag_lim=mag_lim, silent=True)
+                                             mag_lim=mag_lim, silent=True, max_rows=max_rows)
         truncated = len(df) >= ref_cache.GAIA_MAXROWS
     _warn_truncated('Gaia DR3', truncated, len(df))
+    if capped:
+        log.debug(f"    Gaia cone limited to the brightest {max_rows} stars (complete to G = {mag_complete:.2f})")
     try:
-        cache.store(df, 'GAIADR3', ra, dec, r_dl, mag_lim=mag_lim, truncated=truncated)
+        cache.store(df, 'GAIADR3', ra, dec, r_dl, mag_lim=mag_lim, truncated=truncated,
+                    max_rows=max_rows, capped=capped, mag_complete=mag_complete)
     except OSError as exc:
         log.warning(f"Reference catalog not cached ({exc})")
-    return ref_cache.RefCatalogCache.cut(df, ra, dec, sr, mag_lim), catalog, 'downloaded'
+    return _brightest(ref_cache.RefCatalogCache.cut(df, ra, dec, sr, mag_lim), max_rows), catalog, 'downloaded'
 
 
 def _warn_truncated(name, truncated, n_rows):
@@ -1512,6 +1546,7 @@ def prefetch_astro_ref_cat(cones, config, mag_lim=-1, merge_max=1.1, silent=Fals
         Number of downloads made (0 if everything was cached).
     """
     force_download = bool(config.get('force_download', False))
+    max_rows = _max_rows(config)
     cache = ref_cache.get_cache(config)
     if cache is None or not cones:
         return 0
@@ -1525,7 +1560,8 @@ def prefetch_astro_ref_cat(cones, config, mag_lim=-1, merge_max=1.1, silent=Fals
             # A single frame is fetched by the frame itself (with the usual padding)
             continue
         n_groups += 1
-        if all(cache.find('GAIADR3', ras[k], decs[k], radii[k], mag_lim=mag_lim, fresh_only=force_download)
+        if all(cache.find('GAIADR3', ras[k], decs[k], radii[k], mag_lim=mag_lim, fresh_only=force_download,
+                          max_rows=max_rows)
                for k in members):
             n_cached += 1
             continue
@@ -1552,13 +1588,15 @@ def prefetch_astro_ref_cat(cones, config, mag_lim=-1, merge_max=1.1, silent=Fals
             if force_download:
                 cache.discard_covering('GAIADR3', ra_c, dec_c, r_c, mag_lim=mag_lim)
             df, _ = download_astro_ref_cat(ra=ra_c, dec=dec_c, sr=r_c, catalog='GAIAdr3',
-                                           mag_lim=mag_lim, silent=True, attempts=1)
+                                           mag_lim=mag_lim, silent=True, attempts=1, max_rows=max_rows)
             n_dl += 1
-            if len(df) >= ref_cache.GAIA_MAXROWS:
+            capped, mag_complete = _capped_info(df, max_rows)
+            if not capped and len(df) >= ref_cache.GAIA_MAXROWS:
                 # Incomplete merged cone: the frames download their own cones
                 log.debug(f"    Gaia prefetch hit the row limit ({len(df)} rows), not cached")
                 continue
-            cache.store(df, 'GAIADR3', ra_c, dec_c, r_c, mag_lim=mag_lim)
+            cache.store(df, 'GAIADR3', ra_c, dec_c, r_c, mag_lim=mag_lim,
+                        max_rows=max_rows, capped=capped, mag_complete=mag_complete)
         except Exception as exc:  # the frames download their own cones then
             log.warning(f"Gaia prefetch failed ({exc}); the frames download their own cones")
 

@@ -51,6 +51,11 @@ result tables from the two versions.
 - The trail aperture correction no longer becomes `-inf` when the flux ratio is not positive.
 
 ### Changed
+- Gaia downloads are limited to the brightest `REF_CAT_MAX_ROWS` stars per cone
+  (default 5000). Dense fields near the Galactic plane were slow and could fail with
+  archive errors (HTTP 500) when downloading up to 50000 stars to G = 19. Cones that
+  reach the limit are cached as complete only to their faintest star; cones cached by
+  earlier versions remain valid.
 - The Gaia prefetch reports how many cones are already cached and how many will be
   downloaded, and shows `[i/N]` progress.
 - Figures show the actual image unit (e-) instead of "counts".

@@ -547,6 +547,16 @@ WCS calibration options
 .. note::
    While limiting the reference catalog to brighter sources can significantly reduce download times, choosing the limit too low may result in fewer matched sources, especially in sparse fields.
 
+.. py:function:: ref_cat_max_rows:
+
+   ``int`` (default = ``5000``)
+
+   Maximum number of Gaia DR3 stars downloaded per cone; the brightest stars are kept.
+   In dense fields (e.g. near the Galactic plane) this makes the downloads much faster and avoids archive errors,
+   while the calibration uses at most ``max_ref_num`` stars anyway. A cone that reaches the limit is complete only
+   down to its faintest star; it is cached as such and reused for the frames inside it.
+   A value <= 0 downloads all stars down to ``ref_catalog_mag_lim``.
+
 .. py:function:: distance_bin_size:
 
    ``float`` (default = ``1.``)
