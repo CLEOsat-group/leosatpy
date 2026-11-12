@@ -245,6 +245,35 @@ def bkg_file_is_current(bkg_fname) -> bool:
             and str(bkg_hdr.get('BUNIT', '')).lower() in BUNIT_ELECTRON)
 
 
+def trim_figure(path) -> bool:
+    """Remove the white border of a saved figure in place (mogrify for PNG, pdfcrop for PDF).
+
+    The tools are called without a shell, so file names with spaces or brackets work, and a
+    missing tool or a failure only skips the trimming. Returns True if the figure was trimmed."""
+    import shutil
+    import subprocess
+    path = str(path)
+    if path.lower().endswith('.png'):
+        cmd = ['mogrify', '-trim', path]
+    elif path.lower().endswith('.pdf'):
+        cmd = ['pdfcrop', path, path]
+    else:
+        return False
+    if shutil.which(cmd[0]) is None:
+        logging.getLogger(__name__).debug(f"    {cmd[0]} not found; figure not trimmed: {path}")
+        return False
+    try:
+        res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=120, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        logging.getLogger(__name__).debug(f"    {cmd[0]} failed for {path}: {exc}")
+        return False
+    if res.returncode != 0:
+        logging.getLogger(__name__).debug(f"    {cmd[0]} failed for {path}: "
+                                          f"{res.stderr.decode(errors='replace').strip()}")
+        return False
+    return True
+
+
 def unit_label(bunit: str) -> str:
     """Axis label string for the image unit."""
     if bunit is not None and str(bunit).lower() in BUNIT_ELECTRON:

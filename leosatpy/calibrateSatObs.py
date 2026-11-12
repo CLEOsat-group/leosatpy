@@ -33,7 +33,6 @@ from datetime import (timedelta, datetime, timezone)
 import collections
 from pathlib import Path
 import argparse
-import subprocess
 
 # THIRD PARTY
 import numpy as np
@@ -1083,16 +1082,16 @@ class CalibrateObsWCS(object):
         fig_dpi = self._config['FIG_DPI']
         if fig_type == 'png':
             plt.savefig(fname + '.png', format='png', dpi=fig_dpi)
-            subprocess.call(f'mogrify -trim {fname}.png ', shell=True)
+            bc.trim_figure(fname + '.png')
         elif fig_type == 'pdf':
             self._save_pdf_quietly(fname, fig_dpi)
-            subprocess.call('pdfcrop ' + fname + '.pdf ' + fname + '.pdf', shell=True)
+            bc.trim_figure(fname + '.pdf')
         else:
             self._log.debug("Figure will be saved as .png and .pdf")
             plt.savefig(fname + '.png', format='png', dpi=fig_dpi)
-            subprocess.call(f'mogrify -trim {fname}.png ', shell=True)
+            bc.trim_figure(fname + '.png')
             self._save_pdf_quietly(fname, fig_dpi)
-            subprocess.call('pdfcrop ' + fname + '.pdf ' + fname + '.pdf', shell=True)
+            bc.trim_figure(fname + '.pdf')
 
     @staticmethod
     def add_compass(ax: plt.Axes, image_shape, scale_arrow, theta_rad: float, color: str = 'black'):

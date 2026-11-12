@@ -48,6 +48,10 @@ result tables from the two versions.
   ended the analysis run (`sys.exit`), and a server that never answered hung the run.
   A GSC cone without stars no longer raises an error.
 - A saturation limit taken from a header keyword no longer fails.
+- Figures whose file names contain spaces or brackets (e.g. `STARLINK-11190 [DTC]-0001`)
+  are trimmed correctly. `mogrify` and `pdfcrop` were called through the shell with an
+  unquoted path, which split such names and would have run shell characters in a file
+  name; they are now called without a shell, and a missing tool only skips the trimming.
 - The trail aperture correction no longer becomes `-inf` when the flux ratio is not positive.
 
 ### Changed

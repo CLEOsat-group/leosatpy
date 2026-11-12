@@ -33,7 +33,6 @@ from __future__ import annotations
 import argparse
 import os
 import logging
-import subprocess
 import sys
 import traceback
 import warnings
@@ -4775,17 +4774,17 @@ class AnalyseSatObs(object):
         fig_dpi = self._config['FIG_DPI']
         if fig_type == 'png':
             plt.savefig(fname + '.png', format='png', dpi=fig_dpi)
-            subprocess.call(f'mogrify -trim {fname}.png ', shell=True)
+            bc.trim_figure(fname + '.png')
         elif fig_type == 'pdf':
             self._save_pdf_quietly(fname, fig_dpi)
-            subprocess.call('pdfcrop ' + fname + '.pdf ' + fname + '.pdf', shell=True)
+            bc.trim_figure(fname + '.pdf')
         else:
             self._log.debug("Figure will be saved as .png and .pdf")
             plt.savefig(fname + '.png', format='png', dpi=fig_dpi)
 
-            subprocess.call(f'mogrify -trim {fname}.png ', shell=True)
+            bc.trim_figure(fname + '.png')
             self._save_pdf_quietly(fname, fig_dpi)
-            subprocess.call('pdfcrop ' + fname + '.pdf ' + fname + '.pdf', shell=True)
+            bc.trim_figure(fname + '.pdf')
 
     @staticmethod
     def load_background_data(bkg_fname):
