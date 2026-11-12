@@ -48,6 +48,10 @@ result tables from the two versions.
   ended the analysis run (`sys.exit`), and a server that never answered hung the run.
   A GSC cone without stars no longer raises an error.
 - A saturation limit taken from a header keyword no longer fails.
+- The IERS-A table (Earth rotation) is no longer downloaded on every analysis run once
+  the table bundled with astropy-iers-data is more than 30 days old. Astropy 8 then
+  downloads again on every run without looking at its download cache; LEOSatpy now
+  uses a cached download that is less than 30 days old.
 - Reduced images and all later products (calibrated images, catalogs, figures, the
   `File` column of the result table) get clean names: spaces become `_` and brackets
   and similar characters are removed (`STARLINK-11190 [DTC]-0001` →

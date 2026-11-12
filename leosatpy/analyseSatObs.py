@@ -363,9 +363,11 @@ def prepare_iers_data(log, max_age_days=30):
 
     1. The table bundled with the astropy-iers-data package, if its
        predictions are less than ``max_age_days`` old (no network access).
-    2. Astropy's cached download, which is only refreshed when its
-       predictions are older than ``max_age_days``.
-    3. If the update fails (e.g. offline), the newer of the two tables with
+    2. A table downloaded by an earlier run (astropy's download cache), if its
+       predictions are less than ``max_age_days`` old (no network access).
+       Astropy itself always downloads again once the bundled table is too old.
+    3. A new download, stored in the download cache for the next runs.
+    4. If the update fails (e.g. offline), the newer of the two tables with
        the age check disabled, instead of failing the alt/az to RA/DEC
        transformation.
     """
@@ -377,6 +379,21 @@ def prepare_iers_data(log, max_age_days=30):
         iers.conf.auto_download = False
         log.debug("    Using the IERS-A table bundled with astropy-iers-data")
         return
+
+    # Table downloaded by an earlier run
+    try:
+        from astropy.utils.data import download_file, is_url_in_cache
+        for url in (iers.conf.iers_auto_url, iers.conf.iers_auto_url_mirror):
+            if not is_url_in_cache(url):
+                continue
+            cached = iers.IERS_Auto.read(download_file(url, cache=True))
+            if now.mjd - cached.meta['predictive_mjd'] <= max_age_days:
+                iers.IERS_Auto.iers_table = cached
+                iers.conf.auto_download = False
+                log.debug(f"    Using the cached IERS-A table from {url}")
+                return
+    except Exception as e:  # unreadable cache entry: download below
+        log.debug(f"    Cached IERS-A table not usable: {e!r}")
 
     iers.conf.auto_download = True
     try:
