@@ -295,19 +295,22 @@ Trail properties
 
    ``mag``
 
-   Observed trail magnitude.
+   Trail magnitude: the trail flux, collected while the satellite was on the detector, compared with the stellar fluxes
+   collected over the full exposure. This equals the apparent magnitude of the satellite only if the time on detector
+   (ToD) equals the exposure time; use ``EstMag`` for the apparent magnitude.
 
 .. py:function:: e_ObsMag:
 
    ``mag``
 
-   1σ uncertainty of ObsMag.
+   1σ uncertainty of ObsMag (statistical: trail flux, zero point, aperture corrections).
+   Systematic terms (colour term, catalogue band conversion, aperture extent) are not included.
 
 .. py:function:: EstMag:
 
    ``mag``
 
-   Observed magnitude corrected for ToD.
+   Apparent magnitude of the satellite: ObsMag corrected for the time on detector with FluxScale.
 
 .. py:function:: e_EstMag:
 
@@ -599,6 +602,12 @@ Additional information
    ``px``
 
    1σ uncertainty of FWHM.
+
+.. py:function:: gain_cor:
+
+   ``bool``
+
+   Flag indicating that the image was converted from ADU to electrons during the reduction.
 
 .. py:function:: bias_cor:
 

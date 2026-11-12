@@ -201,8 +201,6 @@ The most significant accepted solution is kept. If the correlation search gives 
 If no solution is accepted, no WCS is written and the frame is marked as not calibrated.
 Within a run, the parity of the previous accepted frame of the same setup is searched first, and if the telescope records a field rotator angle (``ROTATANG`` for CDK20), the found orientation is compared with it.
 
-.. _Reference catalogs:
-
 Reference catalogs
 ^^^^^^^^^^^^^^^^^^
 
@@ -267,15 +265,38 @@ This photometric reference star catalog is cross-matched with the sources detect
    `Jester et al. (2005) <https://classic.sdss.org/dr4/algorithms/sdssUBVRITransform.php#Jester2005>`_ to convert the SDSS ugriz magnitudes to UBVRI magnitudes.
    In this case, the magnitude conversion flag ``mag_conv`` in the result table will be set to ``True``.
 
+All photometry is done on images in electrons; images reduced in ADU are converted with the detector gain.
 LEOSatpy then performs a series of measurements on the reference stars, increasing the aperture size step by step, measuring the flux and calculating the signal-to-noise ratio (SNR) for each aperture.
-An aperture slightly larger than the one that maximizes the SNR is selected for the flux measurements, to ensure that most of the stellar flux (> 95%) is captured.
-Afterwards, the corresponding aperture correction factor is estimated to account for the loss of flux due to the finite size of the aperture.
+The SNR is the flux divided by its uncertainty, which contains the photon noise of the source and the pixel noise measured in the sky annulus.
+The sky level is the 3σ-clipped median of the annulus.
+An aperture 25% larger than the one that maximizes the SNR is selected for the flux measurements.
+Afterwards, the aperture correction is estimated from the flux ratio between a larger aperture (1.5×FWHM larger) and the selected aperture,
+using the stars with SNR ≥ 50. The median is adopted, and its standard error is used as the uncertainty (``MagCorrect``, ``e_MagCorrect``).
 
 If **NO** reference image is available, the sources along the trail are masked using the positions of sources from the photometric reference star catalog.
 Otherwise, the reference image is used to mask sources along the trail, to minimize contamination of the satellite trail measurements by underlying sources.
 In this case, the reference image is first aligned to the trail image, and sources along the trail are masked using the positions of these sources.
 The satellite trail flux is then measured using a rectangular aperture that is optimized to capture most of the satellite's flux, similar to the method used for the reference stars.
-The results are combined to estimate the observed apparent magnitude of the satellite (``ObsMag``) in the used filter band.
+The trail gets its own aperture correction from a rectangle whose half-height is 5×FWHM larger (``MagCorrectSat``).
+Masked pixels inside the trail aperture contain trail light that is not summed; the trail flux is therefore divided by the
+fraction of the trail profile that falls on unmasked pixels (``TrailMaskFrac``, ``TrailFillFactor``).
+
+The results are combined to estimate the trail magnitude (``ObsMag``) in the used filter band:
+
+.. math::
+
+   m = -2.5\log_{10}F_{\mathrm{sat}} + ZP - \delta m_{\star} + \delta m_{\mathrm{sat}},
+
+where :math:`ZP` is the zero point from the comparison stars measured in the optimum aperture, and
+:math:`\delta m_{\star}` and :math:`\delta m_{\mathrm{sat}}` are the (negative) aperture corrections of the stars and the trail.
+
+.. important::
+   Versions up to 0.6.0 added the stellar aperture correction instead of subtracting it, which made the magnitudes too bright
+   by twice the absolute value of ``MagCorrect``. See the changelog for all changes of 0.7.0; result tables of different versions should not be mixed.
+
+Before a magnitude is reported, the trail is checked against the TLE prediction (see below): the satellite must be on the
+detector during the exposure and the detected direction must agree with the predicted one within ``trail_tle_ang_tol``.
+Trails that fail, or whose aperture is mostly masked (``trail_mask_frac_max``), are flagged (``QlfTrail`` = ``F``) and get no magnitude.
 
 If the Two-Line Element (TLE) file is provided with the data, LEOSatpy will extract the orbital elements of the observed satellite from the TLE file.
 These elements are used to calculate the satellite's position, distance, angular velocity, and observation geometry in user-defined steps (see :ref:`dt_step_size <Satellite detection & analysis options>` in the configuration file).
