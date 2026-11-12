@@ -27,6 +27,7 @@ from __future__ import annotations
 import gc
 import os
 import sys
+import time
 from typing import Optional
 
 import numpy as np
@@ -1437,18 +1438,30 @@ def prefetch_astro_ref_cat(cones, config, mag_lim=-1, merge_max=1.1, silent=Fals
     if cache is None or not cones:
         return 0
     ras, decs, radii = (list(x) for x in zip(*cones))
-    n_dl = 0
+
+    # Collect the merged cones that still have to be downloaded, so the progress can be shown as [i/N]
+    todo = []
     for members in ref_cache.cluster_pointings(ras, decs, radii, merge_max):
-        if all(cache.find('GAIADR3', ras[k], decs[k], radii[k], mag_lim=mag_lim, fresh_only=force_download)
-               for k in members):
-            continue
-        ra_c, dec_c, r_c = ref_cache.enclosing_cone([ras[k] for k in members], [decs[k] for k in members],
-                                                    [radii[k] for k in members])
         if len(members) == 1:
             # A single frame is fetched by the frame itself (with the usual padding)
             continue
+        if all(cache.find('GAIADR3', ras[k], decs[k], radii[k], mag_lim=mag_lim, fresh_only=force_download)
+               for k in members):
+            continue
+        todo.append(members)
+
+    n_todo = len(todo)
+    if n_todo and not silent:
+        n_frames = sum(len(m) for m in todo)
+        log.info(f"> Prefetch Gaia DR3 cones: {n_todo} download(s) for {n_frames} frame(s); this may take a while")
+
+    n_dl = 0
+    t_start = time.time()
+    for i, members in enumerate(todo, start=1):
+        ra_c, dec_c, r_c = ref_cache.enclosing_cone([ras[k] for k in members], [decs[k] for k in members],
+                                                    [radii[k] for k in members])
         if not silent:
-            log.info(f"> Prefetch Gaia cone for {len(members)} frame(s): RA={ra_c:.4f}, DEC={dec_c:.4f}, "
+            log.info(f"    [{i}/{n_todo}] {len(members)} frame(s): RA={ra_c:.4f}, DEC={dec_c:.4f}, "
                      f"r={r_c:.3f} deg")
         try:
             if force_download:
@@ -1463,6 +1476,9 @@ def prefetch_astro_ref_cat(cones, config, mag_lim=-1, merge_max=1.1, silent=Fals
             cache.store(df, 'GAIADR3', ra_c, dec_c, r_c, mag_lim=mag_lim)
         except Exception as exc:  # the frames download their own cones then
             log.warning(f"Gaia prefetch failed ({exc}); the frames download their own cones")
+
+    if n_todo and not silent:
+        log.info(f"    Prefetch done: {n_dl}/{n_todo} cone(s) downloaded in {time.time() - t_start:.0f} s")
     return n_dl
 
 
