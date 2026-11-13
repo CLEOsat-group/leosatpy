@@ -822,6 +822,18 @@ Satellite detection & analysis options
    Not used. The large aperture for the stellar aperture correction has a radius 1.5×FWHM larger than the optimum aperture.
    Both apertures share one sky annulus between 1 and 2×FWHM outside the large aperture.
 
+.. py:function:: min_aper_rad_pix:
+
+   ``float`` (default = ``0``, off)
+
+   Minimum aperture size in pixels: the radius of the stellar apertures and the half-height of the trail aperture
+   are raised to at least this value. Intended for undersampled images (FWHM below about 2 px), where apertures of
+   1-2 FWHM cover only a few pixels and the aperture corrections become large.
+   On CDK20 data binned 4x4 (FWHM 1.5-2.1 px), 3 px reduced the median aperture corrections from 0.22 to 0.09 mag
+   (stars) and from 0.23 to 0.07 mag (trails), but not the magnitude errors, and the magnitudes became fainter by
+   a median of 0.03 mag (up to 0.13 mag). For such data, an additional systematic uncertainty of a few hundredths of
+   a magnitude from the aperture choice should be assumed in either case.
+
 .. py:function:: aper_start:
 
    ``float`` (default = ``0.1``)

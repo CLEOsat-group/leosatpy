@@ -78,6 +78,11 @@ result tables from the two versions.
   in a dense field is fainter than 21 mag), so such a cone is cached as complete to its
   faintest star and reused for nearby frames. A warning remains only if the cone is
   complete to less than 15 mag.
+- New option `MIN_APER_RAD_PIX` (default 0, off): minimum aperture radius/half-height
+  in pixels for undersampled images. On CDK20 4x4 data it reduces the aperture
+  corrections but not the errors, and shifts the magnitudes by a median of +0.03 mag;
+  for such data the aperture choice adds a systematic uncertainty of a few hundredths
+  of a magnitude.
 - The Gaia prefetch reports how many cones are already cached and how many will be
   downloaded, and shows `[i/N]` progress.
 - Figures show the actual image unit (e-) instead of "counts".

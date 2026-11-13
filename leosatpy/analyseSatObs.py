@@ -1719,6 +1719,23 @@ class AnalyseSatObs(object):
 
         return True
 
+    def apply_min_aperture(self, aprad_fwhm: float, fwhm: float, what: str) -> float:
+        """Enlarge an aperture (in units of the FWHM) to at least MIN_APER_RAD_PIX pixels.
+
+        For undersampled images (FWHM of 1-2 px) apertures of 1-2 FWHM cover only a few pixels;
+        the flux in them depends strongly on where a star falls within its pixel, which makes the
+        aperture correction large and uncertain. 0 disables the minimum."""
+        try:
+            min_px = float(self._config.get('MIN_APER_RAD_PIX', 0.))
+        except (TypeError, ValueError):
+            min_px = 0.
+        if min_px <= 0. or fwhm <= 0. or aprad_fwhm * fwhm >= min_px:
+            return aprad_fwhm
+        new = min_px / fwhm
+        self._log.debug(f"    {what}: {aprad_fwhm * fwhm:.2f} px raised to the minimum of {min_px:.1f} px "
+                        f"({new:.2f} x FWHM)")
+        return new
+
     def check_trail_quality(self, reg_info: dict, tle_pos_df: pd.DataFrame, sat_phot: pd.DataFrame,
                             pixelscale: float):
         """Check that a detected trail can be the satellite and that its flux can be measured.
@@ -2031,6 +2048,7 @@ class AnalyseSatObs(object):
 
             # Unpack the results
             fluxes, rapers, max_snr_aprad, opt_aprad, qlf_aptrail = result
+            opt_aprad = self.apply_min_aperture(opt_aprad, image_fwhm, 'trail aperture half-height')
 
             # Plot the result of the aperture photometry
             self.plot_aperture_photometry(fluxes=fluxes,
@@ -2440,6 +2458,7 @@ class AnalyseSatObs(object):
                                            silent=self._silent)
 
         fluxes, rapers, max_snr_aprad, opt_aprad, qlf_aprad = result
+        opt_aprad = self.apply_min_aperture(opt_aprad, kernel_fwhm, 'stellar aperture radius')
 
         # Plot result of aperture photometry
         self.plot_aperture_photometry(fluxes=fluxes,
