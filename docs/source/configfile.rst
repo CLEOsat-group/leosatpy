@@ -773,10 +773,18 @@ Satellite detection & analysis options
 
    ``float`` (default = ``5.``)
 
-   Maximum difference (in degrees) between the detected trail direction and the direction predicted from the TLE.
-   Trails outside this tolerance, or trails for which the TLE does not place the satellite on the detector during
-   the exposure, are rejected (``QlfTrail`` = ``F``) and get no magnitude. This removes false detections such as
-   bleed columns of saturated stars; genuine trails typically agree to better than 0.1 degree.
+   Maximum difference (in degrees) between the detected trail direction and the direction of the track predicted
+   from the TLE during the exposure (also where the prediction lies outside the detector). Trails outside this
+   tolerance are rejected (``QlfTrail`` = ``F``) and get no magnitude. This removes false detections such as bleed
+   columns of saturated stars or other satellites; genuine trails typically agree to better than 0.1 degree.
+
+.. py:function:: trail_tle_xtrack_tol:
+
+   ``float`` (default = ``600.``)
+
+   Maximum distance (in arcsec) of the trail centre from the predicted track line. An offset along the track,
+   e.g. from the age of the TLE or the time stamp of the image, is not a reason to reject a trail; it is reported
+   as ``TrailTleTimeOffset``.
 
 .. py:function:: trail_mask_frac_max:
 

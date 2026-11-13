@@ -672,8 +672,8 @@ Additional information
 
    ``bool``
 
-   Trail quality flag (since 0.7.0). F if the TLE prediction does not put the satellite on the detector,
-   the detected direction differs from the predicted one by more than TRAIL_TLE_ANG_TOL, or more than
+   Trail quality flag (since 0.7.0). F if the detected direction differs from the predicted one by more than
+   TRAIL_TLE_ANG_TOL, the trail lies more than TRAIL_TLE_XTRACK_TOL off the predicted track, or more than
    TRAIL_MASK_FRAC_MAX of the trail aperture is masked. No magnitudes are reported for such trails.
 
 .. py:function:: TrailTleAngDiff:
@@ -681,6 +681,19 @@ Additional information
    ``deg``
 
    Difference between the detected trail direction and the direction predicted from the TLE.
+
+.. py:function:: TrailTleXTrack:
+
+   ``arcsec``
+
+   Distance of the trail centre from the track line predicted from the TLE.
+
+.. py:function:: TrailTleTimeOffset:
+
+   ``s``
+
+   Offset of the trail centre along the predicted track, expressed as time (detected minus predicted).
+   Caused by the age of the TLE or the time stamp of the image; it does not affect the photometry.
 
 .. py:function:: TrailDetMethod:
 

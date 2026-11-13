@@ -27,12 +27,14 @@ result tables from the two versions.
   (`adu`, `counts`, `electron`, `e-`, ...), and images are converted to electrons once.
   Background files written before 0.7.0 are re-estimated automatically.
 - **Trail quality checks.** A detected trail is rejected, and no magnitude is reported,
-  if the TLE prediction does not put the satellite on the detector during the exposure,
-  if its direction differs from the predicted one by more than `TRAIL_TLE_ANG_TOL`
-  (default 5 deg), or if more than `TRAIL_MASK_FRAC_MAX` (default 50 %) of the trail
-  aperture is masked. Found in an end-to-end run: the bleed column of a saturated star
-  was taken as a trail, and 95 % of its aperture was masked (fill factor 0.036). New
-  result columns: `QlfTrail`, `TrailTleAngDiff`.
+  if its direction differs from the track predicted from the TLE by more than
+  `TRAIL_TLE_ANG_TOL` (default 5 deg), if it lies more than `TRAIL_TLE_XTRACK_TOL`
+  (default 600 arcsec) off that track, or if more than `TRAIL_MASK_FRAC_MAX` (default
+  50 %) of the trail aperture is masked. An offset along the track (TLE age, time stamp)
+  is allowed and reported as a time offset. Found in an end-to-end run: the bleed column
+  of a saturated star was taken as a trail, and 95 % of its aperture was masked (fill
+  factor 0.036). New result columns: `QlfTrail`, `TrailTleAngDiff`, `TrailTleXTrack`,
+  `TrailTleTimeOffset`.
 - **Reference images.** Only exposures of the same pointing without a detected trail
   (in the same HDU) are used as reference images, as the documentation describes.
   Before, every other exposure was used, and a trail in the reference image could be

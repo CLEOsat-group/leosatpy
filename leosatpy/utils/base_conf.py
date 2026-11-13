@@ -326,7 +326,7 @@ DEF_RES_TBL_COL_NAMES = ['File', 'Object', 'Sat-Name', 'AltID', 'UniqueID',
                          'TrailANG', 'e_TrailANG', 'OptAperHeight', 'TrailMaskFrac', 'TrailFillFactor',
                          'CalRA', 'CalDEC', 'CentX', 'e_CentX', 'CentY', 'e_CentY', 'PixScale', 'DetRotAng', 'FWHM', 'e_FWHM',
                          'bias_cor', 'dark_cor', 'flat_cor', 'gain_cor', 'CcdTemp', 'TempMatch', 'DarkScale',
-                         'WCS_cal', 'mag_conv', 'QlfAperRad', 'QlfTrail', 'TrailTleAngDiff', 'TrailDetMethod']
+                         'WCS_cal', 'mag_conv', 'QlfAperRad', 'QlfTrail', 'TrailTleAngDiff', 'TrailTleXTrack', 'TrailTleTimeOffset', 'TrailDetMethod']
 
 # To be implemented. Default result table column units.
 DEF_RES_TBL_COL_UNITS = ['', '', '', '', '',

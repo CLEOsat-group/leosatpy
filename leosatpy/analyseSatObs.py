@@ -1485,8 +1485,11 @@ class AnalyseSatObs(object):
 
             # Quality checks of the trail: consistent with the TLE prediction and not mostly masked.
             # Magnitudes of trails that fail are not reported.
-            qlf_trail, tle_ang_diff, fail_reasons = self.check_trail_quality(reg_info, tle_pos_df,
-                                                                             sat_apphot[i])
+            qlf_trail, tle_cmp, fail_reasons = self.check_trail_quality(reg_info, tle_pos_df,
+                                                                        sat_apphot[i], pixelscale)
+            if np.isfinite(tle_cmp['time_offset']) and abs(tle_cmp['time_offset']) > exptime:
+                self._log.info(f"{' ':<4}Trail is {tle_cmp['time_offset']:+.2f} s along the track from the TLE "
+                               f"prediction (TLE age or time stamp)")
             if not qlf_trail:
                 self._log.warning(f"{' ':<4}Trail #{i + 1:02d} rejected, no magnitude reported: "
                                   f"{'; '.join(fail_reasons)}")
@@ -1693,7 +1696,9 @@ class AnalyseSatObs(object):
             result['RADEC_Separator'] = obsparams['radec_separator']
             result['HDU_IDX'] = hdu_idx
             result['QlfTrail'] = 'T' if qlf_trail else 'F'
-            result['TrailTleAngDiff'] = tle_ang_diff
+            result['TrailTleAngDiff'] = tle_cmp['ang_diff']
+            result['TrailTleXTrack'] = tle_cmp['xtrack']
+            result['TrailTleTimeOffset'] = tle_cmp['time_offset']
 
             self._obsTable.update_obs_table(file=file_name,
                                             kwargs=result, obsparams=obsparams)
@@ -1714,40 +1719,69 @@ class AnalyseSatObs(object):
 
         return True
 
-    def check_trail_quality(self, reg_info: dict, tle_pos_df: pd.DataFrame, sat_phot: pd.DataFrame):
+    def check_trail_quality(self, reg_info: dict, tle_pos_df: pd.DataFrame, sat_phot: pd.DataFrame,
+                            pixelscale: float):
         """Check that a detected trail can be the satellite and that its flux can be measured.
 
-        - The TLE prediction must put the satellite on the detector during the exposure, and the
-          predicted direction must agree with the detected trail orientation within
-          TRAIL_TLE_ANG_TOL degrees (rejects e.g. bleed columns of saturated stars).
-        - At most TRAIL_MASK_FRAC_MAX of the trail aperture may be masked, and the trail core must not
-          be masked along its full length, since the fill-factor correction is then unreliable.
+        The detected trail is compared with the track predicted from the TLE during the exposure,
+        projected on the image (also where it lies outside the detector):
+
+        - its direction must agree within TRAIL_TLE_ANG_TOL degrees, and
+        - its centre must lie within TRAIL_TLE_XTRACK_TOL arcsec of the predicted track line.
+
+        An offset *along* the track (TLE age, clock or shutter timing) is not a reason to reject the
+        trail; it is reported as a time offset. Together the two criteria reject e.g. bleed columns of
+        saturated stars and other satellites crossing the field.
+        Additionally, at most TRAIL_MASK_FRAC_MAX of the trail aperture may be masked, and the trail
+        core must not be masked along its full length, since the fill-factor correction is then unreliable.
 
         Returns
         -------
         tuple
-            (passed, angle difference to the TLE direction in deg or NaN, list of failure reasons)
+            (passed, dict with 'ang_diff' (deg), 'xtrack' (arcsec) and 'time_offset' (s, detected minus
+            predicted), list of failure reasons)
         """
         ang_tol = float(self._config.get('TRAIL_TLE_ANG_TOL', 5.))
+        xtrack_tol = float(self._config.get('TRAIL_TLE_XTRACK_TOL', 600.))
         mask_frac_max = float(self._config.get('TRAIL_MASK_FRAC_MAX', 0.5))
         reasons = []
-        ang_diff = np.nan
+        tle_cmp = dict(ang_diff=np.nan, xtrack=np.nan, time_offset=np.nan)
 
-        if tle_pos_df is not None and {'x', 'y', 'PosMask'}.issubset(tle_pos_df.columns):
-            on_det = tle_pos_df[tle_pos_df['PosMask'].astype(bool)]
-            if on_det.shape[0] < 2:
-                reasons.append('the TLE prediction does not put the satellite on the detector '
-                               'during the exposure')
+        if tle_pos_df is not None and {'x', 'y'}.issubset(tle_pos_df.columns):
+            track = tle_pos_df[np.isfinite(tle_pos_df['x'].astype(float)) &
+                               np.isfinite(tle_pos_df['y'].astype(float))]
+            if track.shape[0] < 2:
+                reasons.append('the TLE track could not be projected on the image')
             else:
-                dx = float(on_det['x'].values[-1] - on_det['x'].values[0])
-                dy = float(on_det['y'].values[-1] - on_det['y'].values[0])
-                ang_tle = np.degrees(np.arctan2(dy, dx)) % 180.
-                ang_det = float(reg_info['orient_deg']) % 180.
-                diff = abs(ang_tle - ang_det)
-                ang_diff = float(min(diff, 180. - diff))
-                if ang_diff > ang_tol:
-                    reasons.append(f'trail direction differs from the TLE prediction by {ang_diff:.1f} deg '
-                                   f'(> {ang_tol:.1f} deg)')
+                p0 = np.array([track['x'].values[0], track['y'].values[0]], dtype=float)
+                p1 = np.array([track['x'].values[-1], track['y'].values[-1]], dtype=float)
+                length = float(np.hypot(*(p1 - p0)))
+                if length > 0:
+                    u_dir = (p1 - p0) / length
+                    ang_tle = np.degrees(np.arctan2(u_dir[1], u_dir[0])) % 180.
+                    ang_det = float(reg_info['orient_deg']) % 180.
+                    diff = abs(ang_tle - ang_det)
+                    tle_cmp['ang_diff'] = float(min(diff, 180. - diff))
+
+                    # Offsets of the detected trail centre from the predicted mid-exposure position
+                    p_mid = 0.5 * (p0 + p1)
+                    d = np.asarray(reg_info['coords'], dtype=float)[:2] - p_mid
+                    along = float(d @ u_dir)
+                    tle_cmp['xtrack'] = float(abs(d[0] * u_dir[1] - d[1] * u_dir[0])) * pixelscale
+                    try:
+                        times = pd.to_datetime(track['Obs_Time'])
+                        dt = (times.iloc[-1] - times.iloc[0]).total_seconds()
+                        if dt > 0:
+                            tle_cmp['time_offset'] = along / (length / dt)
+                    except (KeyError, ValueError, TypeError):
+                        pass
+
+                    if tle_cmp['ang_diff'] > ang_tol:
+                        reasons.append(f"trail direction differs from the TLE prediction by "
+                                       f"{tle_cmp['ang_diff']:.1f} deg (> {ang_tol:.1f} deg)")
+                    if tle_cmp['xtrack'] > xtrack_tol:
+                        reasons.append(f"trail is {tle_cmp['xtrack']:.0f} arcsec off the predicted track "
+                                       f"(> {xtrack_tol:.0f} arcsec)")
 
         masked_frac = float(sat_phot['masked_frac'].values[0]) if 'masked_frac' in sat_phot else 0.
         if masked_frac > mask_frac_max:
@@ -1756,7 +1790,7 @@ class AnalyseSatObs(object):
         if 'core_lost' in sat_phot and bool(sat_phot['core_lost'].values[0]):
             reasons.append('the trail core is masked along its full length')
 
-        return len(reasons) == 0, ang_diff, reasons
+        return len(reasons) == 0, tle_cmp, reasons
 
     def run_satellite_photometry(self,
                                  data_dict: dict,
