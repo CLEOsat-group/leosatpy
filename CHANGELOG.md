@@ -71,6 +71,11 @@ result tables from the two versions.
   archive errors (HTTP 500) when downloading up to 50000 stars to G = 19. Cones that
   reach the limit are cached as complete only to their faintest star; cones cached by
   earlier versions remain valid.
+- GSC cones that reach the service limit of 5000 stars no longer trigger a warning and a
+  second download. The service returns the brightest stars (tested: everything missing
+  in a dense field is fainter than 21 mag), so such a cone is cached as complete to its
+  faintest star and reused for nearby frames. A warning remains only if the cone is
+  complete to less than 15 mag.
 - The Gaia prefetch reports how many cones are already cached and how many will be
   downloaded, and shows `[i/N]` progress.
 - Figures show the actual image unit (e-) instead of "counts".

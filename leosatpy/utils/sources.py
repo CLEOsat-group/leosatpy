@@ -1605,25 +1605,31 @@ def prefetch_astro_ref_cat(cones, config, mag_lim=-1, merge_max=1.1, silent=Fals
     return n_dl
 
 
+# A GSC cone limited to GSC_MAXOBJ rows that is complete only to a brighter magnitude than this is reported
+GSC_COMPLETE_WARN_MAG = 15.
+
+
 def fetch_phot_ref_cat(ra, dec, sr, config, catalog='GSC243', silent=False):
     """Photometric reference cone (full columns) from the shared cache, or downloaded and cached.
 
-    The GSC service returns at most ``GSC_MAXOBJ`` rows. A padded download that hits
-    this limit is not used; the exact cone is downloaded instead and cached for this
-    cone only.
+    The GSC service returns the brightest ``GSC_MAXOBJ`` rows of a cone. A cone that reaches
+    this limit is complete down to its faintest row; it is cached as such (capped) and serves
+    the requests inside it, like a Gaia cone limited by ``REF_CAT_MAX_ROWS``.
 
     Returns
     -------
     ref_df, catalog, origin : DataFrame, str, str
     """
     force_download = bool(config.get('force_download', False))
+    max_rows = ref_cache.GSC_MAXOBJ
     cache = ref_cache.get_cache(config)
     if cache is None:
         ref_df, catalog = download_phot_ref_cat(ra=ra, dec=dec, sr=sr, catalog=catalog,
                                                 full_catalog=True, silent=silent)
+        _report_capped(catalog, *_capped_info(ref_df, max_rows))
         return ref_df, catalog, 'downloaded'
 
-    df, entry = cache.lookup(catalog, ra, dec, sr, fresh_only=force_download)
+    df, entry = cache.lookup(catalog, ra, dec, sr, fresh_only=force_download, max_rows=max_rows)
     if df is not None:
         log.debug(f"    {catalog} cone RA={ra:.5f} DEC={dec:.5f} r={sr:.4f} deg from cache {entry['file']}")
         return df, catalog, 'cache'
@@ -1633,20 +1639,27 @@ def fetch_phot_ref_cat(ra, dec, sr, config, catalog='GSC243', silent=False):
     r_dl = sr * _cache_pad(config)
     ref_df, catalog = download_phot_ref_cat(ra=ra, dec=dec, sr=r_dl, catalog=catalog,
                                             full_catalog=True, silent=silent)
-    truncated = len(ref_df) >= ref_cache.GSC_MAXOBJ
-    if truncated and r_dl > sr:
-        log.debug(f"    {catalog} padded cone hit the row limit; downloading the exact cone")
-        r_dl = sr
-        ref_df, catalog = download_phot_ref_cat(ra=ra, dec=dec, sr=r_dl, catalog=catalog,
-                                                full_catalog=True, silent=True)
-        truncated = len(ref_df) >= ref_cache.GSC_MAXOBJ
-    _warn_truncated(catalog, truncated, len(ref_df))
+    capped, mag_complete = _capped_info(ref_df, max_rows)
+    _report_capped(catalog, capped, mag_complete)
     if len(ref_df) > 0:
         try:
-            cache.store(ref_df, catalog, ra, dec, r_dl, truncated=truncated)
+            cache.store(ref_df, catalog, ra, dec, r_dl, max_rows=max_rows, capped=capped,
+                        mag_complete=mag_complete)
         except OSError as exc:
             log.warning(f"Reference catalog not cached ({exc})")
     return ref_cache.RefCatalogCache.cut(ref_df, ra, dec, sr), catalog, 'downloaded'
+
+
+def _report_capped(catalog, capped, mag_complete):
+    """Log a cone limited to the brightest stars; warn only if it is complete to a bright magnitude."""
+    if not capped:
+        return
+    if mag_complete is not None and mag_complete < GSC_COMPLETE_WARN_MAG:
+        log.warning(f"{catalog} returned its row limit ({ref_cache.GSC_MAXOBJ} stars) for this very dense field; "
+                    f"the catalog is complete only to {mag_complete:.1f} mag")
+    else:
+        log.debug(f"    {catalog} limited to the brightest {ref_cache.GSC_MAXOBJ} stars "
+                  f"(complete to {mag_complete:.1f} mag)")
 
 
 def get_photometric_catalog(fname, loc, imgarr, hdr, wcsprm,
