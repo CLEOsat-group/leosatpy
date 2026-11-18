@@ -33,7 +33,6 @@ from datetime import (timedelta, datetime, timezone)
 import collections
 from pathlib import Path
 import argparse
-import subprocess
 
 # THIRD PARTY
 import numpy as np
@@ -254,8 +253,14 @@ class CalibrateObsWCS(object):
                 fail_str = bc.BCOLORS.FAIL + "FAIL" + bc.BCOLORS.ENDC
                 for _, file_df in files.iterrows():
                     progress = f"{progress_counter + 1}/{len(files)}"
-                    self.run_calibration_single(src_path, file_df, progress,
-                                                hdu_idx=self._hdu_idx)
+                    try:
+                        self.run_calibration_single(src_path, file_df, progress,
+                                                    hdu_idx=self._hdu_idx)
+                    except sext.CatalogDownloadError as exc:
+                        # A failed reference catalog download fails this frame only
+                        self._log.error(f"> {file_df['file_name']}: reference catalog download failed: {exc}")
+                        self._converged = False
+                        bc.clean_up()
 
                     result = self._converged
                     # In silent mode the image header is not shown, so name the file in the result line
@@ -364,7 +369,7 @@ class CalibrateObsWCS(object):
         bkg_fname_short = file_name.replace('_red', '_bkg')
         bkg_fname = os.path.join(aux_path, bkg_fname_short)
         estimate_bkg = True
-        if os.path.isfile(f'{bkg_fname}.fits') and not self.force_extract:
+        if bc.bkg_file_is_current(bkg_fname) and not self.force_extract:
             estimate_bkg = False
 
         # Load FITS file
@@ -412,29 +417,16 @@ class CalibrateObsWCS(object):
             config[key] = value
 
         # Get detector gain
-        if isinstance(obsparams['gain'], str) and obsparams['gain'] in hdr:
-            gain = hdr[obsparams['gain']]
-        elif isinstance(obsparams['gain'], float):
-            gain = obsparams['gain']
-        else:
-            gain = 1.  # assume gain = 1 if not found
+        gain = bc.get_detector_gain(obsparams, hdr)
 
-        # Check the image unit and convert if necessary. For version <= 0.4.1 the reduction was done in ADU.
-        # For backward compatibility we check this here and convert to electrons if needed.
-        config['bunit'] = 'adu'
-        if "BUNIT" in hdr and hdr["BUNIT"].lower() in ['adu', 'counts']:
-            # Convert image and saturation limit to electrons
-            imgarr = imgarr * gain
-            config['bunit'] = "electron"
+        # Convert the image to electrons if necessary. Reductions with CORRECT_GAIN = True (default)
+        # are already in electrons; older reductions (<= 0.4.1) or CORRECT_GAIN = False are in ADU.
+        imgarr, config['bunit'], converted = bc.to_electrons(imgarr, hdr, gain, log=self._log)
+        if converted:
             config['estimate_bkg'] = True  # Force background estimation in electrons
 
-        # Get detector saturation limit and convert to electrons
-        sat_lim = config['saturation_limit'] * gain
-        if isinstance(config['saturation_limit'], str) and config['saturation_limit'] in hdr:
-            sat_lim = hdr[obsparams['saturation_limit']]
-
-        # Set final saturation limit using scale factor
-        config['sat_lim'] = bc.SAT_LIM_FAC * sat_lim
+        # Get detector saturation limit in electrons, scaled by bc.SAT_LIM_FAC
+        config['sat_lim'] = bc.get_saturation_limit(obsparams, hdr, gain)
 
         # Extract sources and create a source catalog
         extraction_result, state, _ = sext.get_src_and_cat_info(fbase, cat_path,
@@ -1016,7 +1008,7 @@ class CalibrateObsWCS(object):
         cax.xaxis.set_ticks_position("top")
         cax.xaxis.set_label_position("top")
 
-        cbar.ax.set_xlabel("Flux (counts)")
+        cbar.ax.set_xlabel(f"Flux ({bc.unit_label(config.get('bunit'))})")
 
         plt.setp(cbar.ax.xaxis.get_ticklabels(), fontsize='smaller')
         cbar.update_ticks()
@@ -1090,16 +1082,16 @@ class CalibrateObsWCS(object):
         fig_dpi = self._config['FIG_DPI']
         if fig_type == 'png':
             plt.savefig(fname + '.png', format='png', dpi=fig_dpi)
-            subprocess.call(f'mogrify -trim {fname}.png ', shell=True)
+            bc.trim_figure(fname + '.png')
         elif fig_type == 'pdf':
             self._save_pdf_quietly(fname, fig_dpi)
-            subprocess.call('pdfcrop ' + fname + '.pdf ' + fname + '.pdf', shell=True)
+            bc.trim_figure(fname + '.pdf')
         else:
             self._log.debug("Figure will be saved as .png and .pdf")
             plt.savefig(fname + '.png', format='png', dpi=fig_dpi)
-            subprocess.call(f'mogrify -trim {fname}.png ', shell=True)
+            bc.trim_figure(fname + '.png')
             self._save_pdf_quietly(fname, fig_dpi)
-            subprocess.call('pdfcrop ' + fname + '.pdf ' + fname + '.pdf', shell=True)
+            bc.trim_figure(fname + '.pdf')
 
     @staticmethod
     def add_compass(ax: plt.Axes, image_shape, scale_arrow, theta_rad: float, color: str = 'black'):

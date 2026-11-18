@@ -25,7 +25,10 @@ Observation information
 
     **Type**: ``str``
 
-    Source file name.
+    Source file name. Since 0.7.0 the products are named after the raw file without characters that break
+    shells, LaTeX or wildcards (spaces become ``_``, brackets and similar characters are removed, e.g.
+    ``STARLINK-11190 [DTC]-0001`` becomes ``STARLINK-11190_DTC-0001``). The raw file name is kept in the
+    ``RAWFILE`` header keyword of the reduced and calibrated images.
 
 .. py:function:: Object:
 
@@ -295,19 +298,22 @@ Trail properties
 
    ``mag``
 
-   Observed trail magnitude.
+   Trail magnitude: the trail flux, collected while the satellite was on the detector, compared with the stellar fluxes
+   collected over the full exposure. This equals the apparent magnitude of the satellite only if the time on detector
+   (ToD) equals the exposure time; use ``EstMag`` for the apparent magnitude.
 
 .. py:function:: e_ObsMag:
 
    ``mag``
 
-   1σ uncertainty of ObsMag.
+   1σ uncertainty of ObsMag (statistical: trail flux, zero point, aperture corrections).
+   Systematic terms (colour term, catalogue band conversion, aperture extent) are not included.
 
 .. py:function:: EstMag:
 
    ``mag``
 
-   Observed magnitude corrected for ToD.
+   Apparent magnitude of the satellite: ObsMag corrected for the time on detector with FluxScale.
 
 .. py:function:: e_EstMag:
 
@@ -390,7 +396,8 @@ Trail properties
 
 .. py:function:: FluxScale:
 
-   Scale factor used to correct the observed magnitude.
+   Flux scale t_EXP / ToD used to correct the observed magnitude for the time on the detector.
+   Since 0.7.0, values below 1 (unphysical) are set to 1.
 
 .. py:function:: MagScale:
 
@@ -400,19 +407,22 @@ Trail properties
 
    ``mag``
 
-   Estimated magnitude correction for referecne stars.
+   Aperture correction of the reference stars, -2.5 log10(F_inf / F_aper) (negative).
+   It is subtracted from the zero point derived from the aperture fluxes.
+   Magnitudes from leosatpy <= 0.6.0 added it instead and are too bright by 2 x abs(MagCorrect).
 
 .. py:function:: e_MagCorrect:
 
    ``mag``
 
-   1σ uncertainty of MagCorrect.
+   1σ uncertainty of MagCorrect (standard error of the median, since 0.7.0; the scatter of the
+   individual stars before).
 
 .. py:function:: MagCorrectSat:
 
    ``mag``
 
-   Estimated magnitude correction for satellite.
+   Aperture correction of the trail, -2.5 log10(F_inf / F_aper), with both fluxes corrected for masked pixels.
 
 .. py:function:: e_MagCorrectSat:
 
@@ -520,6 +530,15 @@ Trail properties
 
    Trail aperture height.
 
+.. py:function:: TrailMaskFrac:
+
+   Fraction of the pixels in the trail aperture that are masked (stars along the trail, saturated or bad pixels).
+
+.. py:function:: TrailFillFactor:
+
+   Profile-weighted fraction of the trail flux on unmasked pixels. The trail flux is divided by this
+   factor to correct for the masked pixels (since 0.7.0).
+
 
 .. _additional_info:
 
@@ -587,6 +606,12 @@ Additional information
 
    1σ uncertainty of FWHM.
 
+.. py:function:: gain_cor:
+
+   ``bool``
+
+   Flag indicating that the image was converted from ADU to electrons during the reduction.
+
 .. py:function:: bias_cor:
 
    ``bool``
@@ -642,6 +667,33 @@ Additional information
    ``bool``
 
    Flag indicating optimum aperture radius determination applied.
+
+.. py:function:: QlfTrail:
+
+   ``bool``
+
+   Trail quality flag (since 0.7.0). F if the detected direction differs from the predicted one by more than
+   TRAIL_TLE_ANG_TOL, the trail lies more than TRAIL_TLE_XTRACK_TOL off the predicted track, or more than
+   TRAIL_MASK_FRAC_MAX of the trail aperture is masked. No magnitudes are reported for such trails.
+
+.. py:function:: TrailTleAngDiff:
+
+   ``deg``
+
+   Difference between the detected trail direction and the direction predicted from the TLE.
+
+.. py:function:: TrailTleXTrack:
+
+   ``arcsec``
+
+   Distance of the trail centre from the track line predicted from the TLE.
+
+.. py:function:: TrailTleTimeOffset:
+
+   ``s``
+
+   Offset of the trail centre along the predicted track, expressed as time (detected minus predicted).
+   Caused by the age of the TLE or the time stamp of the image; it does not affect the photometry.
 
 .. py:function:: TrailDetMethod:
 

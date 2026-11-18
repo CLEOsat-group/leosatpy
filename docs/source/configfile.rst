@@ -364,6 +364,8 @@ Reduction options
    ``True``, ``False`` (default = ``True``)
 
    If ``True`` and the gain is known, applies gain correction to convert pixel values from ADU (Analog-to-Digital Units) to electrons.
+   The unit is written to the ``BUNIT`` header keyword. Calibration and analysis read ``BUNIT`` and convert ADU images to
+   electrons themselves, so both settings give the same magnitudes.
 
 .. _correct_cosmic:
 .. py:function:: correct_cosmic:
@@ -420,7 +422,7 @@ Reduction options
    This parameter defines the fraction of the image area included in the vignetting mask. This mask is only applied to U-band observations from the |dk154|_ to exclude the outer regions of the image where vignetting effects are most pronounced in this band.
    The default value of 0.975 means that 97.5% of the image area is included in the mask, effectively excluding the outer 2.5% of the image from the analysis.
 
-.. py:function:: mem_lim_combine:
+.. py:function:: mem_limit_combine:
 
    ``float`` (default = ``8e9``)
 
@@ -544,6 +546,16 @@ WCS calibration options
 
 .. note::
    While limiting the reference catalog to brighter sources can significantly reduce download times, choosing the limit too low may result in fewer matched sources, especially in sparse fields.
+
+.. py:function:: ref_cat_max_rows:
+
+   ``int`` (default = ``5000``)
+
+   Maximum number of Gaia DR3 stars downloaded per cone; the brightest stars are kept.
+   In dense fields (e.g. near the Galactic plane) this makes the downloads much faster and avoids archive errors,
+   while the calibration uses at most ``max_ref_num`` stars anyway. A cone that reaches the limit is complete only
+   down to its faintest star; it is cached as such and reused for the frames inside it.
+   A value <= 0 downloads all stars down to ``ref_catalog_mag_lim``.
 
 .. py:function:: distance_bin_size:
 
@@ -740,6 +752,49 @@ Satellite detection & analysis options
    - ``'powell'`` : Powell's method, useful for noisy trail data
    - ``'nelder'`` : Nelder-Mead simplex algorithm, more resistant to local minima
 
+.. py:function:: theta_window_half_deg:
+
+   ``float`` (default = ``5.``)
+
+   Half-width (in degrees) of the Hough angle search window around the estimated trail orientation. Restricting the
+   accumulator to this band makes the search faster; if the detected peak is not well inside the window, the full
+   [-90, 90] degree range is searched instead. A value <= 0 always uses the full range.
+
+.. py:function:: mag_err_mode:
+
+   ``'zp'``, ``'legacy'`` (default = ``'zp'``)
+
+   Method for the magnitude and its uncertainty. ``'zp'``: the zero point is the sigma-clipped, inverse-variance
+   weighted mean over the comparison stars, and the shared error terms (trail flux, zero point, aperture corrections)
+   are added once in quadrature. ``'legacy'``: mean of the per-star magnitudes and of the per-star errors, as in
+   versions up to 0.5.0. Both modes use the corrected sign of the stellar aperture correction (0.7.0).
+
+.. py:function:: trail_tle_ang_tol:
+
+   ``float`` (default = ``5.``)
+
+   Maximum difference (in degrees) between the detected trail direction and the direction of the track predicted
+   from the TLE during the exposure (also where the prediction lies outside the detector). Trails outside this
+   tolerance are rejected (``QlfTrail`` = ``F``) and get no magnitude. This removes false detections such as bleed
+   columns of saturated stars or other satellites; genuine trails typically agree to better than 0.1 degree.
+
+.. py:function:: trail_tle_xtrack_tol:
+
+   ``float`` (default = ``600.``)
+
+   Maximum distance (in arcsec) of the trail centre from the predicted track line. An offset along the track,
+   e.g. from the age of the TLE or the time stamp of the image, is not a reason to reject a trail; it is reported
+   as ``TrailTleTimeOffset``.
+
+.. py:function:: trail_mask_frac_max:
+
+   ``float`` (default = ``0.5``)
+
+   Maximum fraction of the trail aperture that may be masked (stars along the trail, saturated or bad pixels).
+   The trail flux is corrected for masked pixels with a profile-weighted fill factor (``TrailFillFactor``); above this
+   fraction, or if the trail core is masked along its full length, the correction is unreliable and the trail is
+   rejected (``QlfTrail`` = ``F``).
+
 .. py:function:: num_std_min:
 
    ``int`` (default = ``5``)
@@ -748,7 +803,7 @@ Satellite detection & analysis options
 
 .. py:function:: num_std_max:
 
-   ``int`` (default = ``500``)
+   ``int`` (default = ``1000``)
 
    Maximum number of comparison stars to use for photometric calibration. Using too many stars can slow down processing without significantly improving accuracy. In dense fields, limiting this number improves efficiency while maintaining photometric precision.
 
@@ -756,13 +811,28 @@ Satellite detection & analysis options
 
    ``float`` (default = ``1.7``)
 
-   Default aperture radius for photometry, expressed as a multiple of the image FWHM. This adaptive approach ensures appropriate aperture sizes regardless of seeing conditions. The default value of 1.7×FWHM typically captures ~95% of a stellar flux, balancing completeness with background noise minimization.
+   Fallback aperture radius for the stellar photometry, expressed as a multiple of the image FWHM.
+   The aperture radius is normally determined from the signal-to-noise ratio of the comparison stars (1.25 times the radius of maximum S/N);
+   this value is used, and the result is flagged (``QlfAperRad`` = ``F``), only if the determined radius exceeds 3×FWHM.
 
 .. py:function:: inf_aper_rad:
 
    ``float`` (default = ``2.5``)
 
-   Radius for the "infinite" aperture used for aperture correction, expressed as a multiple of the FWHM. Although not truly infinite, this larger aperture captures nearly all of the source flux for accurate corrections to the standard aperture measurements. Must be larger than ``aper_rad`` to provide meaningful corrections.
+   Not used. The large aperture for the stellar aperture correction has a radius 1.5×FWHM larger than the optimum aperture.
+   Both apertures share one sky annulus between 1 and 2×FWHM outside the large aperture.
+
+.. py:function:: min_aper_rad_pix:
+
+   ``float`` (default = ``0``, off)
+
+   Minimum aperture size in pixels: the radius of the stellar apertures and the half-height of the trail aperture
+   are raised to at least this value. Intended for undersampled images (FWHM below about 2 px), where apertures of
+   1-2 FWHM cover only a few pixels and the aperture corrections become large.
+   On CDK20 data binned 4x4 (FWHM 1.5-2.1 px), 3 px reduced the median aperture corrections from 0.22 to 0.09 mag
+   (stars) and from 0.23 to 0.07 mag (trails), but not the magnitude errors, and the magnitudes became fainter by
+   a median of 0.03 mag (up to 0.13 mag). For such data, an additional systematic uncertainty of a few hundredths of
+   a magnitude from the aperture choice should be assumed in either case.
 
 .. py:function:: aper_start:
 
@@ -787,14 +857,18 @@ Satellite detection & analysis options
 
    ``float`` (default = ``2.``)
 
-   Inner radius of the annulus used for background estimation in aperture photometry, expressed as a multiple of the FWHM. This radius should be larger than the aperture radius to avoid including source flux in the background estimation.
+   Inner radius of the sky annulus used while the optimum stellar aperture is determined, expressed as a multiple of the FWHM.
+   For aperture radii larger than ``rskyin`` - 1, the annulus is moved outwards so that it starts 1×FWHM beyond the aperture.
+   The final photometry uses an annulus between 1 and 2×FWHM outside the large aperture.
+   The sky level is the 3σ-clipped median of the annulus pixels.
 
 .. _rskyout:
 .. py:function:: rskyout:
 
    ``float`` (default = ``3.``)
 
-   Outer radius of the annulus used for background estimation, expressed as a multiple of the FWHM. The algorithm estimates the local background from pixels between ``rskyin`` and ``rskyout``. Should be larger than ``rskyin`` to provide adequate sampling of the background.
+   Outer radius of the sky annulus used while the optimum stellar aperture is determined, expressed as a multiple of the FWHM
+   (see ``rskyin``). Must be larger than ``rskyin``.
 
 .. _dt_step_size:
 .. py:function:: dt_step_size:
@@ -807,25 +881,28 @@ Satellite detection & analysis options
 
    ``float`` (default = ``1.5``)
 
-   Default aperture radius for trail photometry, expressed as a multiple of the image FWHM. This adaptive approach ensures appropriate aperture sizes for satellite trails regardless of seeing conditions.
+   Not used. The half-height of the trail aperture is determined from the signal-to-noise ratio of the trail
+   (1.25 times the half-height of maximum S/N).
 
 .. py:function:: inf_trail_aper_rad:
 
    ``float`` (default = ``5``)
 
-   Radius for the "infinite" aperture used for trail aperture correction, expressed as a multiple of the FWHM. This larger aperture captures nearly all of the trail flux for accurate corrections to the standard aperture measurements.
+   Not used. The large aperture for the trail aperture correction has a half-height 5×FWHM larger than the optimum aperture.
+   Both trail apertures share one sky annulus between 1 and 3×FWHM outside the large aperture.
 
 .. py:function:: trail_rskyin:
 
    ``float`` (default = ``5.``)
 
-   Inner radius of the annulus used for background estimation in trail photometry, expressed as a multiple of the FWHM. This radius should be larger than the trail aperture radius to avoid including trail flux in the background estimation.
+   Inner half-height of the rectangular sky annulus used while the optimum trail aperture is determined, expressed as a multiple of the FWHM.
+   For larger apertures the annulus is moved outwards so that it starts 1×FWHM beyond the aperture.
 
 .. py:function:: trail_rskyout:
 
    ``float`` (default = ``6.``)
 
-   Outer radius of the annulus used for background estimation in trail photometry, expressed as a multiple of the FWHM. The algorithm estimates the local background from pixels between ``trail_rskyin`` and ``trail_rskyout``.
+   Outer half-height of the rectangular sky annulus used while the optimum trail aperture is determined (see ``trail_rskyin``).
 
 .. py:function:: trail_aper_start:
 
@@ -882,6 +959,6 @@ Figure options
 
 .. py:function:: manual_trail_select_zoom_lvl:
 
-``float`` (default = ``0.1``)
+   ``float`` (default = ``0.1``)
 
    Zoom level for the manual trail selection figure. This value is a fraction of the original image size.

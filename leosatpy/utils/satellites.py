@@ -226,6 +226,17 @@ def get_average_magnitude(flux, flux_err, std_fluxes, std_mags, mag_corr, mag_co
                           mode='zp', return_components=False):
     """Calculate the magnitude of a source relative to the standard stars.
 
+    The zero point is measured with the stellar fluxes in the finite aperture,
+    ZP_aper = m_cat + 2.5 log10(F_aper). With the stellar aperture correction
+    dm_star = -2.5 log10(F_inf / F_aper) (negative), the zero point for total fluxes is
+    ZP_inf = ZP_aper - dm_star. The trail flux is corrected to its total flux with
+    dm_sat = -2.5 log10(F_inf / F_aper) of the trail, so
+
+        m = -2.5 log10(F_sat,aper) + dm_sat + ZP_aper - dm_star.
+
+    Versions <= 0.6.0 added dm_star instead of subtracting it, which made the magnitudes
+    too bright by 2 |dm_star|.
+
     Parameters
     ----------
     flux: float
@@ -271,7 +282,7 @@ def get_average_magnitude(flux, flux_err, std_fluxes, std_mags, mag_corr, mag_co
 
     zp_res = get_photometric_zeropoint(std_fluxes, std_mags)
 
-    mag = -2.5 * np.log10(flux) + zp_res['zp'] + mag_corr[0] + mag_corr_sat
+    mag = -2.5 * np.log10(flux) + zp_res['zp'] - mag_corr[0] + mag_corr_sat
     mag = mag + mag_scale if mag_scale is not None else mag
     mag = mag + 2.5 * np.log10(area) if area is not None else mag
 
@@ -294,7 +305,8 @@ def get_average_magnitude(flux, flux_err, std_fluxes, std_mags, mag_corr, mag_co
 def _get_average_magnitude_legacy(flux, flux_err, std_fluxes, std_mags, mag_corr, mag_corr_sat=0.,
                                   mag_scale=None, area=None):
     """Magnitude as calculated up to leosatpy 0.5.0: mean of the per-star magnitudes
-    and mean of the per-star errors. Kept for reproducing older results."""
+    and mean of the per-star errors. Kept for reproducing older results.
+    The sign of the stellar aperture correction is fixed (subtracted) as in the 'zp' mode."""
 
     # Calculate the error in the magnitude difference using error propagation
     flux_ratio = flux / std_fluxes[:, 0]
@@ -304,7 +316,7 @@ def _get_average_magnitude_legacy(flux, flux_err, std_fluxes, std_mags, mag_corr
     diff_mag_err = 2.5 / np.log(10) * flux_ratio_err / flux_ratio
 
     # Observed satellite magnitude relative to std stars
-    mag = diff_mag + std_mags[:, 0] + mag_corr[0] + mag_corr_sat
+    mag = diff_mag + std_mags[:, 0] - mag_corr[0] + mag_corr_sat
     mag = mag + mag_scale if mag_scale is not None else mag
     mag = mag + 2.5 * np.log10(area) if area is not None else mag
 

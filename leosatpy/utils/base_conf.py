@@ -140,6 +140,162 @@ BINNING_DKEYS = ('BINX', 'BINY')
 
 SAT_LIM_FAC = 0.95  # Factor to calculate the saturation limit from the maximum ADU value
 
+# Reference catalog downloads (Gaia, GSC): attempts, timeout per attempt (s), pause between attempts (s)
+CAT_DL_ATTEMPTS = 3
+CAT_DL_TIMEOUT = 600.
+CAT_DL_RETRY_WAIT = 15.
+
+# Recognised values of the BUNIT header keyword (lower case, without spaces)
+BUNIT_ADU = ('adu', 'adus', 'count', 'counts', 'dn', 'data number')
+BUNIT_ELECTRON = ('electron', 'electrons', 'e-', 'e', 'el')
+
+
+def get_image_unit(hdr, log=None) -> str:
+    """Return the unit of the image data as 'adu' or 'electron'.
+
+    The unit is read from BUNIT. A missing or unknown BUNIT is treated as ADU, the raw detector unit.
+    Per-second units (e.g. 'electron/s') are reported as the base unit with a warning, since the
+    photometric noise model assumes integrated values.
+    """
+    _log = log if log is not None else logging.getLogger(__name__)
+    bunit = hdr.get('BUNIT', None) if hdr is not None else None
+    if bunit is None or str(bunit).strip() == '':
+        return 'adu'
+
+    val = str(bunit).strip().lower()
+    per_second = False
+    for sep in ('/s', ' s-1', ' s^-1', '/sec'):
+        if val.endswith(sep):
+            per_second = True
+            val = val[: -len(sep)].strip()
+            break
+
+    if val in BUNIT_ELECTRON:
+        unit = 'electron'
+    elif val in BUNIT_ADU:
+        unit = 'adu'
+    else:
+        _log.warning(f"Unknown image unit BUNIT='{bunit}'; assuming ADU")
+        return 'adu'
+
+    if per_second:
+        _log.warning(f"Image unit BUNIT='{bunit}' is per second; flux errors assume integrated values")
+    return unit
+
+
+def get_detector_gain(obsparams: dict, hdr) -> float:
+    """Return the detector gain in e-/ADU from the header keyword or the telescope configuration.
+    Falls back to 1 if no gain is available."""
+    g = obsparams.get('gain', None)
+    if isinstance(g, str) and hdr is not None and g in hdr:
+        return float(hdr[g])
+    if isinstance(g, (int, float)) and not isinstance(g, bool):
+        return float(g)
+    return 1.
+
+
+def to_electrons(imgarr, hdr, gain: float, log=None):
+    """Convert the image to electrons if it is in ADU.
+
+    Returns
+    -------
+    tuple
+        (image in electrons, 'electron', True if the image was converted)
+    """
+    unit = get_image_unit(hdr, log=log)
+    if unit == 'adu':
+        return imgarr * gain, 'electron', True
+    return imgarr, 'electron', False
+
+
+def get_saturation_limit(obsparams: dict, hdr, gain: float) -> float:
+    """Return the saturation limit in electrons, scaled by SAT_LIM_FAC.
+
+    A header keyword is assumed to hold the limit in the unit of the stored image data
+    (ADU if the image is in ADU, electrons otherwise). A number in the configuration is in ADU.
+    """
+    sat = obsparams.get('saturation_limit', None)
+    if isinstance(sat, str):
+        if hdr is not None and sat in hdr:
+            sat_val = float(hdr[sat])
+            if get_image_unit(hdr) == 'adu':
+                sat_val *= gain
+            return SAT_LIM_FAC * sat_val
+        return np.inf
+    if sat is None:
+        return np.inf
+    return SAT_LIM_FAC * float(sat) * gain
+
+
+# Version tag of the background files. Background files written before 0.7.0 may have been
+# estimated on an image that was multiplied by the gain twice, so they are re-estimated.
+BKG_FILE_VERSION = '0.7'
+
+
+def bkg_file_is_current(bkg_fname) -> bool:
+    """True if the background file exists and was written with the current unit handling (>= 0.7.0)."""
+    fname = f'{bkg_fname}.fits'
+    if not os.path.isfile(fname):
+        return False
+    try:
+        bkg_hdr = fits.getheader(fname, 0)
+    except OSError:
+        return False
+    return (str(bkg_hdr.get('BKGVER', '')) == BKG_FILE_VERSION
+            and str(bkg_hdr.get('BUNIT', '')).lower() in BUNIT_ELECTRON)
+
+
+def safe_file_stem(stem: str) -> str:
+    """File name stem without characters that break shells, LaTeX or wildcard patterns.
+
+    Whitespace becomes '_', characters other than letters, digits, '-', '+', '.' and '_' are
+    removed, and repeated '_' are collapsed, e.g.
+    'STARLINK-11190 [DTC]-0001_4x4_i_500ms' -> 'STARLINK-11190_DTC-0001_4x4_i_500ms'."""
+    import re
+    import unicodedata
+    s = unicodedata.normalize('NFKD', str(stem)).encode('ascii', 'ignore').decode('ascii')
+    s = re.sub(r'\s+', '_', s.strip())
+    s = re.sub(r'[^A-Za-z0-9_.+-]', '', s)
+    s = re.sub(r'_+', '_', s)
+    s = s.strip('_')
+    return s or 'image'
+
+
+def trim_figure(path) -> bool:
+    """Remove the white border of a saved figure in place (mogrify for PNG, pdfcrop for PDF).
+
+    The tools are called without a shell, so file names with spaces or brackets work, and a
+    missing tool or a failure only skips the trimming. Returns True if the figure was trimmed."""
+    import shutil
+    import subprocess
+    path = str(path)
+    if path.lower().endswith('.png'):
+        cmd = ['mogrify', '-trim', path]
+    elif path.lower().endswith('.pdf'):
+        cmd = ['pdfcrop', path, path]
+    else:
+        return False
+    if shutil.which(cmd[0]) is None:
+        logging.getLogger(__name__).debug(f"    {cmd[0]} not found; figure not trimmed: {path}")
+        return False
+    try:
+        res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=120, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        logging.getLogger(__name__).debug(f"    {cmd[0]} failed for {path}: {exc}")
+        return False
+    if res.returncode != 0:
+        logging.getLogger(__name__).debug(f"    {cmd[0]} failed for {path}: "
+                                          f"{res.stderr.decode(errors='replace').strip()}")
+        return False
+    return True
+
+
+def unit_label(bunit: str) -> str:
+    """Axis label string for the image unit."""
+    if bunit is not None and str(bunit).lower() in BUNIT_ELECTRON:
+        return r'e$^{-}$'
+    return 'ADU'
+
 # Default result table column names.
 DEF_RES_TBL_COL_NAMES = ['File', 'Object', 'Sat-Name', 'AltID', 'UniqueID',
                          'Instrument', 'HDU_idx', 'DetPosID',
@@ -167,10 +323,10 @@ DEF_RES_TBL_COL_NAMES = ['File', 'Object', 'Sat-Name', 'AltID', 'UniqueID',
                          'dt_tle-obs',
                          'TrailCX', 'e_TrailCX', 'TrailCY', 'e_TrailCY',
                          'TrailCRA', 'e_TrailCRA', 'TrailCDEC', 'e_TrailCDEC',
-                         'TrailANG', 'e_TrailANG', 'OptAperHeight',
+                         'TrailANG', 'e_TrailANG', 'OptAperHeight', 'TrailMaskFrac', 'TrailFillFactor',
                          'CalRA', 'CalDEC', 'CentX', 'e_CentX', 'CentY', 'e_CentY', 'PixScale', 'DetRotAng', 'FWHM', 'e_FWHM',
                          'bias_cor', 'dark_cor', 'flat_cor', 'gain_cor', 'CcdTemp', 'TempMatch', 'DarkScale',
-                         'WCS_cal', 'mag_conv', 'QlfAperRad', 'TrailDetMethod']
+                         'WCS_cal', 'mag_conv', 'QlfAperRad', 'QlfTrail', 'TrailTleAngDiff', 'TrailTleXTrack', 'TrailTleTimeOffset', 'TrailDetMethod']
 
 # To be implemented. Default result table column units.
 DEF_RES_TBL_COL_UNITS = ['', '', '', '', '',

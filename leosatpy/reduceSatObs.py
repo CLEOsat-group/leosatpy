@@ -236,6 +236,7 @@ class ReduceSatObs(object):
         self._night_index_cache = {}  # per-run calibration index {night root: {...}}
         self._dark_scales = []  # fitted dark scales of the current filter (Part C)
         self._frame_meta_cache = {}  # per-run header metadata of raw calibration frames
+        self._clean_names = {}  # clean product name -> raw file stem (collision check)
 
         # Run full reduction
         self.run_full_reduction(silent=silent)
@@ -1056,10 +1057,28 @@ class ReduceSatObs(object):
                     ccd.mask = hot_mask if ccd.mask is None else (np.asarray(ccd.mask, dtype=bool) | hot_mask)
 
             # Update header information and save the reduced file
-            fbase = Path(filename).stem
+            # Products are named after the raw file, without characters that break shells, LaTeX or
+            # wildcards (e.g. 'STARLINK-11190 [DTC]-0001' -> 'STARLINK-11190_DTC-0001'); the raw name is
+            # kept in the header (RAWFILE)
+            raw_name = Path(filename).name
+            raw_base = Path(filename).stem
+            fbase = bc.safe_file_stem(raw_base)
+            if fbase != raw_base:
+                # Two raw names that give the same clean name get a short tag of the raw name
+                owner = self._clean_names.setdefault(fbase, raw_base)
+                if owner != raw_base:
+                    import hashlib
+                    fbase = f"{fbase}_{hashlib.md5(raw_base.encode()).hexdigest()[:6]}"
             suffix = Path(filename).suffix
-            filename = f'{fbase}_red{suffix}'
-            filename = join_path(filename, self._red_path)
+            filename = join_path(f'{fbase}_red{suffix}', self._red_path)
+            if fbase != raw_base:
+                # A product of the same raw file written by an older version under the raw name
+                old_red = join_path(f'{raw_base}_red{suffix}', self._red_path)
+                if os.path.isfile(old_red):
+                    os.remove(old_red)
+                    self._log.info(f"{' ':<4}Replaced {os.path.basename(old_red)} by "
+                                   f"{os.path.basename(filename)}")
+            ccd.header['RAWFILE'] = (raw_name, 'raw file name')
 
             self._add_calibration_provenance(ccd.header, ccd_expt, image_filter,
                                              mbias_ccd if bias_applied else None,
