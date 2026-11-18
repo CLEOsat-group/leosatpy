@@ -1,9 +1,17 @@
 # Changelog
 
-## 0.7.0
+## 0.7.0 (2026-11-18)
 
 Magnitudes from this version differ from those of 0.6.0 and earlier. Do not mix
 result tables from the two versions.
+
+The magnitude errors in the result table are statistical. In addition, the aperture
+corrections carry a systematic uncertainty of about 0.03 mag (more for undersampled
+images with FWHM below about 2 px); see the configuration docs of `MIN_APER_RAD_PIX`.
+
+New configuration options (the defaults apply if they are missing in an existing
+`leosatpy_config.ini`): `REF_CAT_MAX_ROWS`, `TRAIL_TLE_ANG_TOL`, `TRAIL_TLE_XTRACK_TOL`,
+`TRAIL_MASK_FRAC_MAX`, `MIN_APER_RAD_PIX`.
 
 ### Fixed (these bias the magnitudes)
 - **Sign of the stellar aperture correction.** The zero point comes from the stellar
